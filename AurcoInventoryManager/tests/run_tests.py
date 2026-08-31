@@ -3627,6 +3627,104 @@ def main() -> int:
           "an existing Tool Station folder is migrated, not abandoned")
     _cfg.set_storage_root(_old_root)
 
+    # ================= Excel paste / export + inline stock adjustment ======
+    section("Delivery Note — Excel paste, export and inline stock adjustment")
+    from aurco.ui import common as _C
+    pa = win.page_out
+    if pa.editing_draft():
+        pa.cancel_draft_edit()
+    pa.lines.clear_lines()
+    pa.reset_form()
+    ia = dict(db.one("SELECT * FROM items WHERE balance>20 LIMIT 1"))
+    ib = dict(db.one("SELECT * FROM items WHERE balance>20 AND id<>? LIMIT 1",
+                     (ia["id"],)))
+
+    head, rows_ = _C.split_pasted_table(
+        "Item Code\tQty\tPR / MR No.\n%s\t3\t001735" % ia["code"])
+    check(head and len(rows_) == 1, "an Excel paste with a header row is split")
+    check(_C.map_pasted_columns(head, "OUT", 3)["qty"] == 1,
+          "the Qty column is found by its heading")
+    check(len(_C.split_pasted_table("A,1,x\nB,2,y")[1]) == 2,
+          "a CSV paste is split too")
+    check(len(_C.split_pasted_table("%s   4" % ia["code"])[1]) == 1,
+          "and columns padded with spaces")
+
+    parsed = _C.parse_pasted_lines(
+        db, "Item Code\tQty\tPR / MR No.\tRemarks\n"
+            "%s\t3\t001735\turgent\n%s\t5\t001735\t\nZZZ-NOPE\t2\t\t"
+            % (ia["code"], ib["code"]), "OUT")
+    check([r["_status"] for r in parsed] == ["ok", "ok", "unknown"],
+          "pasted codes are resolved against the item master")
+    check(parsed[0]["qty"] == 3 and parsed[0]["pr_no"] == "001735",
+          "with their quantity and PR number")
+    check(parsed[0]["remarks"] == "urgent", "and their remarks")
+    check(_C.resolve_item(db, ia["barcode"] or ia["code"]) is not None,
+          "a barcode resolves to the same item")
+    check(_C.parse_pasted_lines(db, "%s\t6" % ia["code"], "OUT")[0]["qty"] == 6,
+          "a two-column paste (code + qty) works without a header")
+
+    good = [r for r in parsed if r["_status"] == "ok"]
+    check(pa.lines.merge_rows(good) == (2, 0) and pa.lines.rowCount() == 2,
+          "pasted lines land in the delivery note grid")
+    check(pa.lines.merge_rows([dict(good[0], qty=9)]) == (0, 1),
+          "pasting the same item again updates the line instead of duplicating it")
+    check(pa.lines.to_lines()[0].qty == 9, "with the new quantity")
+    check(pa.lines.item(0, 5).text() == "001735",
+          "and the PR number is kept as typed (leading zeros intact)")
+
+    cols_x, rows_x = pa.lines.grid_rows()
+    check(cols_x[4] == "Quantity" and rows_x[0][4] == 9,
+          "the export reads the grid as it is displayed")
+    check(rows_x[0][5] == "001735", "and keeps the PR number as text")
+    check(pa.lines.copy_to_clipboard() == 2,
+          "Ctrl+C copies the grid for Excel")
+    check(QApplication.clipboard().text().startswith("Item Code\t"),
+          "with a header row")
+    xls = pa.export_lines_excel()
+    check(xls is not None and Path(xls).exists() and Path(xls).suffix == ".xlsx",
+          "the delivery note lines export to a real .xlsx file")
+
+    # --- correcting the system stock from the delivery note screen
+    before = float(db.scalar("SELECT balance FROM items WHERE id=?", (ia["id"],)))
+    dlg = _C.AdjustStockDialog(db, ia, None, counted=before + 7)
+    check(dlg.delta() == 7 and dlg.new_balance() == before + 7,
+          "a physical count typed on the DN screen becomes a +7 adjustment")
+    dlg.rb_delta.setChecked(True)
+    dlg.sp_delta.setValue(-3)
+    check(dlg.delta() == -3, "or an explicit minus adjustment")
+    dlg.sp_delta.setValue(-(before + 5))
+    check(not dlg.btn_ok.isEnabled(), "a correction below zero is refused")
+    dlg.rb_count.setChecked(True)
+    dlg.sp_count.setValue(before)
+    check(not dlg.btn_ok.isEnabled(), "and so is a correction that changes nothing")
+    dlg.sp_count.setValue(before + 7)
+    dlg.reason.setCurrentText("Physical count correction")
+    dlg.post()
+    check(dlg.doc_no.startswith("ADJ-"),
+          "posting writes a normal stock adjustment document")
+    check(float(db.scalar("SELECT balance FROM items WHERE id=?", (ia["id"],)))
+          == before + 7, "and the item balance is corrected")
+    check(db.scalar("SELECT COUNT(*) FROM stock_ledger WHERE doc_no=?",
+                    (dlg.doc_no,)) == 1, "with a ledger entry for the audit trail")
+    check(pa.lines.refresh_availability() >= 1,
+          "Refresh Stock brings the new balance into the open note")
+    check(pa.lines.item(0, 3).text() == f"{round(before + 7, 2):g}",
+          "so the Available column shows the corrected quantity")
+    _seen = {}
+    probe = _C.LineTable(db, "OUT")
+    probe.add_items([dict(db.one("SELECT * FROM items WHERE id=?", (ia["id"],)))])
+    probe.availabilityEdited.connect(lambda r, q: _seen.update(row=r, qty=q))
+    probe.item(0, 3).setText(str(before + 20))
+    check(_seen.get("qty") == before + 20,
+          "typing a new figure into Available asks for an adjustment")
+    probe.set_available(0, before + 7)
+    check(probe.items[0]["balance"] == before + 7 and
+          probe.item(0, 3).text() == f"{round(before + 7, 2):g}",
+          "and cancelling puts the system quantity back")
+    probe.item(0, 4).setText("2")
+    check(len(_seen) == 2, "editing the Quantity column posts no adjustment")
+    pa.lines.clear_lines()
+
     print("\n" + "=" * 60)
     if FAILURES:
         print(f"FAILED {len(FAILURES)} / {PASSES + len(FAILURES)} checks:")

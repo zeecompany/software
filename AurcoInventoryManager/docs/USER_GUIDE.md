@@ -404,6 +404,56 @@ Archiving keeps a note searchable without cluttering the board.
 
 ---
 
+## 3e. Excel paste, Excel export and on-the-spot stock correction
+
+The Stock Out / Delivery Note grid (and every other transaction grid) talks to
+Excel in both directions, and can correct a wrong system balance without leaving
+the screen.
+
+### Paste item lines from Excel
+**📋 Paste from Excel** — or **Ctrl+V** inside the grid — opens a preview sheet
+already filled from the clipboard.
+
+* A header row (`Item Code`, `Description`, `Qty`, `PR / MR No.`, `Unit Cost`,
+  `Batch/Lot`, `Location`, `Remarks`, and common synonyms) is detected
+  automatically; without one the columns are read in that order.
+* Tab-separated (a plain Excel copy), CSV, pipe tables and space-padded text are
+  all understood. **Load Excel / CSV file...** imports a whole `.xlsx`/`.csv`.
+* Each line is matched to the item master by **code, barcode, alternate code** or
+  description and shown as *✔ found* / *✖ not in item master* **before** anything
+  is added. Unknown codes are skipped by default.
+* An item already on the note is **updated**, not duplicated (matched on item +
+  PR number, so the same item can still appear twice under two PRs).
+* **⬇ Excel template** saves an empty sheet with the right headings.
+
+### Export the lines to Excel
+**📊 Export to Excel** writes the grid exactly as displayed to a branded
+`.xlsx` — styled header, auto-filter, frozen panes, totals — and opens it.
+**Ctrl+C** copies the grid (or just the selected rows) as tab-separated text for
+an immediate paste into Excel. PR numbers such as `001735` keep their leading
+zeros.
+
+### Correct the inventory quantity from the Delivery Note
+The storekeeper picking the note is the person who discovers that the system
+balance is wrong, so the fix lives on the same screen:
+
+* Type the **real counted quantity straight into the Available cell**, or
+* select the line and press **⚖ Adjust Stock (F4)** (also on the right-click
+  menu).
+
+The dialog shows the system quantity and accepts either a physical count or a
+**± difference**, with a **mandatory reason** (physical count correction, missing
+stock, damaged stock, found stock, data correction, opening balance) and optional
+remarks. Posting creates a regular **Stock Adjustment (ADJ)** document with a
+stock-ledger entry and audit trail — it is *not* part of the delivery note — and
+the Available column updates at once. A correction that would make the balance
+negative is refused, and the button obeys the **adjustments** permission.
+**🔄 Refresh Stock** re-reads all available quantities, for when another PC moved
+stock while the note was open.
+
+
+---
+
 ## 4. Stock alert system
 
 Nothing is hard-coded. Per item you can choose:

@@ -407,6 +407,41 @@ the cell is still open, and lines sent in from <b>Bulk Stock Check</b> or a
 in. A finalized document can no longer be edited — use
 <b>Reverse / Correct</b>.</p>
 
+<h3>Excel in and out of the line grid</h3>
+<p>Every transaction screen can exchange its item lines with Excel:</p>
+<ul>
+<li><b>&#128203; Paste from Excel</b> (or <b>Ctrl+V</b> inside the grid) opens a
+preview sheet pre-filled from the clipboard. A header row such as
+<i>Item Code · Description · Qty · PR / MR No. · Remarks</i> is recognised
+automatically; without one the columns are read in that order. Tab-separated
+(a normal Excel copy), CSV and space-padded text all work, and
+<b>Load Excel / CSV file...</b> reads a whole .xlsx or .csv. Each row is matched
+against the item master by code, barcode or alternate code — or by description —
+and marked <i>found</i> / <i>not in item master</i>. Nothing is added until you
+press <b>Add to document</b>, and an item already on the note has its quantity
+updated instead of being duplicated. <b>Excel template</b> saves an empty sheet
+with the correct headings.</li>
+<li><b>&#128202; Export to Excel</b> saves the grid exactly as displayed to a
+branded .xlsx (auto-filter, frozen header, totals) and opens it.
+<b>Ctrl+C</b> copies the grid — or just the selected rows — for a direct paste
+back into Excel. PR numbers keep their leading zeros.</li>
+</ul>
+
+<h3>Correcting the system stock from the Delivery Note</h3>
+<p>If the <b>Available</b> figure on a delivery note line is wrong, fix it on the
+spot: type the real counted quantity straight into the <b>Available</b> cell, or
+select the line and press <b>&#9878; Adjust Stock (F4)</b> (also on the
+right-click menu). The dialog shows the system quantity and lets you either set
+the physical quantity or enter a &plusmn; difference; a <b>reason is mandatory</b>
+and remarks are recommended.</p>
+<p>Pressing <b>Post adjustment</b> writes a normal <b>Stock Adjustment (ADJ)</b>
+document with a ledger entry and audit trail — it is <i>not</i> part of the
+delivery note — and the Available column updates immediately. A correction that
+would push the balance below zero is refused, and the action obeys the
+<i>adjustments</i> permission. <b>&#128260; Refresh Stock</b> re-reads every
+available quantity from the database, which is useful when another PC has moved
+stock while your note was open.</p>
+
 <h3>Attachments</h3>
 <p>Files attached to a document are merged into the PDF <b>after</b> the document
 page, so the printed pack is complete.</p>

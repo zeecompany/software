@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QDate, QTime, Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
-                               QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
+                               QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMenu,
                                QLineEdit, QPlainTextEdit, QSizePolicy, QSplitter, QTabWidget,
                                QLayout, QTimeEdit, QVBoxLayout, QWidget)
 
@@ -14,7 +14,8 @@ from ..core import config, documents as D, reports, signatories as SG
 from ..core import services as S
 from ..core.database import Database
 from . import widgets as W
-from .common import BarcodeBar, ItemPicker, LineTable, ShareBar, date_edit, iso, lookup
+from .common import (AdjustStockDialog, BarcodeBar, ExcelPasteDialog, ItemPicker, LineTable,
+                     ShareBar, date_edit, iso, lookup)
 from .signature_ui import SignatureBar
 
 
@@ -96,6 +97,17 @@ class _TxnPage(QWidget):
         row.addWidget(W.button("➕  Add Items  (F3)", "Primary", self.add_items, shortcut="F3"))
         row.addWidget(W.button("🗑  Remove Line  (Del)", slot=lambda: self.lines.remove_selected()))
         row.addWidget(W.button("🧹  Clear All", slot=self.clear_all))
+        row.addWidget(W.button("📋  Paste from Excel", slot=self.paste_from_excel,
+                               tip="Paste item lines copied from an Excel sheet",
+                               shortcut="Ctrl+Shift+V"))
+        row.addWidget(W.button("📊  Export to Excel", slot=self.export_lines_excel,
+                               tip="Save the lines below as a branded Excel sheet"))
+        if self.MODE in ("OUT", "TRANSFER"):
+            row.addWidget(W.button("⚖  Adjust Stock  (F4)", slot=self.adjust_stock,
+                                   tip="Correct the system quantity of the selected item",
+                                   shortcut="F4"))
+            row.addWidget(W.button("🔄  Refresh Stock", slot=self.refresh_availability,
+                                   tip="Re-read the available quantities from the database"))
         row.addWidget(W.button("📎  Attach Document", slot=self.attach))
         self.attach_lbl = QLabel("")
         self.attach_lbl.setStyleSheet(f"color:{W.MUTED}; font-size:11px;")
@@ -109,6 +121,9 @@ class _TxnPage(QWidget):
 
         self.lines = LineTable(db, self.MODE)
         self.lines.changed.connect(self.update_totals)
+        self.lines.pasteRequested.connect(self.paste_from_excel)
+        self.lines.rowMenuRequested.connect(self._row_menu)
+        self.lines.availabilityEdited.connect(self._availability_edited)
         self.lines.setMinimumHeight(130)      # always show several rows
         self.lines.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         v.addWidget(self.lines, 10)           # takes all remaining vertical space
@@ -342,6 +357,126 @@ class _TxnPage(QWidget):
             "" if not n else
             f"📎 {n} file(s): " + ", ".join(Path(a).name for a in self.attachments[:3])
             + ("..." if n > 3 else ""))
+
+    # ------------------------------------------------- Excel paste / export
+    def paste_from_excel(self):
+        """Open the paste sheet, pre-filled from the clipboard."""
+        pr = ""
+        if hasattr(self, "pr_no"):
+            pr = self.pr_no.text().strip()
+        dlg = ExcelPasteDialog(self.db, self.MODE, pr, self)
+        if dlg.exec() != QDialog.Accepted:
+            return 0, 0
+        rows = dlg.result_rows()
+        if not rows:
+            W.error_box(self, "No line could be matched to the item master.")
+            return 0, 0
+        added, updated = self.lines.merge_rows(rows)
+        skipped = sum(1 for r in dlg.rows if r["_status"] == "unknown")
+        msg = f"{added} line(s) added"
+        if updated:
+            msg += f", {updated} updated"
+        if skipped and dlg.chk_skip.isChecked():
+            msg += f", {skipped} unknown item(s) skipped"
+        W.toast(self, msg + ".")
+        return added, updated
+
+    def export_lines_excel(self):
+        """Save the grid — exactly as it looks — to a branded Excel sheet."""
+        self.lines.commit_edits()
+        cols, rows = self.lines.grid_rows()
+        if not rows:
+            W.error_box(self, "There are no lines to export yet.")
+            return None
+        no = getattr(self, "no", None)
+        ref = (no.text().strip() if no is not None else "") or "Draft"
+        title = f"{self.TITLE.split('  ')[-1].strip()} {ref}".strip()
+        try:
+            path = D.export_excel(self.db, title, cols, rows)
+        except Exception as exc:            # noqa: BLE001
+            W.error_box(self, f"The Excel file could not be written.\n\n{exc}")
+            return None
+        W.toast(self, f"Exported {len(rows)} line(s) → {Path(path).name}")
+        try:
+            D.open_path(path)
+        except Exception:               # noqa: BLE001 - the file is written either way
+            pass
+        return path
+
+    # --------------------------------------------- inline stock adjustment
+    def _can_adjust(self) -> bool:
+        session = getattr(self.window(), "session", None)
+        if session is not None and hasattr(session, "can") and not session.can("adjustments"):
+            W.error_box(self, "Your role is not allowed to post stock adjustments.")
+            return False
+        return True
+
+    def _current_row(self) -> int:
+        rows = sorted({i.row() for i in self.lines.selectedIndexes()})
+        return rows[0] if rows else -1
+
+    def adjust_stock(self, row: int = -1, counted: float | None = None):
+        """Correct the system quantity of one line's item (posts an ADJ doc)."""
+        if row is None or row < 0:
+            row = self._current_row()
+        if row < 0 or row >= len(self.lines.items):
+            W.error_box(self, "Select the line whose stock you want to correct first.")
+            return None
+        if not self._can_adjust():
+            if counted is not None:
+                self.lines.set_available(row, self.lines.items[row].get("balance") or 0)
+            return None
+        wh = self.wh.currentText() if hasattr(self, "wh") else ""
+        dlg = AdjustStockDialog(self.db, self.lines.items[row], self,
+                                warehouse=wh, counted=counted)
+        ok = dlg.exec() == QDialog.Accepted
+        if not ok:
+            self.lines.set_available(row, dlg.system_qty)
+            return None
+        self.lines.set_available(row, dlg.new_balance())
+        self.update_totals()
+        self.dataChanged.emit()
+        W.toast(self, f"Adjustment {dlg.doc_no} posted — "
+                      f"{self.lines.items[row].get('code','')} is now "
+                      f"{dlg.new_balance():g}.")
+        return dlg.doc_no
+
+    def _availability_edited(self, row: int, typed: float):
+        """The operator typed a real count into the Available column."""
+        self.adjust_stock(row, counted=typed)
+
+    def refresh_availability(self):
+        n = self.lines.refresh_availability()
+        W.toast(self, f"{n} quantity(ies) updated from the database." if n
+                else "All available quantities are already up to date.")
+        return n
+
+    def _row_menu(self, row: int, pos):
+        menu = QMenu(self)
+        act_paste = menu.addAction("📋  Paste lines from Excel")
+        act_copy = menu.addAction("📄  Copy grid to clipboard")
+        act_xls = menu.addAction("📊  Export lines to Excel")
+        act_adj = act_refresh = None
+        if self.MODE in ("OUT", "TRANSFER") and 0 <= row < len(self.lines.items):
+            menu.addSeparator()
+            act_adj = menu.addAction(
+                f"⚖  Adjust inventory quantity of "
+                f"{self.lines.items[row].get('code','')}")
+            act_refresh = menu.addAction("🔄  Refresh available quantities")
+        chosen = menu.exec(pos)
+        if chosen is None:
+            return
+        if chosen is act_paste:
+            self.paste_from_excel()
+        elif chosen is act_copy:
+            n = self.lines.copy_to_clipboard()
+            W.toast(self, f"{n} line(s) copied — paste them straight into Excel.")
+        elif chosen is act_xls:
+            self.export_lines_excel()
+        elif chosen is act_adj:
+            self.adjust_stock(row)
+        elif chosen is act_refresh:
+            self.refresh_availability()
 
     def update_totals(self):
         q = self.lines.total_qty()

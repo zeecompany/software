@@ -1,15 +1,20 @@
 """Reusable UI helpers shared by every module: share bar, item picker, line editor."""
 from __future__ import annotations
 
+import csv
+import io
+import re
 from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QDate, QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDateEdit,
-                               QDialog, QDialogButtonBox,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCheckBox,
+                               QComboBox,
+                               QDateEdit, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
-                               QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton,
+                               QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox,
+                               QPlainTextEdit, QPushButton, QRadioButton,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..core import documents as D
@@ -244,9 +249,468 @@ class _RowHeaderResizer(QObject):
         return super().eventFilter(obj, ev)
 
 
+# ============================================================ Excel clipboard
+#: canonical field -> the header words that may introduce it in a pasted sheet
+PASTE_HEADERS: dict[str, tuple[str, ...]] = {
+    "code": ("item code", "code", "itemcode", "material code", "part no",
+             "part number", "sku", "barcode", "item no", "item"),
+    "description": ("description", "item description", "material", "details",
+                    "desc", "particulars"),
+    "qty": ("qty", "quantity", "required", "required qty", "issue qty",
+            "issued qty", "delivered", "requested", "no", "nos", "count"),
+    "uom": ("uom", "unit", "unit of measure", "u.o.m"),
+    "pr_no": ("pr", "pr no", "pr / mr no.", "pr/mr", "mr no", "mr", "pr number",
+              "pr / mr no", "reference", "ref"),
+    "unit_cost": ("unit cost", "rate", "price", "unit price", "cost"),
+    "batch": ("batch", "lot", "batch/lot", "batch no"),
+    "location": ("location", "rack", "bin", "rack/bin", "store location"),
+    "remarks": ("remarks", "remark", "notes", "note", "comment", "comments"),
+}
+
+#: what an un-headed sheet means, per grid mode (column order)
+PASTE_POSITIONS = {
+    "OUT": ("code", "qty", "pr_no", "remarks"),
+    "IN": ("code", "qty", "unit_cost", "batch", "location", "remarks"),
+    "TRANSFER": ("code", "qty", "remarks"),
+    "RETURN": ("code", "qty", "remarks"),
+    "ADJUST": ("code", "qty", "remarks"),
+    "COUNT": ("code", "qty", "remarks"),
+}
+
+
+def _norm_head(text: Any) -> str:
+    return re.sub(r"[^a-z0-9 /.]", "", str(text or "").strip().lower())
+
+
+def _to_number(value: Any) -> float | None:
+    txt = re.sub(r"[^\d.\-]", "", str(value or "").replace(",", ""))
+    if txt in ("", "-", "."):
+        return None
+    try:
+        return float(txt)
+    except ValueError:
+        return None
+
+
+def split_pasted_table(text: str) -> tuple[list[str], list[list[str]]]:
+    """Split clipboard text into (headers, rows).
+
+    Understands an Excel paste (tab separated), CSV, a pipe table and columns
+    padded with spaces — with or without a header row.
+    """
+    raw = [ln for ln in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+           if ln.strip()]
+    if not raw:
+        return [], []
+    if "\t" in raw[0]:
+        rows = [ln.split("\t") for ln in raw]
+    elif raw[0].count(",") >= 2:
+        rows = list(csv.reader(io.StringIO("\n".join(raw))))
+    elif raw[0].count("|") >= 2:
+        rows = [[c.strip() for c in ln.strip("|").split("|")] for ln in raw]
+    elif raw[0].count(",") == 1:
+        rows = [ln.split(",") for ln in raw]
+    else:
+        rows = [re.split(r"\s{2,}|\t", ln.strip()) for ln in raw]
+    width = max(len(r) for r in rows)
+    rows = [[str(c).strip() for c in (list(r) + [""] * (width - len(r)))] for r in rows]
+    head = rows[0]
+    known = sum(1 for h in head
+                if any(_norm_head(h) in words for words in PASTE_HEADERS.values()))
+    if known >= 2:
+        return head, rows[1:]
+    return [], rows
+
+
+def map_pasted_columns(headers: list[str], mode: str,
+                       width: int) -> dict[str, int]:
+    """field -> column index, from the header row or from the column order."""
+    out: dict[str, int] = {}
+    for i, h in enumerate(headers):
+        n = _norm_head(h)
+        for field, words in PASTE_HEADERS.items():
+            if field in out:
+                continue
+            if n in words:
+                out[field] = i
+                break
+    if "code" in out or "description" in out:
+        return out
+    for i, field in enumerate(PASTE_POSITIONS.get(mode, PASTE_POSITIONS["OUT"])):
+        if i < width:
+            out.setdefault(field, i)
+    return out
+
+
+def resolve_item(db: Database, code: str, description: str = "") -> dict | None:
+    """Find one item from a pasted code (code / barcode / alt code) or name."""
+    code = str(code or "").strip()
+    description = str(description or "").strip()
+    row = None
+    if code:
+        row = db.one("SELECT * FROM items WHERE code=? COLLATE NOCASE"
+                     " OR barcode=? COLLATE NOCASE OR alt_code=? COLLATE NOCASE",
+                     (code, code, code))
+    if row is None and description:
+        row = db.one("SELECT * FROM items WHERE description=? COLLATE NOCASE",
+                     (description,))
+        if row is None:
+            hits = db.query("SELECT * FROM items WHERE description LIKE ? LIMIT 2",
+                            (f"%{description}%",))
+            row = hits[0] if len(hits) == 1 else None
+    if row is None and code:
+        hits = db.query("SELECT * FROM items WHERE code LIKE ? LIMIT 2", (f"%{code}%",))
+        row = hits[0] if len(hits) == 1 else None
+    return dict(row) if row else None
+
+
+def parse_pasted_lines(db: Database, text: str, mode: str = "OUT",
+                       default_pr: str = "") -> list[dict]:
+    """Turn pasted text into resolved grid rows.
+
+    Every entry carries `_status` ("ok" / "unknown" / "empty") so the operator
+    sees what will be imported *before* anything touches the document.
+    """
+    headers, rows = split_pasted_table(text)
+    if not rows:
+        return []
+    width = max(len(r) for r in rows)
+    cols = map_pasted_columns(headers, mode, width)
+    out: list[dict] = []
+
+    def cell(r: list[str], field: str) -> str:
+        i = cols.get(field)
+        return r[i].strip() if i is not None and i < len(r) else ""
+
+    for r in rows:
+        if not any(str(c).strip() for c in r):
+            continue
+        code, desc = cell(r, "code"), cell(r, "description")
+        qty = _to_number(cell(r, "qty"))
+        if qty is None and not cols.get("qty"):
+            qty = _to_number(next((c for c in r[1:] if _to_number(c) is not None), ""))
+        if not code and not desc:
+            continue
+        item = resolve_item(db, code, desc)
+        pasted: dict[str, Any] = {
+            "_source_code": code or desc,
+            "_source_desc": desc,
+            "qty": qty or 0,
+            "pr_no": cell(r, "pr_no") or default_pr,
+            "remarks": cell(r, "remarks"),
+            "batch": cell(r, "batch"),
+            "location": cell(r, "location"),
+        }
+        cost = _to_number(cell(r, "unit_cost"))
+        # the item master first, then the pasted values — a blank `remarks`
+        # column on the item row must never wipe what the operator pasted
+        entry: dict[str, Any] = dict(item) if item else {}
+        entry.update(pasted)
+        if item:
+            if cost:
+                entry["unit_cost"] = cost
+            entry["_status"] = "ok" if (qty or 0) > 0 else "noqty"
+        else:
+            entry.update({"code": code or desc, "description": desc or code,
+                          "uom": cell(r, "uom"), "_status": "unknown"})
+        out.append(entry)
+    return out
+
+
+class ExcelPasteDialog(QDialog):
+    """Paste (or load) a sheet of item lines straight into a document grid."""
+
+    def __init__(self, db: Database, mode: str = "OUT", default_pr: str = "",
+                 parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.mode = mode
+        self.default_pr = default_pr
+        self.rows: list[dict] = []
+        self.setWindowTitle("Paste item lines from Excel")
+        self.resize(1080, 660)
+        v = QVBoxLayout(self)
+        v.setSpacing(8)
+
+        head = QLabel(
+            "Copy the columns in Excel and press <b>Paste from clipboard</b> — or "
+            "drop the text in below. A header row is recognised automatically "
+            "(<i>Item Code, Description, Qty, PR / MR No., Remarks…</i>); without "
+            "one the columns are read in that order. Nothing is added to the "
+            "document until you press <b>Add to document</b>.")
+        head.setWordWrap(True)
+        head.setStyleSheet(f"color:{W.MUTED};")
+        v.addWidget(head)
+
+        bar = QHBoxLayout()
+        bar.addWidget(W.button("📋  Paste from clipboard", "Primary", self.from_clipboard,
+                               shortcut="Ctrl+V"))
+        bar.addWidget(W.button("📂  Load Excel / CSV file...", slot=self.from_file))
+        bar.addWidget(W.button("⬇  Excel template", slot=self.template,
+                               tip="Save an empty sheet with the right column headings"))
+        bar.addWidget(W.button("🧹  Clear", slot=lambda: self.text.clear()))
+        bar.addStretch(1)
+        self.chk_skip = QCheckBox("Skip lines that are not in the item master")
+        self.chk_skip.setChecked(True)
+        bar.addWidget(self.chk_skip)
+        v.addLayout(bar)
+
+        self.text = QPlainTextEdit()
+        self.text.setPlaceholderText(
+            "ITM-00001\t10\t001735\turgent\nITM-00042\t4\t001736")
+        self.text.setMaximumHeight(150)
+        self.text.textChanged.connect(self.preview)
+        v.addWidget(self.text)
+
+        self.table = W.DataTable()
+        v.addWidget(self.table, 1)
+        self.summary = QLabel("")
+        self.summary.setWordWrap(True)
+        v.addWidget(self.summary)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.btn_ok = bb.button(QDialogButtonBox.Ok)
+        self.btn_ok.setText("Add to document")
+        self.btn_ok.setEnabled(False)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+        self.from_clipboard(quiet=True)
+
+    # ------------------------------------------------------------- sources
+    def from_clipboard(self, quiet: bool = False):
+        txt = QApplication.clipboard().text()
+        if not txt.strip():
+            if not quiet:
+                W.error_box(self, "The clipboard is empty — copy the rows in Excel first.")
+            return
+        self.text.setPlainText(txt)
+
+    def from_file(self):
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Open a sheet of item lines", "",
+            "Spreadsheets (*.xlsx *.xlsm *.csv *.txt)")
+        if not f:
+            return
+        try:
+            from ..core import importer
+            head, rows = importer.read_table(f)
+        except Exception as exc:            # noqa: BLE001
+            W.error_box(self, f"That file could not be read.\n\n{exc}")
+            return
+        lines = ["\t".join(str(c) for c in head)] if head else []
+        lines += ["\t".join("" if c is None else str(c) for c in r) for r in rows]
+        self.text.setPlainText("\n".join(lines))
+
+    def template(self):
+        cols = {"OUT": ["Item Code", "Description", "Qty", "PR / MR No.", "Remarks"],
+                "IN": ["Item Code", "Description", "Qty", "Unit Cost", "Batch/Lot",
+                       "Location", "Remarks"]}.get(
+                           self.mode, ["Item Code", "Description", "Qty", "Remarks"])
+        try:
+            p = D.export_excel(self.db, "Document Lines Template", cols, [],
+                               totals=False)
+        except Exception as exc:            # noqa: BLE001
+            W.error_box(self, f"Could not write the template.\n\n{exc}")
+            return
+        W.toast(self, f"Template saved: {Path(p).name}")
+        try:
+            D.open_path(p)
+        except Exception:               # noqa: BLE001
+            pass
+
+    # ------------------------------------------------------------- preview
+    def preview(self):
+        self.rows = parse_pasted_lines(self.db, self.text.toPlainText(), self.mode,
+                                       self.default_pr)
+        status = {"ok": "✔  found", "noqty": "⚠  no quantity",
+                  "unknown": "✖  not in item master"}
+        self.table.fill(
+            ["Pasted Code", "Item Code", "Description", "UOM", "Qty",
+             "PR / MR No.", "Remarks", "Status"],
+            [[r["_source_code"], r.get("code", ""), r.get("description", ""),
+              r.get("uom", ""), r.get("qty", 0), r.get("pr_no", ""),
+              r.get("remarks", ""), status.get(r["_status"], r["_status"])]
+             for r in self.rows])
+        ok = sum(1 for r in self.rows if r["_status"] == "ok")
+        noqty = sum(1 for r in self.rows if r["_status"] == "noqty")
+        unknown = [r["_source_code"] for r in self.rows if r["_status"] == "unknown"]
+        bits = [f"<b>{ok}</b> line(s) ready"]
+        if noqty:
+            bits.append(f"<span style='color:{W.AMBER}'>{noqty} without a "
+                        "quantity (imported as 0)</span>")
+        if unknown:
+            bits.append(f"<span style='color:{W.RED}'>{len(unknown)} not in the item "
+                        f"master: {', '.join(unknown[:6])}"
+                        f"{' …' if len(unknown) > 6 else ''}</span>")
+        self.summary.setText("&nbsp; · &nbsp;".join(bits) if self.rows else
+                             "Nothing parsed yet.")
+        self.btn_ok.setEnabled(bool(self.rows))
+
+    def result_rows(self) -> list[dict]:
+        keep = [r for r in self.rows if r["_status"] != "unknown"] \
+            if self.chk_skip.isChecked() else list(self.rows)
+        return [r for r in keep if r.get("id")]
+
+
+ADJUST_REASONS = ["Physical count correction", "Missing stock", "Damaged stock",
+                  "Found stock", "Data correction", "Opening balance adjustment"]
+
+
+class AdjustStockDialog(QDialog):
+    """Correct the system stock of one item without leaving the document.
+
+    The storekeeper who is picking a Delivery Note is exactly the person who
+    discovers that the system balance is wrong; forcing them to abandon the
+    note and open the Stock Adjustment screen is how wrong balances survive.
+    The correction is posted as a normal ADJ document, so the audit trail and
+    the ledger are identical to the dedicated screen.
+    """
+
+    def __init__(self, db: Database, item: dict, parent=None,
+                 warehouse: str = "", counted: float | None = None):
+        super().__init__(parent)
+        self.db = db
+        self.item = dict(item)
+        self.doc_no = ""
+        row = db.one("SELECT * FROM items WHERE id=?", (item.get("id"),))
+        if row is not None:
+            self.item.update(dict(row))
+        self.system_qty = round(float(self.item.get("balance") or 0), 4)
+        self.setWindowTitle("Adjust inventory quantity")
+        self.resize(560, 0)
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+
+        title = QLabel(f"<b>{self.item.get('code','')}</b> &nbsp; "
+                       f"{self.item.get('description','')}")
+        title.setWordWrap(True)
+        v.addWidget(title)
+        note = QLabel("The correction is posted as a Stock Adjustment (ADJ) "
+                      "document with a full audit trail — it is not part of "
+                      "this delivery note.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{W.MUTED};")
+        v.addWidget(note)
+
+        f = QFormLayout()
+        f.setLabelAlignment(Qt.AlignRight)
+        self.lbl_system = QLabel(f"{self.system_qty:g} {self.item.get('uom','')}")
+        f.addRow("System quantity", self.lbl_system)
+
+        self.rb_count = QRadioButton("Set the physical quantity to")
+        self.rb_delta = QRadioButton("Adjust by (+/-)")
+        # The two radios live in different container widgets, so Qt's implicit
+        # auto-exclusion does not apply — an explicit group keeps them paired.
+        self._mode_group = QButtonGroup(self)
+        self._mode_group.setExclusive(True)
+        self._mode_group.addButton(self.rb_count)
+        self._mode_group.addButton(self.rb_delta)
+        self.rb_count.setChecked(True)
+        self.sp_count = QDoubleSpinBox()
+        self.sp_count.setRange(0, 1e9)
+        self.sp_count.setDecimals(3)
+        self.sp_count.setValue(self.system_qty if counted is None else float(counted))
+        self.sp_delta = QDoubleSpinBox()
+        self.sp_delta.setRange(-1e9, 1e9)
+        self.sp_delta.setDecimals(3)
+        r1 = QHBoxLayout()
+        r1.addWidget(self.rb_count)
+        r1.addWidget(self.sp_count, 1)
+        r2 = QHBoxLayout()
+        r2.addWidget(self.rb_delta)
+        r2.addWidget(self.sp_delta, 1)
+        f.addRow("", _wrap(r1))
+        f.addRow("", _wrap(r2))
+
+        self.reason = W.combo(ADJUST_REASONS, True)
+        f.addRow("Reason *", self.reason)
+        self.wh = W.combo(warehouses(db), True, warehouse)
+        f.addRow("Warehouse", self.wh)
+        self.remarks = QLineEdit()
+        self.remarks.setPlaceholderText("Explain the correction for the audit trail")
+        f.addRow("Remarks", self.remarks)
+        v.addLayout(f)
+
+        self.preview = QLabel("")
+        self.preview.setWordWrap(True)
+        v.addWidget(self.preview)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.btn_ok = bb.button(QDialogButtonBox.Ok)
+        self.btn_ok.setText("Post adjustment")
+        bb.accepted.connect(self.post)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+        for w in (self.sp_count, self.sp_delta):
+            w.valueChanged.connect(self._refresh)
+        for w in (self.rb_count, self.rb_delta):
+            w.toggled.connect(self._refresh)
+        self._refresh()
+
+    # ------------------------------------------------------------------ calc
+    def delta(self) -> float:
+        if self.rb_delta.isChecked():
+            return round(self.sp_delta.value(), 4)
+        return round(self.sp_count.value() - self.system_qty, 4)
+
+    def new_balance(self) -> float:
+        return round(self.system_qty + self.delta(), 4)
+
+    def _refresh(self, *_):
+        self.sp_count.setEnabled(self.rb_count.isChecked())
+        self.sp_delta.setEnabled(self.rb_delta.isChecked())
+        d, nb = self.delta(), self.new_balance()
+        colour = W.GREEN if d > 0 else (W.RED if d < 0 else W.MUTED)
+        self.preview.setText(
+            f"<span style='color:{colour}'><b>{d:+g}</b></span> &nbsp;→&nbsp; "
+            f"new balance <b>{nb:g}</b> {self.item.get('uom','')}"
+            + ("" if nb >= 0 else
+               f" &nbsp;<span style='color:{W.RED}'>— a balance cannot be "
+               "negative</span>"))
+        self.btn_ok.setEnabled(abs(d) > 1e-9 and nb >= 0)
+
+    # ------------------------------------------------------------------ post
+    def post(self):
+        reason = self.reason.currentText().strip()
+        if not reason:
+            W.error_box(self, "A reason is mandatory for a stock adjustment.")
+            return
+        d = self.delta()
+        if abs(d) < 1e-9:
+            W.error_box(self, "The quantity has not changed.")
+            return
+        h = S.DocHeader(doc_type="ADJ", doc_date=QDate.currentDate().toString("yyyy-MM-dd"),
+                        reason=reason, warehouse=self.wh.currentText(),
+                        remarks=self.remarks.text().strip() or
+                        f"Corrected from the delivery note screen ({self.item.get('code','')})")
+        try:
+            self.doc_no = S.post_adjustment(
+                self.db, h, [S.Line(item_id=self.item["id"], qty=d,
+                                    remarks=self.remarks.text().strip())])
+        except Exception as exc:            # noqa: BLE001
+            W.error_box(self, str(exc))
+            return
+        self.accept()
+
+
+def _wrap(layout) -> QWidget:
+    w = QWidget()
+    w.setLayout(layout)
+    layout.setContentsMargins(0, 0, 0, 0)
+    return w
+
+
 class LineTable(QTableWidget):
     """Editable document line grid used by every transaction screen."""
     changed = Signal()
+    #: row, quantity typed into the Available column -> ask for a stock adjustment
+    availabilityEdited = Signal(int, float)
+    #: right-click -> the page decides what the menu offers
+    rowMenuRequested = Signal(int, object)
+    #: Ctrl+V inside the grid -> the page opens the Excel paste dialog
+    pasteRequested = Signal()
 
     def __init__(self, db: Database, mode: str, parent=None):
         """mode: IN | OUT | RETURN | TRANSFER | ADJUST | COUNT"""
@@ -293,7 +757,14 @@ class LineTable(QTableWidget):
         self.setTextElideMode(Qt.ElideRight)
         self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self._apply_column_widths()
-        self.itemChanged.connect(self._recalc)
+        self.itemChanged.connect(self._on_item_changed)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._context_menu)
+        QShortcut(QKeySequence("Ctrl+V"), self,
+                  activated=lambda: self.pasteRequested.emit()).setContext(
+                      Qt.WidgetWithChildrenShortcut)
+        QShortcut(QKeySequence("Ctrl+C"), self, activated=self.copy_to_clipboard
+                  ).setContext(Qt.WidgetWithChildrenShortcut)
         QShortcut(QKeySequence("Delete"), self, activated=self.remove_selected)
         # Drag a row by its number to re-order the document lines. The order is
         # what prints on the Delivery Note, so the storekeeper can arrange lines
@@ -589,7 +1060,14 @@ class LineTable(QTableWidget):
                               cell(it.get("location", ""), True),
                               cell(it.get("remarks", ""), True)]
             elif self.mode == "OUT":
-                row = base + [cell(bal, False, Qt.AlignRight),
+                # The Available cell is editable on purpose: typing the real
+                # physical count here posts a stock adjustment, so a wrong
+                # system balance can be fixed without leaving the note.
+                avail_cell = cell(bal, True, Qt.AlignRight)
+                avail_cell.setToolTip(
+                    "System stock. Type the real counted quantity to post a "
+                    "stock adjustment for this item.")
+                row = base + [avail_cell,
                               cell(f"{q_out:g}", True, Qt.AlignRight, True),
                               cell(it.get("pr_no") or self.default_pr, True),
                               cell(it.get("remarks", ""), True)]
@@ -705,6 +1183,126 @@ class LineTable(QTableWidget):
             return float(str(it.text()).replace(",", "") or 0)
         except ValueError:
             return 0.0
+
+    # ------------------------------------------- inline inventory adjustment
+    AVAIL_COL = {"OUT": 3, "TRANSFER": 3}
+
+    def _on_item_changed(self, cell: QTableWidgetItem | None = None):
+        """Route an edited cell: Available means 'correct the stock'."""
+        col = self.AVAIL_COL.get(self.mode)
+        if cell is not None and col is not None and cell.column() == col:
+            r = cell.row()
+            typed = self._num(r, col)
+            current = round(float((self.items[r].get("balance") or 0)
+                                  if r < len(self.items) else 0), 4)
+            if abs(typed - current) > 1e-9:
+                self.availabilityEdited.emit(r, typed)
+                return
+        self._recalc()
+
+    def set_available(self, row: int, balance: float) -> None:
+        """Write a fresh stock balance into the grid without re-triggering."""
+        col = self.AVAIL_COL.get(self.mode)
+        if col is None or not (0 <= row < self.rowCount()):
+            return
+        if row < len(self.items):
+            self.items[row]["balance"] = balance
+        self.blockSignals(True)
+        if self.item(row, col) is not None:
+            self.item(row, col).setText(f"{round(float(balance), 2):g}")
+        self.blockSignals(False)
+        self._recalc()
+
+    def refresh_availability(self) -> int:
+        """Re-read every balance from the database (another PC may have moved it)."""
+        n = 0
+        for r, it in enumerate(self.items):
+            row = self.db.one("SELECT balance FROM items WHERE id=?", (it.get("id"),))
+            if row is None:
+                continue
+            new = round(float(row["balance"] or 0), 4)
+            if abs(new - float(it.get("balance") or 0)) > 1e-9:
+                n += 1
+            self.set_available(r, new)
+        return n
+
+    # ------------------------------------------------------- clipboard / xls
+    def _context_menu(self, pos):
+        idx = self.indexAt(pos)
+        self.rowMenuRequested.emit(idx.row(), self.viewport().mapToGlobal(pos))
+
+    def merge_rows(self, rows: list[dict]) -> tuple[int, int]:
+        """Add pasted lines, updating a line that is already on the document.
+
+        Returns (added, updated) so the screen can say what happened.
+        """
+        added = updated = 0
+        for r in rows:
+            hit = None
+            for i, existing in enumerate(self.items):
+                same_code = str(existing.get("code")) == str(r.get("code"))
+                same_pr = (self.mode != "OUT" or
+                           str(existing.get("pr_no") or "").strip() ==
+                           str(r.get("pr_no") or "").strip())
+                if same_code and same_pr:
+                    hit = i
+                    break
+            if hit is None:
+                before = self.rowCount()
+                self.add_items([r])
+                added += self.rowCount() - before
+                continue
+            qcol = 3 if self.mode == "IN" else 4
+            self.blockSignals(True)
+            if self.item(hit, qcol) is not None:
+                self.item(hit, qcol).setText(f"{float(r.get('qty') or 0):g}")
+            if self.mode == "OUT" and r.get("pr_no") and self.item(hit, 5) is not None:
+                self.item(hit, 5).setText(str(r["pr_no"]))
+            self.blockSignals(False)
+            self.items[hit].update({k: v for k, v in r.items()
+                                    if k in ("pr_no", "remarks")})
+            updated += 1
+        self._recalc()
+        self.changed.emit()
+        return added, updated
+
+    #: only these headings are exported as numbers — a PR number such as
+    #: "001735" must keep its leading zeros, so everything else stays text
+    NUMERIC_HEADS = ("quantity", "available", "unit cost", "total", "system qty",
+                     "adjustment (+/-)", "new balance", "counted qty", "variance",
+                     "issued qty", "returned qty")
+
+    def grid_rows(self) -> tuple[list[str], list[list[Any]]]:
+        """The visible grid as (headers, rows) — used for the Excel export."""
+        numeric = {i for i, h in enumerate(self.cols)
+                   if str(h).strip().lower() in self.NUMERIC_HEADS}
+        rows = []
+        for r in range(self.rowCount()):
+            row: list[Any] = []
+            for c in range(self.columnCount()):
+                w = self.cellWidget(r, c)
+                if isinstance(w, QComboBox):
+                    row.append(w.currentText())
+                    continue
+                cell = self.item(r, c)
+                text = cell.text() if cell else ""
+                num = _to_number(text) if (c in numeric and text) else None
+                row.append(num if num is not None else text)
+            rows.append(row)
+        return list(self.cols), rows
+
+    def copy_to_clipboard(self) -> int:
+        """Ctrl+C — the whole grid (or just the selection) as Excel-ready text."""
+        cols, rows = self.grid_rows()
+        picked = sorted({i.row() for i in self.selectedIndexes()})
+        body = [rows[r] for r in picked] if picked else rows
+        if not body:
+            return 0
+        text = "\n".join(["\t".join(cols)] +
+                         ["\t".join("" if c is None else str(c) for c in r)
+                          for r in body])
+        QApplication.clipboard().setText(text)
+        return len(body)
 
     def _recalc(self, *_):
         self.blockSignals(True)
