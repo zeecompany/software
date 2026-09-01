@@ -26,6 +26,7 @@ from .dashboard import DashboardPage
 from .material_page import MaterialPage
 from .workspace_page import WorkspacePage
 from .admin_station import AdminStationPage
+from .cable_records import CableRecordsPage
 from .tool_station import ToolStationPage
 from .general_dn import GeneralDNPage
 from .issuance_page import IssuancePage
@@ -67,6 +68,7 @@ NAV = [
     ("SEPARATE MODULES", None, None),
     ("Admin Station", "🏢", "Ctrl+Shift+A"),
     ("Tools, Instruments & Devices", "🔧", "Ctrl+Shift+T"),
+    ("Cable Records", "🧵", "Ctrl+Shift+B"),
     ("General DN Maker", "🧾", "Ctrl+G"),
     ("Company Issuance", "🏢", "Ctrl+Shift+O"),
     ("SYSTEM", None, None),
@@ -285,6 +287,7 @@ class MainWindow(QMainWindow):
         self.page_search = SearchPage(db)
         self.page_admin = AdminStationPage(db)
         self.page_tools = ToolStationPage(db)
+        self.page_cables = CableRecordsPage(db)
         self.page_gdn = GeneralDNPage(db)
         self.page_issuance = IssuancePage(db)
         self.page_library = LibraryPage(db)
@@ -302,6 +305,7 @@ class MainWindow(QMainWindow):
                            ("Report Center", self.page_reports), ("Audit Trail", self.page_audit),
                            ("Admin Station", self.page_admin),
                            ("Tools, Instruments & Devices", self.page_tools),
+                           ("Cable Records", self.page_cables),
                            ("General DN Maker", self.page_gdn),
                            ("Company Issuance", self.page_issuance),
                            ("Settings", self.page_settings)):
@@ -418,6 +422,9 @@ class MainWindow(QMainWindow):
             "Tools, Instruments & Devices": "Separate custody register for tools, instruments "
                             "and devices — issue, transfer, temporary loan and "
                             "return. Its own database; no stock effect.",
+            "Cable Records": "Separate cable drum register — length left on every "
+                             "drum, every cut, the cable schedule and its megger "
+                             "tests. Its own database; no stock effect.",
             "Admin Station": "Separate camp / office register — its own database, "
                              "no link to stock",
             "General DN Maker": "Create a delivery note without any inventory record",

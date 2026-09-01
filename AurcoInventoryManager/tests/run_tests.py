@@ -3725,6 +3725,223 @@ def main() -> int:
     check(len(_seen) == 2, "editing the Quantity column posts no adjustment")
     pa.lines.clear_lines()
 
+    # ============================================ Cable Records — the module
+    section("Cable Records — drums, cutting log and cable schedule")
+    from aurco.core import cables as CBL
+    from aurco.ui.cable_records import (CableRecordsPage, CableDashboard,
+                                        DrumDialog, CutDialog, TagDialog,
+                                        TestDialog, ImportDrumsDialog)
+    import aurco.ui.cable_records as _cr
+    for _k in ("confirm", "info_box", "error_box", "toast"):
+        setattr(_cr.W, _k, getattr(W, _k))
+
+    cb_root = Path("/tmp/AURCO_TEST_CABLES")
+    shutil.rmtree(cb_root, ignore_errors=True)
+    cdb = CBL.CableDB(cb_root / "cable_records.db")
+    CBL.set_cable_db(cdb)
+
+    bal_before_cbl = db.scalar("SELECT COALESCE(SUM(balance),0) FROM items")
+    CBL.seed_demo(cdb)
+    check(cdb.scalar("SELECT COUNT(*) FROM drums") == 12,
+          "THE CABLE MODULE KEEPS ITS OWN DRUM REGISTER")
+    check(db.scalar("SELECT COALESCE(SUM(balance),0) FROM items") == bal_before_cbl,
+          "and nothing it does touches inventory stock")
+    check(CBL.DB_NAME == "cable_records.db" and CBL.FOLDER == "Cable Records",
+          "in its own database file and folder")
+
+    # -- a drum is a length, and the length is proved by its cutting log
+    did = CBL.save_drum(cdb, {"drum_no": "DRM-TEST", "cable_type": "Power",
+                              "cores": "4", "size_mm2": "35mm²",
+                              "voltage_grade": "0.6/1 kV", "original_length": 500,
+                              "unit_cost": 25, "location": "Yard Z"})
+    drum = CBL.get_drum(cdb, did)
+    check(drum["remaining_length"] == 500 and drum["status"] == CBL.IN_STOCK,
+          "a new drum starts full and In Stock")
+    check("35mm²" in drum["description"],
+          "and describes itself from its own attributes")
+    cut1 = CBL.post_cut(cdb, did, {"txn_type": CBL.CUT_ISSUE, "length": 120,
+                                   "issued_to": "Crew A"})
+    check(cut1.startswith("CC-"), "a cut gets its own document number")
+    check(CBL.get_drum(cdb, did)["remaining_length"] == 380,
+          "issuing a length takes it off the drum")
+    check(CBL.get_drum(cdb, did)["status"] == CBL.PARTLY,
+          "and the drum becomes Partly Used")
+    CBL.post_cut(cdb, did, {"txn_type": CBL.CUT_RETURN, "length": 20})
+    check(CBL.get_drum(cdb, did)["remaining_length"] == 400,
+          "a returned off-cut goes back onto the drum")
+    try:
+        CBL.post_cut(cdb, did, {"txn_type": CBL.CUT_ISSUE, "length": 10 ** 6})
+        check(False, "issuing more than is left is refused")
+    except CBL.CableError as exc:
+        check("left on drum" in str(exc), "issuing more than is left is refused")
+    try:
+        CBL.post_cut(cdb, did, {"txn_type": CBL.CUT_RETURN, "length": 10 ** 6})
+        check(False, "a drum can never grow past its original length")
+    except CBL.CableError:
+        check(True, "a drum can never grow past its original length")
+    cut_id = int(cdb.one("SELECT id FROM cuts WHERE cut_no=?", (cut1,))["id"])
+    CBL.void_cut(cdb, cut_id, "wrong drum")
+    check(CBL.get_drum(cdb, did)["remaining_length"] == 500 + 20,
+          "voiding a cut puts the length straight back")
+    check(CBL.rebuild_drums(cdb) >= 13 and
+          CBL.get_drum(cdb, did)["remaining_length"] == 520,
+          "and the balance can always be re-derived from the log")
+
+    # -- scrapping needs a reason and empties the drum
+    try:
+        CBL.scrap_drum(cdb, did, "")
+        check(False, "scrapping cable without a reason is refused")
+    except CBL.CableError:
+        check(True, "scrapping cable without a reason is refused")
+    CBL.scrap_drum(cdb, did, "water damaged")
+    scrapped = CBL.get_drum(cdb, did)
+    check(scrapped["status"] == CBL.SCRAPPED and scrapped["remaining_length"] == 0,
+          "scrapping writes off what is left, with an audit entry")
+    check(cdb.scalar("SELECT COUNT(*) FROM audit WHERE action='DRUM SCRAP'") == 1,
+          "and the audit trail records who did it")
+    try:
+        CBL.delete_drums(cdb, [did])
+        check(False, "a drum with history cannot simply be deleted")
+    except CBL.CableError:
+        check(True, "a drum with history cannot simply be deleted")
+
+    # -- the cable schedule follows the cuts by itself
+    tid = CBL.save_tag(cdb, {"tag_no": "C-9001", "project": "PRJX",
+                             "from_point": "MCC-9", "to_point": "PMP-9",
+                             "cable_type": "Power", "cores": "4",
+                             "size_mm2": "35mm²", "required_length": 100})
+    donor = cdb.one("SELECT * FROM drums WHERE remaining_length>200 LIMIT 1")
+    CBL.post_cut(cdb, int(donor["id"]), {"txn_type": CBL.CUT_ISSUE, "length": 100,
+                                         "tag_no": "C-9001"})
+    tag = CBL.tag_by_no(cdb, "C-9001")
+    check(tag["pulled_length"] == 100 and tag["status"] == CBL.PULLED,
+          "a cut tied to a cable tag pulls that tag along with it")
+    check(tag["drum_no"] == donor["drum_no"],
+          "and records which drum served it")
+    CBL.record_test(cdb, tid, {"ir_value": 900, "continuity": "Pass",
+                               "test_result": CBL.TEST_PASS, "tested_by": "QC"})
+    tag = CBL.tag_by_no(cdb, "C-9001")
+    check(tag["test_result"] == CBL.TEST_PASS and tag["status"] == CBL.TESTED,
+          "a passed megger test moves the tag to Tested")
+    check(CBL.search_tags(cdb, test_result=CBL.TEST_FAIL)[0]["tag_no"] == "C-2001",
+          "a failed test is easy to find again")
+    try:
+        CBL.save_tag(cdb, {"tag_no": "C-9001", "required_length": 5})
+        check(False, "the same cable tag cannot be registered twice")
+    except CBL.CableError:
+        check(True, "the same cable tag cannot be registered twice")
+
+    # -- searching, off-cuts and idle drums
+    dash_all = CBL.dashboard(cdb)
+    check(dash_all["drums"] == cdb.scalar("SELECT COUNT(*) FROM drums"),
+          "the dashboard counts the whole register")
+    check(abs(dash_all["remaining_length"] +
+              dash_all["used_length"] - dash_all["original_length"]) < 0.01,
+          "remaining + consumed always equals what was received")
+    oc = CBL.search_drums(cdb, offcuts_only=True, offcut_limit=50)
+    check(all(0 < float(d["remaining_length"]) <= 50 for d in oc) and oc,
+          "off-cuts are the short ends still worth using")
+    idle = CBL.search_drums(cdb, idle_only=True, idle_days=1)
+    check(all(d["idle_days"] >= 1 for d in idle),
+          "idle drums are the ones nothing has been cut from")
+    check(len(CBL.search_drums(cdb, cable_type="Power")) ==
+          cdb.scalar("SELECT COUNT(*) FROM drums WHERE cable_type='Power'"),
+          "the register filters by cable type")
+    check(len(CBL.search_cuts(cdb, txn_type=CBL.CUT_RETURN)) >= 1,
+          "the cutting log filters by record type")
+    check(len(CBL.by_column(cdb, "cable_type", 10, "remaining")) >= 3,
+          "the charts group any column by any measure")
+    check(len(CBL.monthly_split(cdb)) >= 2,
+          "issued vs returned is a two-series set over several months")
+    check(sum(v for _k, v in CBL.ageing(cdb)) > 0, "idle ageing buckets are built")
+    for _rep in CBL.REPORT_LIST:
+        _t, _c, _r = CBL.build_report(cdb, _rep)
+        check(bool(_c), f"report builds: {_rep[:38]}")
+
+    # -- pasting a drum list out of Excel
+    head, rows = CBL.sniff("Drum No.\tDescription\tSize\tLength\tLocation\n"
+                           "DRM-P1\tXLPE 4C x 16\t16mm2\t400\tYard B\n"
+                           "DRM-P2\tControl 7C\t1.5mm2\t250\tYard B")
+    recs = CBL.rows_to_drums(head, rows)
+    check(len(recs) == 2 and recs[0]["drum_no"] == "DRM-P1",
+          "a pasted drum list is understood")
+    res = CBL.import_drums(cdb, recs)
+    check(res["added"] == 2 and not res["errors"], "and imports as new drums")
+    res2 = CBL.import_drums(cdb, [{"drum_no": "DRM-P1", "location": "Yard C"}])
+    check(res2["updated"] == 1 and
+          CBL.drum_by_no(cdb, "DRM-P1")["location"] == "Yard C",
+          "importing the same drum again updates it instead of duplicating")
+
+    # -- the UI
+    cbp = CableRecordsPage(db)
+    check(cbp.tabs.count() == 5, "the cable page has all five tabs")
+    names = [cbp.tabs.tabText(i) for i in range(cbp.tabs.count())]
+    check(any("Drum" in n for n in names) and any("Schedule" in n for n in names),
+          f"dashboard, drums, cutting log, schedule and reports ({names})")
+    cbp.tabs.setCurrentIndex(1)
+    cbp.refresh()
+    check(cbp.drums.table.rowCount() == len(CBL.search_drums(cdb)),
+          "the drum register grid fills")
+    cbp.drums.chk_offcut.setChecked(True)
+    check(cbp.drums.table.rowCount() == len(
+        CBL.search_drums(cdb, offcuts_only=True,
+                         offcut_limit=CBL.DEFAULT_OFFCUT_LIMIT)),
+          "and the off-cut filter narrows it")
+    cbp.drums.clear_filters()
+    cbp.drums.apply_filter({"status": CBL.SCRAPPED})
+    check(cbp.drums.f_status.currentText() == CBL.SCRAPPED,
+          "a dashboard tile drills into the register with its own filter")
+    cbp.drums.clear_filters()
+    cbp.tabs.setCurrentIndex(3)
+    cbp.refresh()
+    check(cbp.schedule.table.rowCount() == len(CBL.search_tags(cdb)),
+          "the cable schedule grid fills")
+
+    dash = cbp.dash
+    dash.reset_filters()
+    total_drums = dash.tiles["drums"].lbl_value.text()
+    check(total_drums not in ("", "0"), "the cable dashboard counts the register")
+    dash.f_type.setCurrentText("Power")
+    dash.reload()
+    check(dash.tiles["drums"].lbl_value.text() ==
+          f"{len(CBL.search_drums(cdb, cable_type='Power')):,.0f}",
+          "a filter changes every tile on the cable dashboard")
+    dash.f_measure.setCurrentText("Measure: Length remaining")
+    dash.reload()
+    check(sum(v for _k, v in dash.c_type.data) > 100,
+          "the Measure selector switches the charts to metres")
+    drill = {}
+    dash.openRegister.connect(lambda f: drill.update(f))
+    dash._drill("offcuts")
+    check(drill.get("offcuts_only") and drill.get("cable_type") == "Power",
+          "a tile drills through carrying the dashboard's own filters")
+    dash.reset_filters()
+    check(dash.f_type.currentIndex() == 0 and not dash.chk_offcut.isChecked(),
+          "Reset puts every cable filter back")
+
+    dash.tile_cfg = ["drums", "offcuts"]
+    dash.panel_cfg = ["type"]
+    dash.cols_cfg = 3
+    dash.offcut_limit = 75.0
+    dash.idle_days = 45
+    dash._save_config()
+    dash2 = CableDashboard(cdb, db)
+    check(dash2.tile_cfg == ["drums", "offcuts"] and dash2.panel_cfg == ["type"]
+          and dash2.cols_cfg == 3,
+          "the cable dashboard shows only the tiles and panels that were chosen")
+    check(dash2.offcut_limit == 75.0 and dash2.idle_days == 45,
+          "AND THE OFF-CUT LIMIT AND IDLE PERIOD SURVIVE A RESTART")
+    dash.tile_cfg = list(_cr.DEFAULT_TILES)
+    dash.panel_cfg = list(_cr.DEFAULT_PANELS)
+    dash.offcut_limit = CBL.DEFAULT_OFFCUT_LIMIT
+    dash.idle_days = CBL.DEFAULT_IDLE_DAYS
+    dash._save_config()
+
+    check("Cable Records" in _cfg.SUBFOLDERS,
+          "the module has its own folder in the storage root")
+    _bk = cdb.backup(note="test")
+    check(Path(_bk).exists(), "the cable module backs itself up")
+
     print("\n" + "=" * 60)
     if FAILURES:
         print(f"FAILED {len(FAILURES)} / {PASSES + len(FAILURES)} checks:")

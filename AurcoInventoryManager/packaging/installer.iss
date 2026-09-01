@@ -4,7 +4,7 @@
 ; Produces: Output\AURCO_Inventory_Manager_Setup_1.1.0.exe
 
 #define AppName        "AURCO Inventory Manager"
-#define AppVersion     "2.20.0"
+#define AppVersion     "2.21.0"
 #define AppPublisher   "AURCO"
 #define AppAuthor      "Zain Shami"
 #define AppExeName     "AURCO Inventory Manager.exe"

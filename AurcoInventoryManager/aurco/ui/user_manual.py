@@ -611,6 +611,81 @@ Suspects. All print on the company letterhead.</p>
 <p><b>Remember:</b> because it is deliberately separate, the Admin Station has its
 own Backup button. The main database backup does not include it.</p>
 """),
+    ("Cable Records", """
+<h2>Cable Records <span style='color:#6b7c8f'>(Ctrl+Shift+B)</span></h2>
+<p>Cable is not counted in pieces, it is counted in <b>metres left on a
+drum</b> — so it gets its own register. Cable Records keeps its own database
+file (<code>cable_records.db</code>), its own numbering, audit trail, backups
+and reports. <b>Nothing here posts a stock movement.</b></p>
+
+<h3>Three registers, one story</h3>
+<table border='1' cellpadding='6' cellspacing='0' width='100%'>
+<tr><th>Tab</th><th>What it holds</th></tr>
+<tr><td><b>🥁 Drum Register</b></td>
+<td>Every drum: cable type, cores, size, voltage grade, armour, manufacturer,
+batch, supplier, PO, GRN, test certificate, location — with its original
+length and what is <b>still on it</b>.</td></tr>
+<tr><td><b>✂ Cutting Log</b></td>
+<td>Every length taken off a drum, or put back on it, tied to a cable tag, a
+project, a receiver and a delivery note.</td></tr>
+<tr><td><b>🧭 Cable Schedule</b></td>
+<td>Tag by tag: from and to equipment, route, required length, which drum
+served it, how much was pulled and the megger / IR test that closed it.</td></tr>
+</table>
+
+<h3>The remaining length is proved, never typed</h3>
+<p>A drum's remaining length is derived from its own cutting log, so the
+register can always be re-proved — <b>🧮 Rebuild Balances</b> recalculates every
+drum from its history. Issuing more than is left is refused, and so is putting
+back more than the drum ever held. Voiding a cut returns the length instantly.
+Scrapping what is left needs a <b>mandatory reason</b> and is written to the
+audit trail. A drum walks <i>In Stock → Partly Used → Empty</i> by itself, and
+can be <b>Reserved</b> for a crew or a tag.</p>
+
+<h3>Cutting a length</h3>
+<p>Select the drum and press <b>✂ Issue Length</b>. Pick the cable tag and the
+dialog fills the balance still to pull, the from/to equipment and the project;
+type who received it and the DN number. The dialog shows what the drum will
+hold afterwards <i>before</i> you save. <b>↩ Return Off-cut</b> is the same in
+reverse. Every cut carries its own number (<code>CC-2026-00001</code>).</p>
+
+<h3>The schedule follows the cuts</h3>
+<p>A cut tied to a tag updates that tag by itself: pulled length, the drum(s)
+that served it and the status. <b>✂ Pull From Drum</b> on the schedule tab does
+it the other way round — it offers the drums that carry the right size and
+takes the balance straight off the chosen one. <b>➡ Advance Status</b> walks a
+tag through <i>Planned → Issued → Pulled → Glanded → Terminated → Tested →
+Energized</i>, and <b>🎯 Record Test</b> stores the IR value in MΩ, the
+continuity result, the tester and the certificate number.</p>
+
+<h3>A dashboard you can shape</h3>
+<p>Every tile and chart answers to the filter bar: text, drum status, cable
+type, size, project, location, manufacturer, a period, <i>only drums with cable
+left</i> and <i>only off-cuts</i>. The <b>Measure</b> selector switches the
+charts between drums, length received, length remaining, length used and stock
+value. <b>⚙ Customise</b> ticks which of the 29 KPI tiles and 15 charts and
+tables you want, how many tiles sit on a row, <b>what length counts as an
+off-cut</b> and after how many days a drum counts as <b>idle</b> — the layout
+is stored with the module. Click any tile to drill into the register, or a bar
+to filter by it. <b>Export View</b> prints exactly what the filters show.</p>
+
+<h3>Off-cuts and idle drums — where the money is</h3>
+<p>Two tiles pay for the module: <b>Off-cuts / Short Ends</b> lists the short
+lengths worth using before a new drum is opened, and <b>Idle Drums</b> shows
+what nobody has touched for months.</p>
+
+<h3>Import and reports</h3>
+<p><b>📥 Import from Excel</b> pastes an existing drum list straight in — a
+header row is recognised automatically, existing drum numbers are updated and
+new ones added, and <b>⬇ Excel template</b> gives the right headings. Sixteen
+reports cover the register, stock summary, off-cuts, idle drums, the cutting
+log, consumption by project and by tag, the schedule, cables not yet pulled,
+the megger register, failed and pending tests, traceability (PO / GRN / batch /
+certificate), stock value and the audit trail — all with PDF, Excel, CSV,
+print and share.</p>
+<p><b>Remember:</b> the module has its own <b>Backup</b> button. The main
+database backup does not include it.</p>
+"""),
     ("Tools, Instruments & Devices", """
 <h2>Tools, Instruments &amp; Devices <span style='color:#6b7c8f'>(Ctrl+Shift+T)</span></h2>
 <p>A <b>stand-alone custody register</b> for tools, instruments and devices,

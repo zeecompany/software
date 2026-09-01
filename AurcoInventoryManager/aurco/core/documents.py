@@ -1748,6 +1748,23 @@ def tool_report_pdf(db: Database, title: str, cols: list[str],
     return report_pdf(db, title, cols, rows, out, subtitle=subtitle, stats=stats)
 
 
+def cable_report_pdf(db: Database, title: str, cols: list[str],
+                     rows: list[list[Any]], out_path: str | Path | None = None,
+                     subtitle: str = "",
+                     stats: list[tuple[str, str, str]] | None = None) -> Path:
+    """Report PDF for the Cable Records module, written into its own folder.
+
+    `db` is the *inventory* database, used read-only for the letterhead and
+    theme only — no cable data ever reaches it.
+    """
+    from . import cables as _C
+    out = Path(out_path) if out_path else (
+        _C.module_folder() /
+        f"{safe_name(title)}_{_dt.datetime.now():%Y%m%d_%H%M%S}.pdf")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return report_pdf(db, title, cols, rows, out, subtitle=subtitle, stats=stats)
+
+
 def handover_pdf(db: Database, tdb, handover_id: int,
                  out_path: str | Path | None = None) -> Path:
     """Reprint one handover as the controlled form WH-FRM-001.

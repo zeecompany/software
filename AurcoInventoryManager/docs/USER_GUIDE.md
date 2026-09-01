@@ -454,6 +454,75 @@ stock while the note was open.
 
 ---
 
+## 3f. Cable Records (Ctrl+Shift+B)
+
+A **stand-alone register for cable drums** — cable is counted in metres left on
+a drum, not in pieces. Like the Tools module it keeps its **own database**
+(`<storage>/Cable Records/cable_records.db`), its own numbering, audit trail,
+backups and reports, and **never posts a stock movement**.
+
+### Three registers
+| Tab | What it holds |
+|---|---|
+| 🥁 **Drum Register** | Every drum: cable type, cores, size/CSA, voltage grade, armour, insulation, conductor, manufacturer, batch/heat no., supplier, PO, GRN, test certificate, project, warehouse, location, original length, **remaining length**, unit cost |
+| ✂ **Cutting Log** | Every length issued from — or returned to — a drum, with cable tag, project, receiver, DN number, from/to equipment and remarks |
+| 🧭 **Cable Schedule** | Tag by tag: area, system, from/to equipment, route, required length, drum(s) used, pulled length, balance, progress %, status and the megger/IR test |
+
+### The remaining length is proved, never typed
+Every change to a drum goes through the cutting log, so the balance can always
+be re-derived (**🧮 Rebuild Balances**). The engine refuses to issue more than is
+left, or to put back more than the drum ever held; **voiding** a cut returns the
+length at once; **scrapping** what is left needs a **mandatory reason** and is
+audited. Status walks *In Stock → Partly Used → Empty* by itself, plus
+**Reserved** and **Scrapped** as deliberate decisions. Cut records are numbered
+`CC-2026-00001`, drums default to `DRM-2026-00001`.
+
+### Cutting and pulling
+**✂ Issue Length** on a drum opens a dialog that previews what the drum will
+hold afterwards. Choose a cable tag and it pre-fills the balance still to pull,
+the from/to equipment and the project. **↩ Return Off-cut** is the same in
+reverse. On the schedule tab, **✂ Pull From Drum** works the other way round: it
+offers the drums carrying the right size and cuts the balance off the chosen
+one. A cut tied to a tag updates that tag automatically — pulled length, drum(s)
+and status.
+
+**➡ Advance Status** walks a tag *Planned → Issued → Pulled → Glanded →
+Terminated → Tested → Energized*; **🎯 Record Test** stores IR (MΩ), continuity,
+result, tester and certificate, and a pass moves the tag to *Tested*.
+
+### The dashboard
+29 KPI tiles and 15 charts/tables, all driven by one filter bar (text, drum
+status, cable type, size, project, location, manufacturer, period, *only drums
+with cable left*, *only off-cuts*). The **Measure** selector switches the charts
+between drums, length received, length remaining, length used and stock value.
+**⚙ Customise** chooses the tiles, the charts, the tiles-per-row, **what counts
+as an off-cut** (default 50 m) and **after how many days a drum is idle**
+(default 90) — stored with the module. Click a tile to drill into the register
+with the same filters; click a bar to filter by it. **Export View** prints a
+PDF or Excel of exactly what is on screen.
+
+Two tiles pay for the module on their own: **Off-cuts / Short Ends** (the short
+lengths to use before opening a new drum) and **Idle Drums** (nothing cut from
+them for months).
+
+### Import and reports
+**📥 Import from Excel** pastes an existing drum list straight in — the header
+row is recognised (Drum No., Description, Size, Length, Remaining, Location,
+Project, PO, GRN, batch…), existing drums are updated and new ones added, and
+**⬇ Excel template** gives the right headings.
+
+16 reports: drum register · stock summary by cable · available drums ·
+off-cuts · empty & scrapped · idle drums · cutting log · consumption by project ·
+consumption by cable tag · cable schedule · cables not yet pulled · megger /
+IR test register · failed & pending tests · traceability (PO/GRN/batch/cert) ·
+stock value · audit trail. All with PDF, Excel, CSV, print and share.
+
+> The module has its own **Backup / Restore** buttons — the main database backup
+> does not include it.
+
+
+---
+
 ## 4. Stock alert system
 
 Nothing is hard-coded. Per item you can choose:
