@@ -26,7 +26,7 @@ from ..core import documents as D, importer, material as M
 from ..core import services as S
 from ..core.database import Database
 from . import widgets as W
-from .common import ItemPicker, ShareBar, date_edit, iso, lookup
+from .common import GoogleResultsDialog, ItemPicker, ShareBar, date_edit, iso, lookup
 
 CHECK_COLS = ["Line", "Item Code", "Description", "UOM", "Requested", "In Stock", "Reserved",
               "Available", "Can Supply", "Short By", "Availability", "PR / MR No.", "Project",
@@ -856,6 +856,8 @@ class MaterialPage(QWidget):
         act.addWidget(W.button("↩  Unprepare Line", slot=lambda: self._quick_prepare(0)))
         act.addWidget(W.button("🔗  Link to Item", slot=self.link_item,
                                tip="Map an unknown request code to an existing item"))
+        act.addWidget(W.button("🌐  Google Item", slot=self.google_item_lookup,
+                               tip="Search the selected request line on Google and preview the result inside AURCO"))
         act.addWidget(W.button("➕  Add to Item Master", slot=self.create_item,
                                tip="Add the selected line(s) to the Item Master and "
                                    "enter their opening balance.\nSelect nothing to "
@@ -1083,6 +1085,16 @@ class MaterialPage(QWidget):
         M.link_item(self.db, ln["id"], picked[0]["id"])
         self._load_lines()
         W.toast(self, f"Linked to {picked[0]['code']}.")
+
+    def _google_query_for_line(self, ln: dict) -> str:
+        parts = [ln.get("item_code"), ln.get("description"), ln.get("pr_no")]
+        return " ".join(str(p).strip() for p in parts if str(p or "").strip())
+
+    def google_item_lookup(self):
+        ln = self._sel_line()
+        if not ln:
+            return
+        GoogleResultsDialog.open(self, self._google_query_for_line(ln))
 
     def create_item(self):
         """Add the selected request line(s) to the Item Master.
@@ -1448,6 +1460,7 @@ class MaterialPage(QWidget):
         m.addAction("⚙  Process → Ready to Deliver\tCtrl+D", self.process_lines)
         m.addSeparator()
         m.addAction("🔗  Link to Item", self.link_item)
+        m.addAction("🌐  Search on Google", self.google_item_lookup)
         m.addAction("➕  Add Selected to Item Master...", self.create_item)
         m.addAction("📜  Movement History", self._line_history)
         m.addSeparator()

@@ -35,6 +35,7 @@ from .documents_page import AuditPage, DocumentsPage, HistoryPage, SearchPage
 from .items import ItemsPage
 from .reports_page import ReportsPage
 from .settings_page import SettingsPage
+from .whatsapp_page import WhatsAppPage
 from .transactions import (AdjustmentPage, ReturnsPage, StockCountPage, StockInPage, StockOutPage,
                            TransferPage)
 
@@ -71,6 +72,7 @@ NAV = [
     ("Cable Records", "🧵", "Ctrl+Shift+B"),
     ("General DN Maker", "🧾", "Ctrl+G"),
     ("Company Issuance", "🏢", "Ctrl+Shift+O"),
+    ("WhatsApp Desk", "💬", "Ctrl+Shift+W"),
     ("SYSTEM", None, None),
     ("Settings", "⚙", "Ctrl+,"),
     ("Calculator", "🧮", "Ctrl+Alt+C"),
@@ -290,6 +292,7 @@ class MainWindow(QMainWindow):
         self.page_cables = CableRecordsPage(db)
         self.page_gdn = GeneralDNPage(db)
         self.page_issuance = IssuancePage(db)
+        self.page_whatsapp = WhatsAppPage(db)
         self.page_library = LibraryPage(db)
         self.page_settings = SettingsPage(db, self.session)
         for name, page in (("Dashboard", self.page_dashboard), ("Global Search", self.page_search),
@@ -308,6 +311,7 @@ class MainWindow(QMainWindow):
                            ("Cable Records", self.page_cables),
                            ("General DN Maker", self.page_gdn),
                            ("Company Issuance", self.page_issuance),
+                           ("WhatsApp Desk", self.page_whatsapp),
                            ("Settings", self.page_settings)):
             self.pages[name] = page
             self.stack.addWidget(page)
@@ -470,8 +474,8 @@ class MainWindow(QMainWindow):
         self.page_docs.set_filter(key)
 
     def _edit_draft(self, doc_id: int):
-        """Open a DRAFT document back on the form that created it."""
-        d = self.db.one("SELECT doc_type, doc_no FROM documents WHERE id=?", (doc_id,))
+        """Open a draft, or reopen a reversed DN / GRN on the source form."""
+        d = self.db.one("SELECT doc_type, doc_no, status FROM documents WHERE id=?", (doc_id,))
         if d is None:
             W.error_box(self, "Document not found.")
             return
@@ -479,8 +483,11 @@ class MainWindow(QMainWindow):
                      else (self.page_in, "Stock In / Receiving"))
         self.go(nav)
         if page.load_draft(doc_id):
-            W.toast(self, f"{d['doc_no']} opened for editing — adjust the quantities "
-                          "and press Update Draft.")
+            msg = (f"{d['doc_no']} reopened after reversal — save it again as Draft or Finalize "
+                   "to reuse the same number." if d["status"] == "REVERSED" else
+                   f"{d['doc_no']} opened for editing — adjust the quantities and press Update Draft.")
+            W.toast(self, msg)
+
 
     def _open_history(self, item_id: int):
         self.go("Movement History")

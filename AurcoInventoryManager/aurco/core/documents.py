@@ -808,14 +808,26 @@ def _signatures(db: Database, blocks: list[dict], layout: dict | None = None) ->
     return t
 
 
+def _attachment_rows(db: Database, doc_type: str, doc_no: str):
+    return db.query(
+        "SELECT file_path, added_at, COALESCE(source,'file') AS source,"
+        " COALESCE(page_order,1) AS page_order"
+        " FROM attachments WHERE doc_type=? AND doc_no=?"
+        " ORDER BY COALESCE(page_order,1), id",
+        (doc_type, doc_no))
+
+
 def _attachment_block(db: Database, doc_type: str, doc_no: str) -> list[Any]:
     """List the supporting documents attached to this document."""
-    rows = db.query("SELECT file_path, added_at FROM attachments WHERE doc_type=? AND doc_no=?"
-                    " ORDER BY id", (doc_type, doc_no))
+    rows = _attachment_rows(db, doc_type, doc_no)
     if not rows:
         return []
-    data = [[i, Path(r["file_path"]).name, r["added_at"] or ""]
-            for i, r in enumerate(rows, 1)]
+    data = []
+    for i, r in enumerate(rows, 1):
+        label = Path(r["file_path"]).name
+        if (r["source"] or "").strip().lower() == "clipboard":
+            label += " (pasted)"
+        data.append([i, label, r["added_at"] or ""])
     return [Spacer(1, 3 * mm),
             Paragraph("<b>Supporting documents attached</b>", P_MD),
             Spacer(1, 1.5 * mm),
@@ -828,6 +840,29 @@ DOC_TITLES = {"DN": "Delivery Note", "GRN": "Goods Receipt Note", "RET": "Return
               "CNT": "Physical Stock Count Sheet"}
 DOC_FOLDERS = {"DN": "Delivery Notes", "GRN": "Inventory", "RET": "Returns",
                "ADJ": "Stock Adjustments", "TRF": "Stock Transfers", "CNT": "Stock Counts"}
+REVERSED_DOC_FOLDERS = {
+    "DN": "Reversed Delivery Notes",
+    "GRN": "Reversed Inventory",
+    "RET": "Reversed Returns",
+    "ADJ": "Reversed Stock Adjustments",
+    "TRF": "Reversed Stock Transfers",
+    "CNT": "Reversed Stock Counts",
+}
+
+
+def document_output_folder(doc_type: str, status: str = "FINAL") -> Path:
+    status = str(status or "").upper()
+    if status == "REVERSED":
+        return config.folder(REVERSED_DOC_FOLDERS.get(doc_type, "Reports"))
+    return config.folder(DOC_FOLDERS.get(doc_type, "Reports"))
+
+
+def reversed_document_basename(db: Database, doc_row, lines) -> str:
+    base = document_basename(db, doc_row, lines)
+    suffix = " - REVERSED"
+    if len(base) > MAX_NAME_LEN - len(suffix):
+        base = base[:MAX_NAME_LEN - len(suffix)].rstrip(" .-_")
+    return f"{base}{suffix}"
 
 
 def _append_attachments(db: Database, doc_type: str, doc_no: str, pdf_path: Path) -> int:
@@ -838,8 +873,7 @@ def _append_attachments(db: Database, doc_type: str, doc_no: str, pdf_path: Path
     printed pack still records that they exist.
     Returns the number of pages added.
     """
-    rows = db.query("SELECT file_path FROM attachments WHERE doc_type=? AND doc_no=?"
-                    " ORDER BY id", (doc_type, doc_no))
+    rows = _attachment_rows(db, doc_type, doc_no)
     if not rows:
         return 0
     try:
@@ -946,8 +980,11 @@ def document_pdf(db: Database, doc_id: int, out_path: str | Path | None = None,
             return ""
 
     layout = SG.get_layout(db, dtype)
-    out = Path(out_path) if out_path else (config.folder(DOC_FOLDERS.get(dtype, "Reports")) /
-                                           f"{document_basename(db, d, lines)}.pdf")
+    status = str(d["status"] or "").upper()
+    base_name = (reversed_document_basename(db, d, lines) if status == "REVERSED"
+                 else document_basename(db, d, lines))
+    out = Path(out_path) if out_path else (document_output_folder(dtype, status) /
+                                           f"{base_name}.pdf")
     out.parent.mkdir(parents=True, exist_ok=True)
     story: list[Any] = [Paragraph(title, P_TITLE),
                         Paragraph(f"Document No: <b>{d['doc_no']}</b> &nbsp;|&nbsp; Status: "
@@ -1483,6 +1520,12 @@ def print_file(db: Database, path: str | Path) -> None:
     db.audit("PRINTED", "file", p.name)
 
 
+def whatsapp_url(number: str = "", message: str = "") -> str:
+    num = "".join(ch for ch in str(number or "") if ch.isdigit())
+    q = urllib.parse.quote(str(message or ""))
+    return f"https://wa.me/{num}?text={q}" if num else f"https://wa.me/?text={q}"
+
+
 def whatsapp_share(db: Database, path: str | Path, number: str = "", message: str = "") -> str:
     """Practical, API-free workflow: copy the file, open WhatsApp with the message
     pre-filled, user attaches the file (already on the clipboard/explorer)."""
@@ -1490,8 +1533,7 @@ def whatsapp_share(db: Database, path: str | Path, number: str = "", message: st
     msg = message or db.get_setting("wa_message", "")
     msg = f"{msg}\n\nDocument: {p.name}"
     num = "".join(ch for ch in (number or db.get_setting("wa_default_number", "")) if ch.isdigit())
-    q = urllib.parse.quote(msg)
-    url = f"https://wa.me/{num}?text={q}" if num else f"https://wa.me/?text={q}"
+    url = whatsapp_url(num, msg)
     try:
         open_file_location(p)
     except Exception:
@@ -1659,6 +1701,7 @@ def general_dn_pdf(db: Database, doc_id: int, out_path: str | Path | None = None
     if d.get("remarks"):
         story += [Spacer(1, 2 * mm),
                   Paragraph(f"<b>Remarks:</b> {d['remarks']}", P_SM)]
+    story += _attachment_block(db, "GDN", d["doc_no"])
     if (d.get("terms") or "").strip():
         story += [Spacer(1, 3 * mm), Paragraph("<b>Terms &amp; conditions</b>", P_MD),
                   Paragraph(d["terms"].replace("\n", "<br/>"), P_SM)]
@@ -1708,9 +1751,11 @@ def general_dn_pdf(db: Database, doc_id: int, out_path: str | Path | None = None
     _build_with_totals(out, story, land, db, "DN",
                        lambda total: _header_footer(db, title, False, layout, row, "DN",
                                                     total_pages=total))
+    n_att = _append_attachments(db, "GDN", d["doc_no"], out)
     db.execute("UPDATE gdn_documents SET pdf_path=? WHERE id=?", (str(out), doc_id))
     db.commit()
-    db.audit("PRINTED", "general-dn", d["doc_no"], f"PDF -> {out.name}")
+    db.audit("PRINTED", "general-dn", d["doc_no"],
+             f"PDF -> {out.name}" + (f" (+{n_att} attachment page(s))" if n_att else ""))
     return out
 
 

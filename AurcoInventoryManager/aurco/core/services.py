@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .database import Database, today
+from . import file_search as FS
 
 # ------------------------------------------------------------------ statuses
 NORMAL, WARNING, CRITICAL, OUT = "Normal", "Warning", "Critical", "Out of Stock"
@@ -274,27 +275,32 @@ def load_draft(db: Database, doc_id: int) -> tuple[dict, list[dict]]:
 
 def update_draft(db: Database, doc_id: int, h: DocHeader,
                  lines: list[Line]) -> str:
-    """Rewrite a DRAFT document (header + every line) in place.
+    """Rewrite a DRAFT document in place, or reopen a REVERSED one as DRAFT.
 
     This is what makes an adjusted quantity actually stick: the old lines are
     replaced by the edited ones inside a single transaction, so re-opening or
     refreshing the document always shows the quantity that was typed last.
 
-    Only DRAFT documents may be changed — a FINAL document already moved stock
-    and must be corrected with `reverse_document`.
+    FINAL documents still cannot be edited directly — they must be corrected
+    through `reverse_document` first. A REVERSED DN / GRN may then be saved
+    again as DRAFT with the same document number.
     """
     d = db.one("SELECT * FROM documents WHERE id=?", (doc_id,))
     if d is None:
         raise StockError("Document not found.")
-    if d["status"] != "DRAFT":
+    if d["status"] not in ("DRAFT", "REVERSED"):
         raise StockError(
             f"{d['doc_no']} is {d['status'].lower()} and can no longer be edited.\n\n"
             "Use 'Reverse / Correct' on a finalized document instead.")
+    if d["status"] == "REVERSED" and d["doc_type"] not in ("DN", "GRN"):
+        raise StockError(
+            f"{d['doc_no']} is reversed and cannot be reopened on this form.")
     _validate(lines)
     for ln in lines:
         if (ln.qty or 0) <= 0 and d["doc_type"] in ("DN", "GRN"):
             raise StockError("Every line needs a quantity greater than zero.")
     total = sum((l.qty or 0) * (l.unit_cost or 0) for l in lines)
+    was_reversed = d["status"] == "REVERSED"
     try:
         db.execute(
             """UPDATE documents SET doc_date=?, supplier=?, reference=?, project=?,
@@ -302,7 +308,8 @@ def update_draft(db: Database, doc_id: int, h: DocHeader,
                  vehicle=?, driver=?, purpose=?, warehouse=?, to_warehouse=?, location=?,
                  to_location=?, reason=?, linked_doc=?, remarks=?, total_value=?,
                  issued_by=?, delivered_by=?, handover_to=?, handover_id=?,
-                 handover_phone=?, from_location=?, in_time=?, out_time=?
+                 handover_phone=?, from_location=?, in_time=?, out_time=?,
+                 status='DRAFT', finalized_at=NULL, pdf_path=''
                WHERE id=?""",
             (h.doc_date or d["doc_date"], h.supplier, h.reference, h.project,
              h.department, h.requested_by, h.issued_to, h.received_by, h.returned_by,
@@ -318,8 +325,8 @@ def update_draft(db: Database, doc_id: int, h: DocHeader,
         db.rollback()
         raise
     db.audit("EDITED", d["doc_type"], d["doc_no"],
-             f"draft updated — {len(lines)} line(s), qty "
-             f"{sum(l.qty or 0 for l in lines):g}")
+             f"{'reopened from reversal and saved as draft' if was_reversed else 'draft updated'}"
+             f" — {len(lines)} line(s), qty {sum(l.qty or 0 for l in lines):g}")
     return d["doc_no"]
 
 
@@ -747,8 +754,9 @@ def find_by_barcode(db: Database, code: str) -> dict | None:
 
 
 def global_search(db: Database, text: str) -> dict[str, list[dict]]:
-    """Search items + documents + ledger in one shot."""
-    like = f"%{text.strip()}%"
+    """Search items + documents + ledger + searchable document file contents."""
+    text = text.strip()
+    like = f"%{text}%"
     items = search_items(db, text, limit=200)
     docs = [dict(r) for r in db.query(
         """SELECT * FROM documents WHERE doc_no LIKE ? OR reference LIKE ? OR project LIKE ?
@@ -759,7 +767,8 @@ def global_search(db: Database, text: str) -> dict[str, list[dict]]:
     moves = [dict(r) for r in db.query(
         """SELECT * FROM stock_ledger WHERE item_code LIKE ? OR doc_no LIKE ? OR party LIKE ?
              OR txn_date LIKE ? ORDER BY id DESC LIMIT 200""", [like] * 4)]
-    return {"items": items, "documents": docs, "movements": moves}
+    files = FS.search(db, text, limit=120) if text else []
+    return {"items": items, "documents": docs, "movements": moves, "files": files}
 
 
 def item_history(db: Database, item_id: int) -> list[dict]:

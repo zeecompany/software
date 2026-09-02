@@ -1,6 +1,6 @@
 # AURCO INVENTORY MANAGER — User & Build Guide
 
-**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.18.0
+**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.22.0
 **Platform:** Windows Desktop (.EXE) · offline · local-first · SQLite
 
 ---
@@ -19,7 +19,7 @@ and produces:
 | Output | Path |
 |---|---|
 | Application | `dist\AURCO Inventory Manager\AURCO Inventory Manager.exe` |
-| Installer *(if Inno Setup 6 is installed)* | `Output\AURCO_Inventory_Manager_Setup_2.18.0.exe` |
+| Installer *(if Inno Setup 6 is installed)* | `Output\AURCO_Inventory_Manager_Setup_2.22.0.exe` |
 
 The installer adds a **desktop shortcut**, a **Start Menu shortcut**, the
 application icon, an uninstaller, and optionally pre-creates `D:\AURCO Inventory`.
@@ -69,11 +69,17 @@ Change any of it later:
 AURCO Inventory/
 ├── Database/            aurco_inventory.db (SQLite, WAL mode)
 ├── Inventory/           goods receipt PDFs
+├── Reversed Inventory/  reversed GRN PDFs
 ├── Delivery Notes/      DN PDFs
+├── Reversed Delivery Notes/
 ├── Returns/             return note PDFs
+├── Reversed Returns/
 ├── Stock Transfers/
+├── Reversed Stock Transfers/
 ├── Stock Adjustments/
+├── Reversed Stock Adjustments/
 ├── Stock Counts/
+├── Reversed Stock Counts/
 ├── Reports/             generated report PDFs
 ├── Attachments/         supporting documents & item images
 ├── Exports/             Excel / CSV exports
@@ -97,6 +103,7 @@ Change the location any time in **Settings → Storage & Backup → Change & Mov
 | Correct stock | **Stock Adjustment** → mandatory reason → ± quantity → Save |
 | Count stock | **Physical Count** → *Load All Items* → print sheet → enter counted qty → *Generate Adjustment from Variances* |
 | Find anything | **Ctrl+F** global search, or scan a barcode into the top box |
+| Search inside files | Global Search also checks searchable text inside PDFs, TXT, CSV, DOCX and XLSX attachments / library files |
 
 Every finalized transaction writes an immutable ledger row and updates the item
 balance in the same database transaction — stock can never drift.
@@ -263,7 +270,9 @@ Pending / Short By, and the fulfilment state:
 **Pending → Preparing → Ready → Partially Delivered → Delivered**
 
 Unrecognised codes can be **linked** to an existing item or **created** in the
-Item Master on the spot.
+Item Master on the spot. When the project's wording is unclear, **Google Item**
+opens a Google.com lookup with an in-system preview so the store team can verify
+part names, catalog wording or likely equivalents before linking.
 
 > Preparing a line **reserves** it — a second project checking the same item sees
 > the reduced *Available* figure, so the same stock is never promised twice.
@@ -623,15 +632,28 @@ The *"Purchase Requests covered by this Delivery Note"* summary table has been
 as an optional switch for anyone who wants it back.
 
 ### Attachments on the document
-**Attach Document** on any transaction screen (Delivery Note, **Stock Transfer**,
-GRN, Return...) stores supporting files in the *Attachments* folder and links
-them to the document.
+Every document-creation screen now supports both:
 
-They are then **merged into the document PDF as extra pages, straight after the
-document itself**, each with an "ATTACHMENT — <doc no>" banner:
+* **📎 Attach Document** — pick one or more files, and
+* **📋 Paste Attachment** — paste a copied file from Windows Explorer or a
+  copied screenshot / image straight from the clipboard.
+
+This works on **Delivery Notes, Goods Receipts, Returns, Transfers,
+Adjustments, Counts, and the General Delivery Note Maker**.
+
+Attachments are copied into the *Attachments* folder and linked to the
+transaction. In the final PDF they are **merged after the base document pages**,
+so the pack prints in this order:
+
+1. the document itself,
+2. any normally attached files,
+3. any clipboard-pasted files / screenshots last.
+
+Each appended page carries an **ATTACHMENT — document number** banner:
 
 * **PDF** attachments are appended page for page
-* **images** (jpg, png, ...) are placed on their own A4 page, scaled to fit
+* **images** (jpg, png, screenshot paste, ...) are placed on their own A4 page,
+  scaled to fit
 * other files (Word, Excel, e-mail) get a reference page so the pack still
   records them
 
@@ -779,24 +801,38 @@ Open File Location · Copy Path**, plus PDF / Excel / CSV export.
 * **Email** uses your SMTP settings; if empty it opens your default mail client.
 * **WhatsApp** opens WhatsApp Web/Desktop with the message pre-filled and the
   document's folder opened for a one-click attach — no unofficial API.
+* **WhatsApp Desk** is also available as a lightweight in-system page with a
+  phone-style preview, saved default number/message reuse and optional file
+  locator before handoff to WhatsApp.
+* **Global Search** now has a **File Contents** tab that searches searchable text
+  extracted from document PDFs, attachments and library files.
 
 ### Drafts and adjusted quantities
 
 **Save as Draft** on Stock Out (and Stock In) stores the document without moving
 stock. To change it later, select it in **Documents** and press
-**✏ Edit Draft**: it re-opens on the form that created it, with an amber
-*Editing draft DN-…* bar. Change any quantity, PR number, line or header field
-and press **Update Draft** — the draft is rewritten in place, so the adjusted
-quantity is what you see after a refresh, on the PDF and in the stock posted by
-**Finalize**. **Cancel editing** leaves the draft untouched.
+**✏ Edit Draft / Re-open**: it re-opens on the form that created it, with an
+amber guidance bar. Change any quantity, PR number, line or header field and
+press **Update Draft** (or **Save Again as Draft**) — the draft is rewritten in
+place, so the adjusted quantity is what you see after a refresh, on the PDF and
+in the stock posted by **Finalize**. **Cancel editing** leaves the draft
+untouched.
 
 A quantity typed into the grid is committed even when you click a button while
 the cell is still being edited, and lines pushed in from **Bulk Stock Check** or
 a **Material Request** arrive with their quantity and PR number already filled.
 
-Finalized documents are **locked**. To correct one, use *Reverse / Correct* in
-**Documents** — it posts the exact opposite movement and records the reason.
-History is never silently deleted.
+Finalized documents are **locked** until you deliberately correct them. Use
+**Reverse / Correct** in **Documents** — it posts the exact opposite movement,
+stores the reason in the audit trail, and regenerates the PDF into a dedicated
+**reversal folder** (*Reversed Delivery Notes*, *Reversed Inventory*, *Reversed
+Returns*, *Reversed Stock Transfers*, *Reversed Stock Adjustments* or
+*Reversed Stock Counts*).
+
+After reversing a **Delivery Note** (and likewise a **Goods Receipt**), you can
+press **✏ Edit Draft / Re-open** and save it again as a **Draft with the same
+number**. When it is finalized again, the corrected PDF goes back to the normal
+folder and stock is posted using the newly corrected quantity.
 
 ---
 
@@ -863,7 +899,7 @@ Ctrl+6 Returns          Ctrl+7 Transfer               F3  Add items
 Ctrl+8 Adjustment       Ctrl+9 Physical count         Ctrl+S Save / finalize
 Ctrl+D Documents        Ctrl+R Report center          Del Remove line
 Ctrl+, Settings         Ctrl+B Backup now             Ctrl+N New item
-Ctrl+Shift+I Quick add item
+Ctrl+Shift+W WhatsApp Desk    Ctrl+Shift+I Quick add item
 ```
 
 ---
@@ -1006,9 +1042,11 @@ item — hired tools, a subcontractor's material, a document pack, a sample.
 * the same letterhead, signature blocks (Issued By / Delivered By / Handover To
   with Iqama and phone / Received By) and footer as a real Delivery Note.
 
-Extras: paste lines from Excel, optional price/amount columns, terms &
-conditions, reusable **templates**, duplicate an old note into a new one, cancel
-or delete, and reprint any saved note.
+Extras: paste lines from Excel, **attach or paste supporting documents from
+the clipboard**, optional price/amount columns, terms & conditions, reusable
+**templates**, duplicate an old note into a new one, cancel or delete, and
+reprint any saved note. Supporting files are appended after the base PDF pages,
+just like an inventory Delivery Note.
 
 ---
 

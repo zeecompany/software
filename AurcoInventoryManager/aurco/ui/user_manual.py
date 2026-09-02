@@ -126,6 +126,10 @@ file). Column headings are recognised automatically.</li>
 everything the store can supply now. <b>Set Prepared Qty</b> records exactly what
 was picked. Preparation is a <i>soft reservation</i>: stock is promised but has
 not left the warehouse, so two projects cannot be promised the same items.</p>
+<p>When a request description is unclear, use <b>Google Item</b> or the
+<b>Google</b> button in the item picker: AURCO opens a Google.com search with an
+in-system preview so you can verify likely catalog wording before linking the
+line to an item.</p>
 <h3>Adding request lines to the Item Master</h3>
 <p>A request often contains items that are not in the Item Master yet — they show
 as <b>⚠ not in item master</b>. Select them (one, several, or none for all of
@@ -251,8 +255,8 @@ covering prepare, link, create item, print, copy, cancel, restore and delete.</p
 <tr><td><b>Ctrl+D</b> Documents</td><td><b>Ctrl+R</b> Report Center</td><td><b>Ctrl+M</b> Material Requests</td></tr>
 <tr><td><b>Ctrl+K</b> Bulk check</td><td><b>Ctrl+T</b> Notes &amp; Tasks</td><td><b>Ctrl+,</b> Settings</td></tr>
 <tr><td><b>Ctrl+Shift+A</b> Admin Station</td><td><b>Ctrl+G</b> General DN Maker</td><td><b>Ctrl+F</b> Search / scan</td></tr>
-<tr><td><b>Ctrl+Shift+O</b> Company Issuance</td><td><b>Ctrl+Alt+C</b> Calculator</td><td><b>F1</b> This manual</td></tr>
-<tr><td><b>Ctrl+L</b> Document Library</td><td colspan='2'>Scanned delivery notes</td></tr>
+<tr><td><b>Ctrl+Shift+O</b> Company Issuance</td><td><b>Ctrl+Shift+W</b> WhatsApp Desk</td><td><b>F1</b> This manual</td></tr>
+<tr><td><b>Ctrl+L</b> Document Library</td><td><b>Ctrl+Alt+C</b> Calculator</td><td>Scanned delivery notes</td></tr>
 </table>
 <h3>Working</h3>
 <table border='1' cellpadding='5' cellspacing='0' width='100%'>
@@ -395,17 +399,19 @@ removed, and a very long PR list is shortened with a "+N-more" marker.</p>
 <h3>Drafts — and correcting a quantity</h3>
 <p><b>Save as Draft</b> on Stock Out (or Stock In) stores the document without
 moving any stock. To change it later, select it in <b>Documents</b> and press
-<b>&#9998; Edit Draft</b>: the draft re-opens on the form it came from, with an
-amber bar reading <i>Editing draft DN-...</i>. Adjust any quantity, PR number,
-line or header field and press <b>Update Draft</b> — the saved draft is rewritten
-in place, so the new quantity is what you see after a refresh, on the PDF, and on
-the stock that is posted when you press <b>Finalize</b>. <b>Cancel editing</b>
-leaves the draft exactly as it was.</p>
+<b>&#9998; Edit Draft / Re-open</b>: the document re-opens on the form it came
+from, with an amber guidance bar. Adjust any quantity, PR number, line or header
+field and press <b>Update Draft</b> (or <b>Save Again as Draft</b>) — the saved
+draft is rewritten in place, so the new quantity is what you see after a
+refresh, on the PDF, and on the stock that is posted when you press
+<b>Finalize</b>. <b>Cancel editing</b> leaves the draft exactly as it was.</p>
 <p>A quantity typed into the grid is committed even if you click a button while
 the cell is still open, and lines sent in from <b>Bulk Stock Check</b> or a
 <b>Material Request</b> arrive with their quantity and PR number already filled
-in. A finalized document can no longer be edited — use
-<b>Reverse / Correct</b>.</p>
+in. A finalized document must first be corrected with <b>Reverse / Correct</b>,
+which posts the opposite stock movement and regenerates the PDF into a dedicated
+reversal folder. After reversing a <b>Delivery Note</b> or <b>Goods Receipt</b>,
+you can reopen it and save it again as a <b>draft with the same number</b>.</p>
 
 <h3>Excel in and out of the line grid</h3>
 <p>Every transaction screen can exchange its item lines with Excel:</p>
@@ -443,18 +449,27 @@ available quantity from the database, which is useful when another PC has moved
 stock while your note was open.</p>
 
 <h3>Attachments</h3>
-<p>Files attached to a document are merged into the PDF <b>after</b> the document
-page, so the printed pack is complete.</p>
+<p>Every document form now has both <b>Attach Document</b> and <b>Paste Attachment</b>.
+Paste accepts a copied file from Explorer or a copied screenshot / image from the
+clipboard. Attachments are copied into the Attachments folder and merged into the
+PDF <b>after</b> the document pages, so the printed pack is complete.</p>
 <h3>Sharing</h3>
 <p>Every screen has PDF, Excel, CSV, Print, Email and WhatsApp. Email needs SMTP
 set up in Settings. WhatsApp opens with the message ready and the file's folder
 open so you can attach it.</p>
+<p><b>WhatsApp Desk</b> is a lightweight helper page with a phone-style preview,
+saved default number/message reuse and an optional file locator before the final
+handoff to WhatsApp Web/Desktop.</p>
+<p><b>Global Search</b> now includes a <b>File Contents</b> tab that searches
+searchable text extracted from PDFs, TXT/CSV notes, DOCX and XLSX files already
+saved in documents, attachments and the document library.</p>
 <h2>General Delivery Note Maker</h2>
 <p><b>Ctrl+G.</b> A fully branded delivery note for anything that is <i>not</i> a
 stocked item — hired tools, a subcontractor's material, a sample. Lines are free
 text, numbering is its own <code>GDN</code> series, and <b>no stock movement is
-ever posted</b>. Supports Excel paste, optional prices, terms, reusable templates
-and duplicating an old note.</p>
+ever posted</b>. Supports Excel paste, optional prices, terms, reusable templates,
+duplicating an old note, and supporting-document attachments including clipboard
+paste. Attached files are appended after the base PDF pages.</p>
 """),
     ("Company Issuance Register", """
 <h2>Company Issuance Register</h2>

@@ -17,17 +17,23 @@ APP_NAME = "AURCO Inventory Manager"
 APP_SHORT = "AurcoInventoryManager"
 BRAND = "AURCO"
 CREATED_BY = "Zain Shami"
-APP_VERSION = "2.21.0"
+APP_VERSION = "2.23.0"
 
 # Sub-folders automatically created inside the storage root.
 SUBFOLDERS = [
     "Database",
     "Inventory",
+    "Reversed Inventory",
     "Delivery Notes",
+    "Reversed Delivery Notes",
     "Returns",
+    "Reversed Returns",
     "Stock Transfers",
+    "Reversed Stock Transfers",
     "Stock Adjustments",
+    "Reversed Stock Adjustments",
     "Stock Counts",
+    "Reversed Stock Counts",
     "Reports",
     "Attachments",
     "Exports",

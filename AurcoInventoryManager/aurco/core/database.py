@@ -10,7 +10,7 @@ from typing import Any, Iterable, Sequence
 
 from . import config
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 
 DDL = """
 PRAGMA journal_mode=WAL;
@@ -201,12 +201,14 @@ CREATE INDEX IF NOT EXISTS ix_ledger_date ON stock_ledger(txn_date);
 CREATE INDEX IF NOT EXISTS ix_ledger_type ON stock_ledger(txn_type);
 
 CREATE TABLE IF NOT EXISTS attachments (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    doc_type  TEXT,
-    doc_no    TEXT,
-    item_id   INTEGER,
-    file_path TEXT NOT NULL,
-    added_at  TEXT DEFAULT (datetime('now','localtime'))
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_type   TEXT,
+    doc_no     TEXT,
+    item_id    INTEGER,
+    file_path  TEXT NOT NULL,
+    source     TEXT DEFAULT 'file',
+    page_order INTEGER NOT NULL DEFAULT 1,
+    added_at   TEXT DEFAULT (datetime('now','localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS audit_trail (
@@ -635,6 +637,15 @@ class Database:
         # v8: General Delivery Note tables (standalone, no stock effect)
         from .gdn import DDL as _GDN_DDL
         self.conn.executescript(_GDN_DDL)
+
+        # v10: attachment source / ordering (clipboard items append last)
+        for col, sql in (
+            ("source", "ALTER TABLE attachments ADD COLUMN source TEXT DEFAULT 'file'"),
+            ("page_order", "ALTER TABLE attachments ADD COLUMN page_order INTEGER NOT NULL DEFAULT 1"),
+        ):
+            if col not in columns("attachments"):
+                self.conn.execute(sql)
+                added.append(f"attachments.{col}")
         if added:
             self.conn.commit()
             try:

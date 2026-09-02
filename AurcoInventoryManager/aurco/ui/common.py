@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import csv
+import datetime as _dt
 import io
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,11 +16,12 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QC
                                QDateEdit, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
                                QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox,
-                               QPlainTextEdit, QPushButton, QRadioButton,
+                               QPlainTextEdit, QPushButton, QRadioButton, QTextBrowser,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from ..core import documents as D
+from ..core import config, documents as D
 from ..core import services as S
+from ..core import web_lookup as WL
 from ..core.database import Database
 from . import widgets as W
 
@@ -41,6 +44,96 @@ def date_edit(value: str | None = None) -> QDateEdit:
 
 def iso(d: QDateEdit) -> str:
     return d.date().toString("yyyy-MM-dd")
+
+
+def _safe_attachment_name(name: str, fallback: str = "attachment") -> str:
+    p = Path(str(name or fallback))
+    stem = D.safe_file_part(p.stem or fallback, fallback)
+    suffix = p.suffix if p.suffix and len(p.suffix) <= 10 else ""
+    return f"{stem}{suffix}"
+
+
+def unique_attachment_path(folder: str | Path, name: str) -> Path:
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    p = Path(_safe_attachment_name(name))
+    stem = p.stem or "attachment"
+    suffix = p.suffix
+    dest = folder / f"{stem}{suffix}"
+    n = 2
+    while dest.exists():
+        dest = folder / f"{stem}_{n}{suffix}"
+        n += 1
+    return dest
+
+
+def store_attachment_file(src: str | Path, dest_dir: str | Path | None = None,
+                          prefix: str = "") -> Path:
+    """Copy one attachment into AURCO's Attachments folder under a safe unique name."""
+    src = Path(src)
+    if not src.exists() or not src.is_file():
+        raise FileNotFoundError(src)
+    dest_dir = Path(dest_dir or config.folder("Attachments"))
+    name = src.name
+    if prefix:
+        name = f"{prefix}_{name}"
+    dest = unique_attachment_path(dest_dir, name)
+    try:
+        if src.resolve() == dest.resolve():
+            return dest
+    except OSError:
+        pass
+    shutil.copy2(src, dest)
+    return dest
+
+
+def clipboard_attachment_entries(dest_dir: str | Path | None = None,
+                                 prefix: str = "clipboard") -> list[dict[str, Any]]:
+    """Return copied files / screenshot images from the clipboard as attachment entries.
+
+    File URLs are copied into the Attachments folder. A copied image is stored as
+    a PNG. Clipboard attachments are flagged with page_order=2 so they always
+    land after ordinary attachments in the final merged PDF.
+    """
+    dest_dir = Path(dest_dir or config.folder("Attachments"))
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    cb = QApplication.clipboard()
+    mime = cb.mimeData()
+    out: list[dict[str, Any]] = []
+
+    def add_file(p: Path):
+        out.append({"file_path": str(p), "source": "clipboard", "page_order": 2})
+
+    urls = list(mime.urls()) if mime and mime.hasUrls() else []
+    for url in urls:
+        local = Path(url.toLocalFile())
+        if local.exists() and local.is_file():
+            add_file(store_attachment_file(local, dest_dir))
+    if out:
+        return out
+
+    img = cb.image()
+    if not img.isNull():
+        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = unique_attachment_path(dest_dir, f"{prefix}_{stamp}.png")
+        if not img.save(str(dest), "PNG"):
+            raise ValueError("The copied image could not be saved as an attachment.")
+        add_file(dest)
+        return out
+
+    text = (cb.text() or "").strip()
+    if text:
+        for line in text.splitlines():
+            raw = line.strip().strip('"').strip("'")
+            if not raw:
+                continue
+            p = Path(raw)
+            if p.exists() and p.is_file():
+                add_file(store_attachment_file(p, dest_dir))
+        if out:
+            return out
+
+    raise ValueError("The clipboard does not contain a file or image attachment yet.")
 
 
 class ShareBar(QWidget):
@@ -119,6 +212,65 @@ class ShareBar(QWidget):
             W.toast(self, "Path copied to clipboard.")
 
 
+class GoogleResultsDialog(QDialog):
+    """Minimal in-app preview for Google search results."""
+
+    def __init__(self, parent=None, query: str = ""):
+        super().__init__(parent)
+        self.query = str(query or "").strip()
+        self.setWindowTitle("Google Search Preview")
+        self.resize(920, 620)
+        v = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.query_edit = QLineEdit(self.query)
+        self.query_edit.setPlaceholderText("Type keywords to search on Google...")
+        self.query_edit.returnPressed.connect(self.refresh)
+        top.addWidget(self.query_edit, 1)
+        self.btn_search = QPushButton("Preview")
+        self.btn_search.clicked.connect(self.refresh)
+        top.addWidget(self.btn_search)
+        self.btn_browser = QPushButton("Open in Browser")
+        self.btn_browser.clicked.connect(self.open_browser)
+        top.addWidget(self.btn_browser)
+        v.addLayout(top)
+        self.info = QLabel("Preview lightweight Google results inside AURCO.")
+        self.info.setWordWrap(True)
+        self.info.setStyleSheet("color:#5f6368")
+        v.addWidget(self.info)
+        self.view = QTextBrowser()
+        self.view.setOpenExternalLinks(True)
+        self.view.setHtml(WL.results_html(self.query, [], "Type a search phrase to begin."))
+        v.addWidget(self.view, 1)
+        if self.query:
+            self.refresh()
+
+    def refresh(self):
+        self.query = self.query_edit.text().strip()
+        if not self.query:
+            self.view.setHtml(WL.results_html("", [], "Type a search phrase to begin."))
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        err = ""
+        try:
+            results = WL.fetch_google_results(self.query)
+        except Exception as e:
+            results = []
+            err = f"Unable to fetch preview right now: {e}"
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.info.setText(f"Google preview for: {self.query}")
+        self.view.setHtml(WL.results_html(self.query, results, err))
+
+    def open_browser(self):
+        q = self.query_edit.text().strip()
+        if q:
+            D.open_path(WL.google_search_url(q, limit=8))
+
+    @staticmethod
+    def open(parent=None, query: str = ""):
+        GoogleResultsDialog(parent, query).exec()
+
+
 class ItemPicker(QDialog):
     """Fast searchable item selector (barcode scanner friendly)."""
 
@@ -139,6 +291,9 @@ class ItemPicker(QDialog):
         self.cat.currentTextChanged.connect(self.reload)
         top.addWidget(QLabel("Category:"))
         top.addWidget(self.cat)
+        self.btn_google = QPushButton("Google")
+        self.btn_google.clicked.connect(self.open_google_preview)
+        top.addWidget(self.btn_google)
         v.addLayout(top)
         self.table = W.DataTable()
         self.table.doubleClicked.connect(self.accept)
@@ -171,6 +326,23 @@ class ItemPicker(QDialog):
             [[r["code"], r["description"], r["uom"], r["category"], round(r["balance"], 2),
               round(r.get("reserved", 0), 2), round(r.get("free", r["balance"]), 2),
               r["warehouse"], r["location"], r["status"]] for r in self.rows], status_col=9)
+
+    def google_query(self) -> str:
+        txt = self.search.text().strip()
+        if txt:
+            return txt
+        r = self.table.currentRow()
+        if 0 <= r < len(self.rows):
+            row = self.rows[r]
+            return " ".join(str(row.get(k) or "") for k in ("code", "description", "category")).strip()
+        return ""
+
+    def open_google_preview(self):
+        query = self.google_query()
+        if not query:
+            W.error_box(self, "Type a keyword or select an item first.")
+            return
+        GoogleResultsDialog.open(self, query)
 
     def accept(self):
         if not self.selected:

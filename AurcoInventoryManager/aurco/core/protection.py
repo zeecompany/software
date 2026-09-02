@@ -45,8 +45,10 @@ IS_WINDOWS = os.name == "nt"
 
 #: folders inside the storage root whose contents must never be lost
 PROTECTED_FOLDERS = [
-    "Database", "Delivery Notes", "Inventory", "Returns", "Stock Transfers",
-    "Stock Adjustments", "Stock Counts", "Reports", "Attachments", "Exports",
+    "Database", "Delivery Notes", "Reversed Delivery Notes", "Inventory",
+    "Reversed Inventory", "Returns", "Reversed Returns", "Stock Transfers",
+    "Reversed Stock Transfers", "Stock Adjustments", "Reversed Stock Adjustments",
+    "Stock Counts", "Reversed Stock Counts", "Reports", "Attachments", "Exports",
     "Backups", "Logs", "Admin Station", "Company Issuance", "Labels",
 ]
 

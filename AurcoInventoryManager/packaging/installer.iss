@@ -1,10 +1,10 @@
 ; AURCO Inventory Manager - Inno Setup installer script
 ; Build the EXE first:   pyinstaller packaging\aurco.spec --noconfirm --clean
 ; Then compile this file with Inno Setup 6:  ISCC.exe packaging\installer.iss
-; Produces: Output\AURCO_Inventory_Manager_Setup_1.1.0.exe
+; Produces: Output\AURCO_Inventory_Manager_Setup_<version>.exe
 
 #define AppName        "AURCO Inventory Manager"
-#define AppVersion     "2.21.0"
+#define AppVersion     "2.23.0"
 #define AppPublisher   "AURCO"
 #define AppAuthor      "Zain Shami"
 #define AppExeName     "AURCO Inventory Manager.exe"
@@ -55,12 +55,18 @@ Name: "{userstartup}\{#AppName}";     Filename: "{app}\{#AppExeName}"; Tasks: st
 [Dirs]
 Name: "D:\AURCO Inventory";                  Tasks: datafolder; Check: DriveDExists
 Name: "D:\AURCO Inventory\Database";         Tasks: datafolder; Check: DriveDExists
-Name: "D:\AURCO Inventory\Inventory";        Tasks: datafolder; Check: DriveDExists
-Name: "D:\AURCO Inventory\Delivery Notes";   Tasks: datafolder; Check: DriveDExists
-Name: "D:\AURCO Inventory\Returns";          Tasks: datafolder; Check: DriveDExists
-Name: "D:\AURCO Inventory\Stock Transfers";  Tasks: datafolder; Check: DriveDExists
-Name: "D:\AURCO Inventory\Stock Adjustments";Tasks: datafolder; Check: DriveDExists
-Name: "D:\AURCO Inventory\Stock Counts";     Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Inventory";                 Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Reversed Inventory";        Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Delivery Notes";            Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Reversed Delivery Notes";   Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Returns";                   Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Reversed Returns";          Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Stock Transfers";           Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Reversed Stock Transfers";  Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Stock Adjustments";         Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Reversed Stock Adjustments";Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Stock Counts";              Tasks: datafolder; Check: DriveDExists
+Name: "D:\AURCO Inventory\Reversed Stock Counts";     Tasks: datafolder; Check: DriveDExists
 Name: "D:\AURCO Inventory\Reports";          Tasks: datafolder; Check: DriveDExists
 Name: "D:\AURCO Inventory\Attachments";      Tasks: datafolder; Check: DriveDExists
 Name: "D:\AURCO Inventory\Exports";          Tasks: datafolder; Check: DriveDExists

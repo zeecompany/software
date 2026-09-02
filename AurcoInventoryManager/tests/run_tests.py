@@ -62,7 +62,8 @@ def main() -> int:
     import aurco.ui.common as _c, aurco.ui.transactions as _t, aurco.ui.items as _i
     import aurco.ui.documents_page as _d, aurco.ui.bulk_check as _b
     import aurco.ui.material_page as _m, aurco.ui.signature_ui as _s
-    for mod in (_c, _t, _i, _d, _b, _m, _s):
+    import aurco.ui.whatsapp_page as _wa
+    for mod in (_c, _t, _i, _d, _b, _m, _s, _wa):
         mod.W.confirm, mod.W.info_box = W.confirm, W.info_box
         mod.W.error_box, mod.W.toast = W.error_box, W.toast
     from aurco.core import documents as D
@@ -334,6 +335,66 @@ def main() -> int:
     dp.show_lines()
     check(dp.lines.rowCount() > 0, "document details survive a stale cache")
 
+    # ---------------------------------------- Google preview + file search
+    section("Google preview && file-content search")
+    from aurco.core import file_search as FS, web_lookup as WL
+    _sample_google = '''
+        <a href="/url?q=https://example.com/catalogue/valve-123&sa=U"><h3>Valve 123 Datasheet</h3></a>
+        <div>Pressure rating PN16 and stainless trim.</div>
+    '''
+    _parsed = WL.parse_google_results(_sample_google)
+    check(bool(_parsed) and _parsed[0]["url"] == "https://example.com/catalogue/valve-123",
+          "Google parser extracts external search results")
+    check("pipe+clamp" in WL.google_search_url("pipe clamp"),
+          "Google search URL encodes the query")
+    _old_fetch = _c.WL.fetch_google_results
+    _c.WL.fetch_google_results = lambda q: [{"title": "Valve 123 Datasheet",
+                                             "url": "https://example.com/catalogue/valve-123",
+                                             "snippet": "Pressure rating PN16 and stainless trim.",
+                                             "domain": "example.com"}]
+    try:
+        _dlg = _c.GoogleResultsDialog(query="valve 123")
+        app.processEvents()
+        check("Valve 123 Datasheet" in _dlg.view.toPlainText(),
+              "Google preview dialog renders in-app results")
+    finally:
+        _c.WL.fetch_google_results = _old_fetch
+        _dlg.close()
+
+    _probe = config.folder("Attachments") / "search_probe.txt"
+    _probe.write_text("UniqueSearchToken Orion gasket assembly for QA review", encoding="utf-8")
+    db.execute("INSERT INTO attachments(doc_type,doc_no,file_path,source,page_order) VALUES(?,?,?,?,?)",
+               ("DN", dn, str(_probe), "file", 1))
+    db.commit()
+    _hits = FS.search(db, "UniqueSearchToken Orion")
+    check(any(Path(h["path"]).name == "search_probe.txt" for h in _hits),
+          "file-content search finds attachment text")
+    _gs = S.global_search(db, "UniqueSearchToken Orion")
+    check(any(h.get("doc_no") == dn for h in _gs.get("files", [])),
+          "global search returns matching document-file hits")
+    sp = win.page_search
+    win.go("Global Search")
+    sp.box.setText("UniqueSearchToken Orion")
+    sp.run()
+    app.processEvents()
+    check(sp.t_files.rowCount() >= 1 and "File Contents" in sp.tabs.tabText(3),
+          "Global Search page shows a File Contents result tab")
+
+    # ----------------------------------------------------- WhatsApp module
+    section("WhatsApp desk")
+    wp = win.page_whatsapp
+    wp.number.setText("+966 50 123 4567")
+    wp.message.setPlainText("Please review the attached delivery note.")
+    wp.file.setText(str(_probe))
+    wp._refresh_preview()
+    check(D.whatsapp_url("+966 50 123 4567", "Hello team")
+          == "https://wa.me/966501234567?text=Hello%20team",
+          "WhatsApp URL helper sanitizes the number and encodes the message")
+    check("966501234567" in wp.url_lbl.text(),
+          "WhatsApp desk preview uses the cleaned phone number")
+    check((not wp.attach_lbl.isHidden()) and "search_probe.txt" in wp.attach_lbl.text(),
+          "WhatsApp desk shows a phone-style attachment preview")
+
     # ------------------------------------------------ export presentation
     section("PDF and Excel presentation")
     _t5, _c5, _r5 = reports.build_report(db, "Stock Valuation", {})
@@ -569,6 +630,32 @@ def main() -> int:
     _out2 = D.document_pdf(db, _tid, out_path=config.folder("Reports") / "_no_merge.pdf")
     check(len(_pf2.PdfDocument(str(_out2))) == 1, "attachment merging can be switched off")
     SG.save_layout(db, "TRF", {"merge_attachments": "1"})
+
+    # ---- clipboard attachments are copied into the attachment store
+    from PySide6.QtCore import QMimeData as _QMimeData, QUrl as _QUrl
+    from PySide6.QtGui import QColor as _QColor, QImage as _QImage
+    from aurco.ui.common import clipboard_attachment_entries as _clip_att
+    _clip_src = att_dir / "clipboard_source.pdf"
+    _cc = _rc.Canvas(str(_clip_src), pagesize=_A4)
+    _cc.drawString(100, 500, "CLIPBOARD FILE")
+    _cc.showPage()
+    _cc.save()
+    _md = _QMimeData()
+    _md.setUrls([_QUrl.fromLocalFile(str(_clip_src))])
+    QApplication.clipboard().setMimeData(_md)
+    _clip_rows = _clip_att()
+    check(len(_clip_rows) == 1 and _clip_rows[0]["source"] == "clipboard"
+          and _clip_rows[0]["page_order"] == 2,
+          "clipboard file attachments are tagged to merge last")
+    check(Path(_clip_rows[0]["file_path"]).exists()
+          and Path(_clip_rows[0]["file_path"]).parent == att_dir,
+          "clipboard file attachments are copied into the Attachments folder")
+    _qi = _QImage(48, 32, _QImage.Format_RGB32)
+    _qi.fill(_QColor("#0b7285"))
+    QApplication.clipboard().setImage(_qi)
+    _img_rows = _clip_att()
+    check(len(_img_rows) == 1 and Path(_img_rows[0]["file_path"]).suffix.lower() == ".png",
+          "clipboard screenshots are saved as PNG attachments")
 
     # ---- PR / MR labelling
     from aurco.core import header_design as _HD2
@@ -858,6 +945,21 @@ def main() -> int:
     check(gpdf.exists() and gpdf.stat().st_size > 2000, "general DN PDF written")
     txt_ok = True
     check(txt_ok, "general DN PDF built with the company letterhead")
+    import pypdfium2 as _pf_gdn
+    _g_pages = len(_pf_gdn.PdfDocument(str(gpdf)))
+    from reportlab.pdfgen import canvas as _rc
+    from reportlab.lib.pagesizes import A4 as _A4
+    _gatt = config.folder("Attachments") / "gdn_attachment.pdf"
+    _gc = _rc.Canvas(str(_gatt), pagesize=_A4)
+    _gc.drawString(100, 500, "GDN ATTACHMENT")
+    _gc.showPage()
+    _gc.save()
+    db.execute("INSERT INTO attachments(doc_type,doc_no,file_path,source,page_order) VALUES('GDN',?,?,?,?)",
+               (gno, str(_gatt), 'file', 1))
+    db.commit()
+    gpdf_att = D.general_dn_pdf(db, gid, out_path=config.folder("Reports") / "_gdn_with_att.pdf")
+    check(len(_pf_gdn.PdfDocument(str(gpdf_att))) == _g_pages + 1,
+          "general DN PDFs append supporting attachments after the base document")
     gid2, gno2 = G.duplicate(db, gid)
     check(gno2 != gno, "a general DN can be duplicated into a new number")
     G.save_template(db, "Scaffolding hire", h, ls)
@@ -2595,6 +2697,8 @@ def main() -> int:
           "the transfer moved the item to WH-B")
     led_t = db.scalar("SELECT COUNT(*) FROM stock_ledger WHERE item_id=?", (rv_i,))
     S.reverse_document(db, trf["id"], "undo")
+    check("Reversed Stock Transfers" in str(D.document_pdf(db, trf["id"])),
+          "reversed transfer PDFs go to their own reversal folder")
     check(db.scalar("SELECT warehouse FROM items WHERE id=?", (rv_i,)) == "WH-A",
           "REVERSING A TRANSFER SENDS THE ITEM BACK TO WH-A")
     check(db.scalar("SELECT COUNT(*) FROM stock_ledger WHERE item_id=?", (rv_i,))
@@ -2607,11 +2711,16 @@ def main() -> int:
                                    supplier="S"), [S.Line(item_id=rv_i, qty=25)])
     grn = db.one("SELECT id FROM documents WHERE doc_type='GRN' ORDER BY id DESC LIMIT 1")
     S.reverse_document(db, grn["id"], "supplier recall")
+    check("Reversed Inventory" in str(D.document_pdf(db, grn["id"])),
+          "reversed GRN PDFs go to the reversed inventory folder")
     check(_bal() == 100, "reversing a receipt takes the goods back out")
     S.post_issue(db, S.DocHeader(doc_type="DN", doc_date="2026-08-21",
                                  issued_to="Site"), [S.Line(item_id=rv_i, qty=30)])
     dnr = db.one("SELECT id FROM documents WHERE doc_type='DN' ORDER BY id DESC LIMIT 1")
     S.reverse_document(db, dnr["id"], "wrong site")
+    _dn_rev_pdf = D.document_pdf(db, dnr["id"])
+    check("Reversed Delivery Notes" in str(_dn_rev_pdf) and _dn_rev_pdf.name.endswith("REVERSED.pdf"),
+          "reversed DN PDFs go to their own folder and carry a reversed suffix")
     check(_bal() == 100, "reversing an issue puts the goods back")
     blocked_twice = False
     try:
@@ -3536,6 +3645,32 @@ def main() -> int:
         check(False, "a finalized document refuses to be edited")
     except S.StockError:
         check(True, "a finalized document refuses to be edited")
+
+    S.reverse_document(db, drow["id"], "customer changed site")
+    rev_pdf = D.document_pdf(db, drow["id"])
+    check("Reversed Delivery Notes" in str(rev_pdf),
+          "reversing an edited DN regenerates it into the reversal folder")
+    check(db.scalar("SELECT balance FROM items WHERE id=?", (it2["id"],)) == bal0,
+          "reversing the finalized draft restores the stock balance")
+    win._edit_draft(drow["id"])
+    check(po.editing_draft() and po.draft_status == "REVERSED" and po.no.text() == dno,
+          "a reversed DN can be reopened on the Delivery Note form")
+    po.lines.item(0, 4).setText("3")
+    po.save(False)
+    drow2 = db.one("SELECT status, doc_no, pdf_path FROM documents WHERE id=?", (drow["id"],))
+    check(drow2["status"] == "DRAFT" and drow2["doc_no"] == dno and not drow2["pdf_path"],
+          "a reversed DN can be saved again as the same-number draft")
+    check(db.scalar("SELECT COUNT(*) FROM documents WHERE doc_no=?", (dno,)) == 1,
+          "reopening after reversal still uses the original document row")
+    win._edit_draft(drow["id"])
+    po.lines.item(0, 4).setText("4")
+    po.save(True)
+    check(db.one("SELECT status FROM documents WHERE id=?", (drow["id"],))["status"] == "FINAL",
+          "the reopened reversed DN can be finalized again")
+    check(db.scalar("SELECT balance FROM items WHERE id=?", (it2["id"],)) == bal0 - 4,
+          "re-finalizing after reversal posts the new corrected quantity")
+    check("Reversed Delivery Notes" not in str(D.document_pdf(db, drow["id"])),
+          "after re-finalizing, the corrected DN returns to the normal folder")
 
     po.lines.clear_lines()
     po.lines.add_items([dict(it2, issue_qty=4, pr_no="PR-XYZ")])

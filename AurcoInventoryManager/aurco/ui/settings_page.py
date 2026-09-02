@@ -725,7 +725,8 @@ class SettingsPage(QWidget):
         self.f_wa_message.setMaximumHeight(70)
         f2.addRow("Default message", self.f_wa_message)
         f2.addRow(QLabel("WhatsApp Web/Desktop opens with the message ready and the document "
-                         "folder highlighted so the file can be attached — no unofficial API used."))
+                         "folder highlighted so the file can be attached — no unofficial API used. "
+                         "The same defaults are reused by the lightweight WhatsApp Desk page."))
         v.addWidget(g2)
 
         g_snd = QGroupBox("Alert sounds")

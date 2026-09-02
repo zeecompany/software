@@ -23,7 +23,8 @@ from ..core import gdn as G
 from ..core import signatories as SG
 from ..core.database import Database, today
 from . import widgets as W
-from .common import ShareBar, date_edit, iso, lookup
+from .common import (ShareBar, clipboard_attachment_entries, date_edit, iso, lookup,
+                     store_attachment_file)
 
 COLS = ["Item Code", "Description", "UOM", "Quantity", "Unit Price", "Ref / PR", "Remarks"]
 KEYS = ["item_code", "description", "uom", "qty", "unit_cost", "pr_no", "remarks"]
@@ -149,6 +150,7 @@ class CreateTab(QWidget):
         self.db = db
         self.edit_id: int | None = None
         self.last_file: Path | None = None
+        self.attachments: list[dict[str, object] | str] = []
         v = QVBoxLayout(self)
         v.setContentsMargins(4, 6, 4, 6)
         v.setSpacing(8)
@@ -215,6 +217,15 @@ class CreateTab(QWidget):
         tools.addWidget(W.button("➖  Remove Line", slot=lambda: self.table.remove_selected()))
         tools.addWidget(W.button("📋  Paste from Excel...", slot=self._paste))
         tools.addWidget(W.button("🧹  Clear Lines", slot=self._clear))
+        tools.addWidget(W.button("📎  Attach Document", slot=self._attach,
+                                 tip="Choose supporting files to append after the PDF"))
+        tools.addWidget(W.button("📋  Paste Attachment", slot=self._paste_attachment,
+                                 tip="Paste a copied file or screenshot from the clipboard"))
+        tools.addWidget(W.button("🧹  Clear Attachments", slot=self._clear_attachments,
+                                 tip="Remove the pending attachments before saving"))
+        self.attach_lbl = QLabel("")
+        self.attach_lbl.setStyleSheet(f"color:{W.MUTED}; font-size:11px;")
+        tools.addWidget(self.attach_lbl)
         tools.addStretch(1)
         self.chk_values = QCheckBox("Show prices && amounts on the printed note")
         self.chk_values.toggled.connect(self._recalc)
@@ -298,6 +309,71 @@ class CreateTab(QWidget):
         if W.confirm(self, "Remove every line from this delivery note?"):
             self.table.clear_lines()
 
+    def _attachment_entry(self, rec) -> dict[str, object]:
+        if isinstance(rec, dict):
+            path = str(rec.get("file_path") or rec.get("path") or "")
+            source = str(rec.get("source") or "file")
+            try:
+                order = int(rec.get("page_order") or (2 if source == "clipboard" else 1))
+            except (TypeError, ValueError):
+                order = 2 if source == "clipboard" else 1
+            return {"file_path": path, "source": source, "page_order": order}
+        return {"file_path": str(rec), "source": "file", "page_order": 1}
+
+    def _refresh_attachments(self):
+        items = [self._attachment_entry(a) for a in self.attachments]
+        n = len(items)
+        pasted = sum(1 for a in items if a["source"] == "clipboard")
+        names = ", ".join(Path(str(a["file_path"])).name for a in items[:3])
+        self.attach_lbl.setText(
+            "" if not n else
+            f"📎 {n} file(s): {names}" + ("..." if n > 3 else "") +
+            ("" if not pasted else f"  ·  {pasted} pasted"))
+
+    def _attach(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Attach supporting documents")
+        added = 0
+        for f in files:
+            try:
+                dest = store_attachment_file(f)
+            except OSError:
+                dest = Path(f)
+            self.attachments.append({"file_path": str(dest), "source": "file", "page_order": 1})
+            added += 1
+        if added:
+            self._refresh_attachments()
+            W.toast(self, f"{added} attachment(s) added.")
+
+    def _paste_attachment(self):
+        try:
+            added = clipboard_attachment_entries()
+        except ValueError as exc:
+            W.error_box(self, str(exc))
+            return 0
+        self.attachments.extend(added)
+        self._refresh_attachments()
+        W.toast(self, f"{len(added)} clipboard attachment(s) added.")
+        return len(added)
+
+    def _clear_attachments(self):
+        if not self.attachments:
+            return 0
+        n = len(self.attachments)
+        self.attachments = []
+        self._refresh_attachments()
+        W.toast(self, f"Cleared {n} pending attachment(s).", "warn")
+        return n
+
+    def _register_attachments(self, doc_no: str):
+        for a in self.attachments:
+            ent = self._attachment_entry(a)
+            self.db.execute(
+                "INSERT INTO attachments(doc_type,doc_no,file_path,source,page_order) VALUES(?,?,?,?,?)",
+                ("GDN", doc_no, ent["file_path"], ent["source"], ent["page_order"]))
+        self.db.commit()
+        self.attachments = []
+        self._refresh_attachments()
+
     def header(self) -> dict:
         return {
             "doc_date": iso(self.date), "title": self.title.text().strip(),
@@ -330,6 +406,8 @@ class CreateTab(QWidget):
             W.error_box(self, "That delivery note no longer exists.")
             return
         self.edit_id = doc_id
+        self.attachments = []
+        self._refresh_attachments()
         self.doc_no.setText(f"<b>{h['doc_no']}</b>  (editing)")
         self.title.setText(h.get("title", "DELIVERY NOTE"))
         self.date.setDate(QDate.fromString(h.get("doc_date", ""), "yyyy-MM-dd")
@@ -356,6 +434,8 @@ class CreateTab(QWidget):
     def reset(self):
         self.edit_id = None
         self.doc_no.setText("<i>assigned when saved</i>")
+        self.attachments = []
+        self._refresh_attachments()
         for wd in (self.to_party, self.to_address, self.reference, self.vehicle,
                    self.purpose, self.handover_to, self.handover_id,
                    self.handover_phone, self.received_by, self.remarks, self.terms):
@@ -375,6 +455,7 @@ class CreateTab(QWidget):
             h["_edit"] = True
         try:
             doc_id, doc_no = G.save(self.db, h, lines, self.edit_id)
+            self._register_attachments(doc_no)
             f = D.general_dn_pdf(self.db, doc_id)
         except Exception as exc:  # noqa: BLE001
             W.error_box(self, f"Could not create the delivery note.\n\n{exc}")
@@ -429,6 +510,7 @@ class SavedTab(QWidget):
         self.db = db
         self.rows: list[dict] = []
         self.last_file: Path | None = None
+        self.attachments: list[dict[str, object] | str] = []
         v = QVBoxLayout(self)
         v.setContentsMargins(4, 6, 4, 6)
         v.setSpacing(8)

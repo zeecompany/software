@@ -1,7 +1,6 @@
 """Stock In (GRN), Stock Out / Delivery Note, Returns, Transfers, Adjustments, Counts."""
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QTime, Qt, Signal
@@ -15,7 +14,8 @@ from ..core import services as S
 from ..core.database import Database
 from . import widgets as W
 from .common import (AdjustStockDialog, BarcodeBar, ExcelPasteDialog, ItemPicker, LineTable,
-                     ShareBar, date_edit, iso, lookup)
+                     ShareBar, clipboard_attachment_entries, date_edit, iso, lookup,
+                     store_attachment_file)
 from .signature_ui import SignatureBar
 
 
@@ -31,7 +31,7 @@ class _TxnPage(QWidget):
         self.db = db
         self.setObjectName("Page")
         self.last_pdf: Path | None = None
-        self.attachments: list[str] = []
+        self.attachments: list[dict[str, object] | str] = []
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 12, 16, 12)
         v.setSpacing(10)
@@ -108,7 +108,13 @@ class _TxnPage(QWidget):
                                    shortcut="F4"))
             row.addWidget(W.button("🔄  Refresh Stock", slot=self.refresh_availability,
                                    tip="Re-read the available quantities from the database"))
-        row.addWidget(W.button("📎  Attach Document", slot=self.attach))
+        row.addWidget(W.button("📎  Attach Document", slot=self.attach,
+                               tip="Choose supporting files to append after the document PDF"))
+        row.addWidget(W.button("📋  Paste Attachment", slot=self.paste_attachment,
+                               tip="Paste a copied file or screenshot from the clipboard; "
+                                   "it will be appended after the document pages"))
+        row.addWidget(W.button("🧹  Clear Attachments", slot=self.clear_attachments,
+                               tip="Remove the pending attachments before saving"))
         self.attach_lbl = QLabel("")
         self.attach_lbl.setStyleSheet(f"color:{W.MUTED}; font-size:11px;")
         self.attach_lbl.setToolTip("Supporting documents that will be saved with this record")
@@ -152,6 +158,7 @@ class _TxnPage(QWidget):
         """Amber strip shown only while an existing DRAFT is being edited."""
         self.draft_id: int | None = None
         self.draft_no: str = ""
+        self.draft_status: str = ""
         self.draft_bar = QWidget()
         self.draft_bar.setStyleSheet(
             f"background:{W.AMBER}; border-radius:6px;")
@@ -170,7 +177,7 @@ class _TxnPage(QWidget):
         return bool(getattr(self, "draft_id", None))
 
     def load_draft(self, doc_id: int) -> bool:
-        """Re-open a saved DRAFT on this form so its lines can be corrected."""
+        """Re-open a saved draft, or reopen a reversed DN / GRN for correction."""
         if not self.DRAFT_TYPE:
             W.error_box(self, "This form cannot edit drafts.")
             return False
@@ -183,11 +190,13 @@ class _TxnPage(QWidget):
             W.error_box(self, f"{head['doc_no']} is a {head['doc_type']}, "
                               "it cannot be opened on this form.")
             return False
-        if head["status"] != "DRAFT":
+        if head["status"] not in ("DRAFT", "REVERSED"):
             W.error_box(self, f"{head['doc_no']} is {head['status'].lower()} — only "
-                              "drafts can be edited.\n\nUse 'Reverse / Correct' "
-                              "for a finalized document.")
+                              "drafts or reversed documents can be edited here.\n\n"
+                              "Use 'Reverse / Correct' for a finalized document.")
             return False
+        self.attachments = []
+        self._refresh_attach_label()
         rows = []
         for l in lines:
             it = self.db.one("SELECT * FROM items WHERE id=?", (l["item_id"],))
@@ -203,9 +212,15 @@ class _TxnPage(QWidget):
         self.apply_draft_header(head)
         self.draft_id = int(head["id"])
         self.draft_no = head["doc_no"]
-        self.draft_lbl.setText(
-            f"✏  Editing draft {head['doc_no']}  ({head['doc_date']}) — change any "
-            "quantity and press Update Draft, or Finalize to post the stock.")
+        self.draft_status = head["status"]
+        if head["status"] == "REVERSED":
+            self.draft_lbl.setText(
+                f"↺  Re-opening reversed {head['doc_no']}  ({head['doc_date']}) — "
+                "stock was already corrected. Save as Draft or Finalize to reuse the same number.")
+        else:
+            self.draft_lbl.setText(
+                f"✏  Editing draft {head['doc_no']}  ({head['doc_date']}) — change any "
+                "quantity and press Update Draft, or Finalize to post the stock.")
         self.draft_bar.setVisible(True)
         self.update_totals()
         return True
@@ -215,6 +230,8 @@ class _TxnPage(QWidget):
 
     def cancel_draft_edit(self) -> None:
         was = self.draft_no
+        self.attachments = []
+        self._refresh_attach_label()
         self.clear_draft_mode()
         self.lines.clear_lines()
         self.reset_form()
@@ -224,6 +241,7 @@ class _TxnPage(QWidget):
     def clear_draft_mode(self) -> None:
         self.draft_id = None
         self.draft_no = ""
+        self.draft_status = ""
         if hasattr(self, "draft_bar"):
             self.draft_bar.setVisible(False)
 
@@ -297,16 +315,48 @@ class _TxnPage(QWidget):
 
     def attach(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Attach supporting documents")
+        added = 0
         for f in files:
-            dest = config.folder("Attachments") / Path(f).name
             try:
-                shutil.copy2(f, dest)
-                self.attachments.append(str(dest))
+                dest = store_attachment_file(f)
             except OSError:
-                self.attachments.append(f)
-        if files:
+                dest = Path(f)
+            self.attachments.append({"file_path": str(dest), "source": "file", "page_order": 1})
+            added += 1
+        if added:
             self._refresh_attach_label()
-            W.toast(self, f"{len(files)} attachment(s) added.")
+            W.toast(self, f"{added} attachment(s) added.")
+
+    def paste_attachment(self):
+        try:
+            added = clipboard_attachment_entries()
+        except ValueError as exc:
+            W.error_box(self, str(exc))
+            return 0
+        self.attachments.extend(added)
+        self._refresh_attach_label()
+        W.toast(self, f"{len(added)} clipboard attachment(s) added.")
+        return len(added)
+
+    def clear_attachments(self):
+        if not self.attachments:
+            return 0
+        n = len(self.attachments)
+        self.attachments = []
+        self._refresh_attach_label()
+        W.toast(self, f"Cleared {n} pending attachment(s).", "warn")
+        return n
+
+    def _attachment_entry(self, rec) -> dict[str, object]:
+        if isinstance(rec, dict):
+            path = str(rec.get("file_path") or rec.get("path") or "")
+            source = str(rec.get("source") or "file")
+            try:
+                order = int(rec.get("page_order") or (2 if source == "clipboard" else 1))
+            except (TypeError, ValueError):
+                order = 2 if source == "clipboard" else 1
+            return {"file_path": path, "source": source, "page_order": order}
+        return {"file_path": str(rec), "source": "file", "page_order": 1}
 
     def _signature_fields(self) -> dict[str, str]:
         """Names typed into the form's own header boxes, keyed by signature role."""
@@ -352,11 +402,14 @@ class _TxnPage(QWidget):
     def _refresh_attach_label(self):
         if not hasattr(self, "attach_lbl"):
             return
-        n = len(self.attachments)
+        items = [self._attachment_entry(a) for a in self.attachments]
+        n = len(items)
+        pasted = sum(1 for a in items if a["source"] == "clipboard")
+        names = ", ".join(Path(str(a["file_path"])).name for a in items[:3])
+        extra = "" if not pasted else f"  ·  {pasted} pasted"
         self.attach_lbl.setText(
             "" if not n else
-            f"📎 {n} file(s): " + ", ".join(Path(a).name for a in self.attachments[:3])
-            + ("..." if n > 3 else ""))
+            f"📎 {n} file(s): {names}" + ("..." if n > 3 else "") + extra)
 
     # ------------------------------------------------- Excel paste / export
     def paste_from_excel(self):
@@ -488,8 +541,10 @@ class _TxnPage(QWidget):
 
     def _register_attachments(self, doc_type: str, doc_no: str):
         for a in self.attachments:
-            self.db.execute("INSERT INTO attachments(doc_type,doc_no,file_path) VALUES(?,?,?)",
-                            (doc_type, doc_no, a))
+            ent = self._attachment_entry(a)
+            self.db.execute(
+                "INSERT INTO attachments(doc_type,doc_no,file_path,source,page_order) VALUES(?,?,?,?,?)",
+                (doc_type, doc_no, ent["file_path"], ent["source"], ent["page_order"]))
         self.db.commit()
         self.attachments = []
         self._refresh_attach_label()
@@ -561,7 +616,8 @@ class StockInPage(_TxnPage):
     def load_draft(self, doc_id: int) -> bool:
         ok = super().load_draft(doc_id)
         if ok:
-            self.btn_draft.setText("💾  Update Draft")
+            self.btn_draft.setText("💾  Save Again as Draft" if self.draft_status == "REVERSED"
+                                   else "💾  Update Draft")
         return ok
 
     def clear_draft_mode(self) -> None:
@@ -595,6 +651,7 @@ class StockInPage(_TxnPage):
         posting = self.lines.to_lines()
         if self.editing_draft():
             doc_id, no = self.draft_id, self.draft_no
+            was_reversed = self.draft_status == "REVERSED"
             try:
                 S.update_draft(self.db, doc_id, h, posting)
                 if finalize:
@@ -606,13 +663,16 @@ class StockInPage(_TxnPage):
             self.clear_draft_mode()
             if finalize:
                 self._after_post("GRN", no,
-                                 f"Goods Receipt {no} updated and finalized — stock increased.")
+                                 (f"Goods Receipt {no} re-finalized after reversal — stock increased again."
+                                  if was_reversed else
+                                  f"Goods Receipt {no} updated and finalized — stock increased."))
             else:
                 self._register_attachments("GRN", no)
                 self.lines.clear_lines()
                 self.reset_form()
                 self.dataChanged.emit()
-                W.toast(self, f"Draft {no} updated.", "warn")
+                W.toast(self, (f"Reversed {no} saved again as a draft with the same number."
+                               if was_reversed else f"Draft {no} updated."), "warn")
             return
         try:
             no = S.post_receipt(self.db, h, posting, finalize)
@@ -796,7 +856,8 @@ class StockOutPage(_TxnPage):
     def load_draft(self, doc_id: int) -> bool:
         ok = super().load_draft(doc_id)
         if ok:
-            self.btn_draft.setText("💾  Update Draft")
+            self.btn_draft.setText("💾  Save Again as Draft" if self.draft_status == "REVERSED"
+                                   else "💾  Update Draft")
         return ok
 
     def clear_draft_mode(self) -> None:
@@ -922,6 +983,7 @@ class StockOutPage(_TxnPage):
         # ---- editing an existing draft: rewrite it instead of making a new one
         if self.editing_draft():
             doc_id, no = self.draft_id, self.draft_no
+            was_reversed = self.draft_status == "REVERSED"
             try:
                 S.update_draft(self.db, doc_id, self._header(), posting)
                 if finalize:
@@ -933,14 +995,19 @@ class StockOutPage(_TxnPage):
             self.clear_draft_mode()
             if finalize:
                 self._after_post("DN", no,
-                                 f"Delivery Note {no} updated and finalized — stock deducted.")
+                                 (f"Delivery Note {no} re-finalized after reversal — stock deducted again."
+                                  if was_reversed else
+                                  f"Delivery Note {no} updated and finalized — stock deducted."))
             else:
                 self._register_attachments("DN", no)
                 self.lines.clear_lines()
                 self.reset_form()
                 self.dataChanged.emit()
-                W.toast(self, f"Draft {no} updated — {len(posting)} line(s), "
-                              f"total qty {sum(l.qty for l in posting):g}.", "warn")
+                W.toast(self,
+                        (f"Reversed {no} saved again as a draft with the same number."
+                         if was_reversed else
+                         f"Draft {no} updated — {len(posting)} line(s), total qty {sum(l.qty for l in posting):g}."),
+                        "warn")
             return
         try:
             no = S.post_issue(self.db, self._header(), posting, finalize)

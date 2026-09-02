@@ -1,11 +1,12 @@
 """Document browser (DN/GRN/RET/TRF/ADJ/CNT), movement history, global search, audit."""
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QInputDialog, QLabel, QSplitter,
-                               QTabWidget, QVBoxLayout, QWidget)
+                               QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from ..core import documents as D, reports
 from ..core import services as S
@@ -62,9 +63,9 @@ class DocumentsPage(QWidget):
         btns.addWidget(W.button("👁  View / Regenerate PDF", "Primary", self.view_pdf))
         btns.addWidget(W.button("🖨  Reprint", slot=self.reprint))
         btns.addWidget(W.button("📄  Duplicate / Copy", slot=self.duplicate))
-        btns.addWidget(W.button("✏  Edit Draft", "Primary", self.edit_draft,
-                                tip="Re-open this DRAFT on its form to change "
-                                    "quantities, PR numbers or the header"))
+        btns.addWidget(W.button("✏  Edit Draft / Re-open", "Primary", self.edit_draft,
+                                tip="Re-open this draft on its form, or reopen a reversed "
+                                    "DN / GRN to save it again with the same number"))
         btns.addWidget(W.button("✅  Finalize Draft", slot=self.finalize))
         btns.addWidget(W.button("↩  Reverse / Correct", "Danger", self.reverse))
         btns.addWidget(W.button("📊  Export List to Excel", slot=self.export))
@@ -261,21 +262,23 @@ class DocumentsPage(QWidget):
         W.toast(self, f"Draft {no} created as a copy of {d['doc_no']}.")
 
     def edit_draft(self):
-        """Send the selected DRAFT back to Stock Out / Stock In for correction."""
+        """Send a draft, or a reversed DN / GRN, back to its source form."""
         d = self._sel()
         if not d:
-            W.error_box(self, "Select a draft document first.")
-            return
-        if d["status"] != "DRAFT":
-            W.error_box(self, f"{d['doc_no']} is {d['status'].lower()} and cannot be "
-                              "edited.\n\nOnly DRAFT documents can be changed; use "
-                              "'Reverse / Correct' for a finalized document.")
+            W.error_box(self, "Select a document first.")
             return
         if d["doc_type"] not in ("DN", "GRN"):
-            W.error_box(self, "Only Delivery Note and Goods Receipt drafts can be "
-                              "re-opened for editing.")
+            W.error_box(self, "Only Delivery Notes and Goods Receipts can be reopened on a form.")
+            return
+        if d["status"] == "FINAL":
+            W.error_box(self, f"{d['doc_no']} is finalized — reverse it first, then reopen it "
+                              "to save it again with the same number.")
+            return
+        if d["status"] not in ("DRAFT", "REVERSED"):
+            W.error_box(self, f"{d['doc_no']} is {d['status'].lower()} and cannot be reopened.")
             return
         self.editDraft.emit(int(d["id"]))
+
 
     def finalize(self):
         d = self._sel()
@@ -316,12 +319,17 @@ class DocumentsPage(QWidget):
             return
         try:
             S.reverse_document(self.db, d["id"], reason.strip())
+            self.last_pdf = D.document_pdf(self.db, d["id"])
         except S.StockError as exc:
             W.error_box(self, str(exc))
             return
         self.reload()
         self.dataChanged.emit()
-        W.toast(self, f"{d['doc_no']} reversed — the opposite stock movement was recorded.", "warn")
+        hint = (" Use 'Edit Draft / Re-open' to save it again with the same number."
+                if d["doc_type"] in ("DN", "GRN") else "")
+        W.toast(self, f"{d['doc_no']} reversed — the opposite stock movement was recorded.{hint}",
+                "warn")
+
 
     def export(self):
         f = D.export_excel(self.db, "Document Register", self.table.headers(), self.table.all_rows())
@@ -436,17 +444,37 @@ class SearchPage(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 12, 16, 12)
         self.box = W.SearchBox("Search everything: item code, description, barcode, UOM, category, "
-                               "brand, location, DN number, MR number, supplier, date...")
+                               "brand, location, DN number, MR number, supplier, date, file text...")
         self.box.setMinimumHeight(42)
         self.box.setStyleSheet("font-size:15px;")
-        self.box.textChanged.connect(self.run)
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.timeout.connect(self.run)
+        self.box.textChanged.connect(lambda _t: self._debounce.start(220))
         v.addWidget(self.box)
+        self.info = QLabel("Global Search now also checks searchable text inside document files and attachments.")
+        self.info.setStyleSheet("color:#5f6368")
+        self.info.setWordWrap(True)
+        v.addWidget(self.info)
         self.tabs = QTabWidget()
         self.t_items, self.t_docs, self.t_moves = W.DataTable(), W.DataTable(), W.DataTable()
+        self.t_files = W.DataTable()
         self.t_items.doubleClicked.connect(self._open_item)
+        self.t_files.doubleClicked.connect(self._open_file_hit)
+        self.t_files.itemSelectionChanged.connect(self._show_file_hit)
         self.tabs.addTab(self.t_items, "Items")
         self.tabs.addTab(self.t_docs, "Documents")
         self.tabs.addTab(self.t_moves, "Stock Movements")
+        file_tab = QWidget()
+        fv = QVBoxLayout(file_tab)
+        fv.setContentsMargins(0, 0, 0, 0)
+        self.file_preview = QTextBrowser()
+        self.file_preview.setOpenExternalLinks(True)
+        self.file_preview.setMaximumHeight(150)
+        self.file_preview.setHtml("<i>Select a file-content result to preview the match.</i>")
+        fv.addWidget(self.t_files, 1)
+        fv.addWidget(self.file_preview)
+        self.tabs.addTab(file_tab, "File Contents")
         v.addWidget(self.tabs, 1)
         self.res: dict = {}
 
@@ -457,8 +485,9 @@ class SearchPage(QWidget):
     def run(self):
         t = self.box.text().strip()
         if len(t) < 1:
-            for tb in (self.t_items, self.t_docs, self.t_moves):
+            for tb in (self.t_items, self.t_docs, self.t_moves, self.t_files):
                 tb.setRowCount(0)
+            self.file_preview.setHtml("<i>Select a file-content result to preview the match.</i>")
             return
         r = S.global_search(self.db, t)
         self.res = r
@@ -475,9 +504,19 @@ class SearchPage(QWidget):
                           [[m["txn_date"], m["txn_type"], m["item_code"], m["doc_no"],
                             m["qty_in"] or "", m["qty_out"] or "", m["balance_after"], m["party"]]
                            for m in r["movements"]])
+        self.t_files.fill(["Document", "Type", "Source", "File", "Match Preview"],
+                          [[f.get("doc_no") or "—", f.get("doc_type") or "—", f["source_type"],
+                            f["file_name"], f.get("snippet") or f.get("title") or ""]
+                           for f in r.get("files", [])])
+        if r.get("files"):
+            self.t_files.selectRow(0)
+            self._show_file_hit()
+        else:
+            self.file_preview.setHtml("<i>No file-content matches found for this keyword.</i>")
         self.tabs.setTabText(0, f"Items ({len(r['items'])})")
         self.tabs.setTabText(1, f"Documents ({len(r['documents'])})")
         self.tabs.setTabText(2, f"Stock Movements ({len(r['movements'])})")
+        self.tabs.setTabText(3, f"File Contents ({len(r.get('files', []))})")
 
     def _open_item(self):
         r = self.t_items.currentRow()
@@ -487,6 +526,32 @@ class SearchPage(QWidget):
         it = self.db.one("SELECT id FROM items WHERE code=?", (code,))
         if it:
             self.openItem.emit(it["id"])
+
+    def _current_file_hit(self) -> dict | None:
+        r = self.t_files.currentRow()
+        hits = self.res.get("files", []) if isinstance(self.res, dict) else []
+        if r < 0 or r >= len(hits):
+            return None
+        return hits[r]
+
+    def _show_file_hit(self):
+        hit = self._current_file_hit()
+        if not hit:
+            return
+        title = hit.get("title") or f"{hit.get('doc_type') or ''} {hit.get('doc_no') or ''}".strip()
+        snippet = hit.get("snippet") or "No extracted text preview is available for this file."
+        path = Path(hit["path"])
+        self.file_preview.setHtml(
+            f"<b>{html.escape(title or path.name)}</b><br>"
+            f"<span style='color:#5f6368'>{html.escape(str(path))}</span><br><br>"
+            f"{html.escape(snippet)}"
+            f"<br><br><a href='file://{html.escape(str(path))}'>Open file</a>"
+        )
+
+    def _open_file_hit(self):
+        hit = self._current_file_hit()
+        if hit:
+            D.open_path(hit["path"])
 
 
 # ================================================================ audit page
