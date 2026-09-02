@@ -234,7 +234,22 @@ def build_report(db: Database, name: str, filters: dict | None = None) -> Report
         return title, LEDGER_COLS, _ledger_table(db.query(sql, p))
 
     if name == "Delivery Note Report":
-        return title, DOC_COLS, _doc_table(db, "DN", f, "issued_to")
+        cols = ["Doc No", "Date", "Status", "Issued To", "Project / Site", "Reference",
+                "Item Code", "Description", "UOM", "Qty", "Unit Cost", "Total", "User"]
+        sql = ("SELECT d.doc_no,d.doc_date,d.status,d.issued_to,d.project,d.reference,"
+               "l.item_code,l.description,l.uom,l.qty,l.unit_cost,l.total_cost,d.created_by"
+               " FROM document_lines l JOIN documents d ON d.id=l.doc_id WHERE d.doc_type='DN'")
+        p = []
+        dc, dp = _date_clause(f, "d.doc_date")
+        sql += dc
+        p += dp
+        if _f(f, "text"):
+            like = f"%{_f(f, 'text')}%"
+            sql += (" AND (d.doc_no LIKE ? OR d.reference LIKE ? OR d.project LIKE ? OR d.issued_to LIKE ?"
+                    " OR l.item_code LIKE ? OR l.description LIKE ?)")
+            p += [like] * 6
+        sql += " ORDER BY d.doc_date DESC, d.id DESC, l.id"
+        return title, cols, [list(r) for r in db.query(sql, p)]
     if name == "Return Report":
         return title, DOC_COLS, _doc_table(db, "RET", f, "returned_by")
     if name == "Stock Adjustment Report":

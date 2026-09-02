@@ -62,8 +62,7 @@ def main() -> int:
     import aurco.ui.common as _c, aurco.ui.transactions as _t, aurco.ui.items as _i
     import aurco.ui.documents_page as _d, aurco.ui.bulk_check as _b
     import aurco.ui.material_page as _m, aurco.ui.signature_ui as _s
-    import aurco.ui.whatsapp_page as _wa
-    for mod in (_c, _t, _i, _d, _b, _m, _s, _wa):
+    for mod in (_c, _t, _i, _d, _b, _m, _s):
         mod.W.confirm, mod.W.info_box = W.confirm, W.info_box
         mod.W.error_box, mod.W.toast = W.error_box, W.toast
     from aurco.core import documents as D
@@ -71,8 +70,9 @@ def main() -> int:
     D.open_file_location = lambda *a, **k: None
 
     import os
-    from aurco.core import (config, database, demo, material as M, reports,
+    from aurco.core import (config, database, demo, licensing as LIC, material as M, reports,
                             services as S, signatories as SG, theming)
+    from aurco.ui import pdf_viewer as PV
 
     app = QApplication.instance() or QApplication(sys.argv)
     root, db = fresh("MAIN")
@@ -380,20 +380,19 @@ def main() -> int:
     check(sp.t_files.rowCount() >= 1 and "File Contents" in sp.tabs.tabText(3),
           "Global Search page shows a File Contents result tab")
 
-    # ----------------------------------------------------- WhatsApp module
-    section("WhatsApp desk")
-    wp = win.page_whatsapp
-    wp.number.setText("+966 50 123 4567")
-    wp.message.setPlainText("Please review the attached delivery note.")
-    wp.file.setText(str(_probe))
-    wp._refresh_preview()
-    check(D.whatsapp_url("+966 50 123 4567", "Hello team")
-          == "https://wa.me/966501234567?text=Hello%20team",
-          "WhatsApp URL helper sanitizes the number and encodes the message")
-    check("966501234567" in wp.url_lbl.text(),
-          "WhatsApp desk preview uses the cleaned phone number")
-    check((not wp.attach_lbl.isHidden()) and "search_probe.txt" in wp.attach_lbl.text(),
-          "WhatsApp desk shows a phone-style attachment preview")
+    # ------------------------------------------- licensing and built-in view
+    section("Licensing && built-in PDF viewer")
+    LIC.clear_license_key()
+    _iid = LIC.installation_id()
+    _lic = LIC.generate_license_key(_iid, "Arena QA", "2099-12-31", 5)
+    _lic_res = LIC.validate_license_key(_lic, _iid)
+    check(_lic_res["valid"], "license key validates for the current installation")
+    check(LIC.apply_license_key(_lic)["valid"], "license key can be activated locally")
+    check(LIC.current_status()["valid"], "activated license is stored in local bootstrap")
+    _other = LIC.generate_license_key("AUR-OTHER-OTHER-OTHER-OTHER", "Arena QA", "2099-12-31", 1)
+    check(not LIC.validate_license_key(_other, _iid)["valid"],
+          "license key is rejected for a different installation id")
+    check("WhatsApp Desk" not in win.pages, "dedicated WhatsApp module removed from navigation")
 
     # ------------------------------------------------ export presentation
     section("PDF and Excel presentation")
@@ -411,6 +410,12 @@ def main() -> int:
           "record count excludes an existing TOTAL line")
     _empty = D.report_pdf(db, "Empty Report", ["A", "B"], [])
     check(_empty.exists(), "a report with no rows still renders cleanly")
+    check((not PV.PDF_SUPPORTED) or PV.show_pdf(_pdf5),
+          "built-in PDF viewer opens a generated PDF when Qt PDF support is present")
+    _dn_title, _dn_cols, _dn_rows = reports.build_report(db, "Delivery Note Report", {})
+    check("Description" in _dn_cols, "Delivery Note Report includes an item description column")
+    check(any(r[_dn_cols.index("Description")] for r in _dn_rows),
+          "Delivery Note Report returns line descriptions")
     _xl = D.export_excel(db, _t5, _c5, _r5)
     from openpyxl import load_workbook as _lw
     _ws = _lw(_xl).active

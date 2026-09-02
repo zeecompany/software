@@ -220,7 +220,8 @@ class DocumentsPage(QWidget):
         if not d:
             W.error_box(self, "Select a document first.")
             return
-        self.last_pdf = D.document_pdf(self.db, d["id"])
+        existing = Path(d.get("pdf_path") or "") if d.get("pdf_path") else None
+        self.last_pdf = existing if existing and existing.exists() else D.document_pdf(self.db, d["id"])
         D.open_path(self.last_pdf)
 
     def reprint(self):

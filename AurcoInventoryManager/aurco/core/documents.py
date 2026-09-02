@@ -1486,13 +1486,23 @@ def export_csv(db: Database, title: str, cols: list[str], rows: list[list[Any]],
 
 # ------------------------------------------------------------------ sharing
 def open_path(path: str | Path) -> None:
-    p = str(path)
+    p = Path(path)
+    if p.suffix.lower() == ".pdf":
+        try:
+            from PySide6.QtWidgets import QApplication
+            if QApplication.instance() is not None:
+                from ..ui import pdf_viewer as _PV
+                if _PV.show_pdf(p):
+                    return
+        except Exception:
+            pass
+    sp = str(p)
     if platform.system() == "Windows":
-        os.startfile(p)  # type: ignore[attr-defined]
+        os.startfile(sp)  # type: ignore[attr-defined]
     elif platform.system() == "Darwin":
-        subprocess.Popen(["open", p])
+        subprocess.Popen(["open", sp])
     else:
-        subprocess.Popen(["xdg-open", p])
+        subprocess.Popen(["xdg-open", sp])
 
 
 def open_file_location(path: str | Path) -> None:

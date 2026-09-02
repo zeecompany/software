@@ -35,7 +35,6 @@ from .documents_page import AuditPage, DocumentsPage, HistoryPage, SearchPage
 from .items import ItemsPage
 from .reports_page import ReportsPage
 from .settings_page import SettingsPage
-from .whatsapp_page import WhatsAppPage
 from .transactions import (AdjustmentPage, ReturnsPage, StockCountPage, StockInPage, StockOutPage,
                            TransferPage)
 
@@ -72,7 +71,6 @@ NAV = [
     ("Cable Records", "🧵", "Ctrl+Shift+B"),
     ("General DN Maker", "🧾", "Ctrl+G"),
     ("Company Issuance", "🏢", "Ctrl+Shift+O"),
-    ("WhatsApp Desk", "💬", "Ctrl+Shift+W"),
     ("SYSTEM", None, None),
     ("Settings", "⚙", "Ctrl+,"),
     ("Calculator", "🧮", "Ctrl+Alt+C"),
@@ -292,7 +290,6 @@ class MainWindow(QMainWindow):
         self.page_cables = CableRecordsPage(db)
         self.page_gdn = GeneralDNPage(db)
         self.page_issuance = IssuancePage(db)
-        self.page_whatsapp = WhatsAppPage(db)
         self.page_library = LibraryPage(db)
         self.page_settings = SettingsPage(db, self.session)
         for name, page in (("Dashboard", self.page_dashboard), ("Global Search", self.page_search),
@@ -311,7 +308,6 @@ class MainWindow(QMainWindow):
                            ("Cable Records", self.page_cables),
                            ("General DN Maker", self.page_gdn),
                            ("Company Issuance", self.page_issuance),
-                           ("WhatsApp Desk", self.page_whatsapp),
                            ("Settings", self.page_settings)):
             self.pages[name] = page
             self.stack.addWidget(page)

@@ -801,11 +801,10 @@ Open File Location · Copy Path**, plus PDF / Excel / CSV export.
 * **Email** uses your SMTP settings; if empty it opens your default mail client.
 * **WhatsApp** opens WhatsApp Web/Desktop with the message pre-filled and the
   document's folder opened for a one-click attach — no unofficial API.
-* **WhatsApp Desk** is also available as a lightweight in-system page with a
-  phone-style preview, saved default number/message reuse and optional file
-  locator before handoff to WhatsApp.
 * **Global Search** now has a **File Contents** tab that searches searchable text
   extracted from document PDFs, attachments and library files.
+* **PDF files opened by AURCO** are shown in the built-in viewer when available,
+  so connected PCs can review the same shared document inside the system.
 
 ### Drafts and adjusted quantities
 
@@ -899,7 +898,7 @@ Ctrl+6 Returns          Ctrl+7 Transfer               F3  Add items
 Ctrl+8 Adjustment       Ctrl+9 Physical count         Ctrl+S Save / finalize
 Ctrl+D Documents        Ctrl+R Report center          Del Remove line
 Ctrl+, Settings         Ctrl+B Backup now             Ctrl+N New item
-Ctrl+Shift+W WhatsApp Desk    Ctrl+Shift+I Quick add item
+Ctrl+Shift+I Quick add item
 ```
 
 ---
@@ -912,6 +911,8 @@ Ctrl+Shift+W WhatsApp Desk    Ctrl+Shift+I Quick add item
 * **Validate Database** runs `integrity_check` and reconciles every item balance
   against the ledger; **Rebuild Balances from Ledger** repairs any mismatch.
 * Automatic backup on exit, manual backup (Ctrl+B), backup history and restore.
+* Packaged Windows copies can require an offline **license key** per PC: the
+  user sends the Installation ID and the developer returns the activation key.
 * Full audit trail: created, edited, deleted, issued, received, returned,
   adjusted, transferred, finalized, printed, exported — with user and timestamp.
 * Unhandled errors are logged to `Logs\aurco.log` with a friendly message.
@@ -944,6 +945,8 @@ Everyone works on the same live data — one shared database, separate logins.
 * every action in the audit trail with the user name **and the computer**
 * **Who is connected** shows the live session list; the status bar shows
   "👥 N other user(s) online"
+* **Built-in PDF viewer** lets connected PCs review the same shared document
+  inside AURCO, with automatic refresh when the PDF changes on the shared folder
 * **Multi-user health check** reports share speed, journal mode and locks
 
 **Under the hood** — WAL journaling plus a 15-second busy timeout, so a second

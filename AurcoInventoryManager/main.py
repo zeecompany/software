@@ -15,10 +15,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QSplashScreen
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 
-from aurco.core import config, demo, multiuser as MU, security, theming
+from aurco.core import config, demo, licensing as LIC, multiuser as MU, security, theming
 from aurco.core.database import Database, set_db
 from aurco.ui import widgets as W
 from aurco.ui.auth_dialogs import LoginDialog
+from aurco.ui.license_dialog import LicenseDialog
 from aurco.ui.main_window import MainWindow, StorageWizard
 
 
@@ -76,6 +77,9 @@ def main() -> int:
     QApplication.setApplicationVersion(config.APP_VERSION)
     app = QApplication(sys.argv)
     app.setWindowIcon(W.app_icon())
+
+    if LIC.should_enforce() and not LicenseDialog.ensure_licensed():
+        return 0
 
     first_run = config.get_storage_root() is None
     load_demo = False

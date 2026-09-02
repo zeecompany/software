@@ -5,18 +5,20 @@ import shutil
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                               QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog,
-                               QLabel, QLineEdit, QListWidget, QPlainTextEdit, QPushButton,
-                               QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+                               QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
+                               QInputDialog, QLabel, QLineEdit, QListWidget, QPlainTextEdit,
+                               QPushButton, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout,
+                               QWidget)
 
-from ..core import arabic as AR, config, documents as D, multiuser as MU, security, sounds as SND, theming
+from ..core import arabic as AR, config, documents as D, licensing as LIC, multiuser as MU, security, sounds as SND, theming
 from ..core.database import Database
 from . import widgets as W
 from .appearance import AppearanceTab
 from .header_designer import HeaderDesignerTab
 from .signature_ui import DocumentDesignerTab, SignatoryTab
 from .auth_dialogs import AdminAuthDialog, ChangePasswordDialog
+from .license_dialog import LicenseDialog
 
 
 class SettingsPage(QWidget):
@@ -66,6 +68,7 @@ class SettingsPage(QWidget):
         self.signatories = SignatoryTab(db)
         add_tab(self.signatories, "Signatories")
         add_tab(self._security(), "Security && Login")
+        add_tab(self._license(), "License && Activation")
         add_tab(self._storage(), "Storage && Backup")
         add_tab(self._lookups(), "Categories · UOM · Warehouses · Sites")
         add_tab(self._alerts(), "Stock Alerts")
@@ -725,8 +728,7 @@ class SettingsPage(QWidget):
         self.f_wa_message.setMaximumHeight(70)
         f2.addRow("Default message", self.f_wa_message)
         f2.addRow(QLabel("WhatsApp Web/Desktop opens with the message ready and the document "
-                         "folder highlighted so the file can be attached — no unofficial API used. "
-                         "The same defaults are reused by the lightweight WhatsApp Desk page."))
+                         "folder highlighted so the file can be attached — no unofficial API used."))
         v.addWidget(g2)
 
         g_snd = QGroupBox("Alert sounds")
@@ -900,6 +902,85 @@ class SettingsPage(QWidget):
         v.addWidget(g3)
         v.addStretch(1)
         return w
+
+    def _license(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        g = QGroupBox("Offline Windows license")
+        f = QFormLayout(g)
+        self.lbl_license_status = QLabel()
+        self.lbl_license_status.setWordWrap(True)
+        f.addRow("Current status", self.lbl_license_status)
+        row = QHBoxLayout()
+        self.f_license_installation = QLineEdit(LIC.installation_id())
+        self.f_license_installation.setReadOnly(True)
+        row.addWidget(self.f_license_installation, 1)
+        row.addWidget(W.button("Copy", slot=lambda: QApplication.clipboard().setText(
+            self.f_license_installation.text())))
+        holder = QWidget()
+        holder.setLayout(row)
+        f.addRow("Installation ID", holder)
+        self.f_license_key = QPlainTextEdit()
+        self.f_license_key.setPlaceholderText("Paste the activation key issued for this PC...")
+        self.f_license_key.setMaximumHeight(110)
+        f.addRow("License key", self.f_license_key)
+        act = QHBoxLayout()
+        act.addWidget(W.button("Activate / Update Key", "Accent", self._apply_license))
+        act.addWidget(W.button("Open Activation Dialog", slot=self._open_license_dialog))
+        act.addWidget(W.button("Clear Local Key", slot=self._clear_license))
+        act.addStretch(1)
+        aw = QWidget()
+        aw.setLayout(act)
+        f.addRow("Actions", aw)
+        tip = QLabel("Developer workflow: give the Installation ID to the developer, then issue a key "
+                     "with tools/generate_license.py and send only the resulting key back to the user.")
+        tip.setWordWrap(True)
+        tip.setStyleSheet(f"color:{W.MUTED};")
+        f.addRow(tip)
+        v.addWidget(g)
+
+        g2 = QGroupBox("Built-in PDF viewer")
+        f2 = QFormLayout(g2)
+        f2.addRow(QLabel("PDF files opened from AURCO are shown in the built-in viewer whenever "
+                         "Qt PDF support is available. The viewer auto-refreshes when the shared PDF "
+                         "file changes, so multiple PCs can look at the same document from the same "
+                         "storage folder."))
+        v.addWidget(g2)
+        v.addStretch(1)
+        self._refresh_license_status()
+        return w
+
+    def _refresh_license_status(self):
+        if not hasattr(self, "lbl_license_status"):
+            return
+        st = LIC.current_status()
+        if st["valid"]:
+            self.lbl_license_status.setStyleSheet("color:#1a7f37")
+            self.lbl_license_status.setText(
+                f"Active — {LIC.customer_label(st.get('payload'))}<br>"
+                f"Machine: {st.get('machine','')}<br>"
+                f"Activated: {st.get('activated_at','') or '—'}")
+            self.f_license_key.setPlainText(st.get("key", ""))
+        else:
+            self.lbl_license_status.setStyleSheet("color:#c92a2a")
+            self.lbl_license_status.setText(st["reason"])
+
+    def _open_license_dialog(self):
+        LicenseDialog(self).exec()
+        self._refresh_license_status()
+
+    def _apply_license(self):
+        res = LIC.apply_license_key(self.f_license_key.toPlainText().strip())
+        if not res["valid"]:
+            W.error_box(self, res["reason"])
+            return
+        self._refresh_license_status()
+        W.info_box(self, "License activated for this PC.")
+
+    def _clear_license(self):
+        LIC.clear_license_key()
+        self.f_license_key.clear()
+        self._refresh_license_status()
 
     def _change_my_password(self):
         ChangePasswordDialog(self.db, self.session.username, True, self).exec()
@@ -1078,12 +1159,16 @@ class SettingsPage(QWidget):
         logo.setPixmap(W.app_icon().pixmap(120, 120))
         logo.setAlignment(Qt.AlignCenter)
         v.addWidget(logo)
+        lic = LIC.current_status()
+        lic_line = (LIC.customer_label(lic.get("payload")) if lic.get("valid")
+                    else lic.get("reason", "No license activated"))
         txt = QLabel(
             f"<div style='text-align:center'>"
             f"<h1 style='color:{W.NAVY}; margin:6px'>AURCO INVENTORY MANAGER</h1>"
             f"<p style='color:{W.MUTED}'>Professional Inventory &amp; Warehouse Management</p>"
             f"<p>Version {config.APP_VERSION} &nbsp;·&nbsp; Windows Desktop Edition</p>"
             f"<p>Local-first · SQLite · Offline capable</p>"
+            f"<p>License: {lic_line}</p>"
             f"<h3 style='color:{W.NAVY}'>Created by {config.CREATED_BY}</h3>"
             f"<p style='color:{W.MUTED}; font-size:11px'>Storage: {config.get_storage_root()}</p>"
             f"</div>")

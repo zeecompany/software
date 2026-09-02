@@ -255,8 +255,8 @@ covering prepare, link, create item, print, copy, cancel, restore and delete.</p
 <tr><td><b>Ctrl+D</b> Documents</td><td><b>Ctrl+R</b> Report Center</td><td><b>Ctrl+M</b> Material Requests</td></tr>
 <tr><td><b>Ctrl+K</b> Bulk check</td><td><b>Ctrl+T</b> Notes &amp; Tasks</td><td><b>Ctrl+,</b> Settings</td></tr>
 <tr><td><b>Ctrl+Shift+A</b> Admin Station</td><td><b>Ctrl+G</b> General DN Maker</td><td><b>Ctrl+F</b> Search / scan</td></tr>
-<tr><td><b>Ctrl+Shift+O</b> Company Issuance</td><td><b>Ctrl+Shift+W</b> WhatsApp Desk</td><td><b>F1</b> This manual</td></tr>
-<tr><td><b>Ctrl+L</b> Document Library</td><td><b>Ctrl+Alt+C</b> Calculator</td><td>Scanned delivery notes</td></tr>
+<tr><td><b>Ctrl+Shift+O</b> Company Issuance</td><td><b>Ctrl+Alt+C</b> Calculator</td><td><b>F1</b> This manual</td></tr>
+<tr><td><b>Ctrl+L</b> Document Library</td><td colspan='2'>Scanned delivery notes</td></tr>
 </table>
 <h3>Working</h3>
 <table border='1' cellpadding='5' cellspacing='0' width='100%'>
@@ -457,12 +457,12 @@ PDF <b>after</b> the document pages, so the printed pack is complete.</p>
 <p>Every screen has PDF, Excel, CSV, Print, Email and WhatsApp. Email needs SMTP
 set up in Settings. WhatsApp opens with the message ready and the file's folder
 open so you can attach it.</p>
-<p><b>WhatsApp Desk</b> is a lightweight helper page with a phone-style preview,
-saved default number/message reuse and an optional file locator before the final
-handoff to WhatsApp Web/Desktop.</p>
 <p><b>Global Search</b> now includes a <b>File Contents</b> tab that searches
 searchable text extracted from PDFs, TXT/CSV notes, DOCX and XLSX files already
 saved in documents, attachments and the document library.</p>
+<p><b>PDF files opened by AURCO</b> are shown in the built-in viewer when Qt PDF
+support is available, so several connected PCs can review the same shared
+storage document inside the system.</p>
 <h2>General Delivery Note Maker</h2>
 <p><b>Ctrl+G.</b> A fully branded delivery note for anything that is <i>not</i> a
 stocked item — hired tools, a subcontractor's material, a sample. Lines are free
@@ -848,10 +848,16 @@ what they may do.</p>
 <p><b>Important:</b> if a PDF or Excel file is open in another program, Windows
 locks it and it cannot be overwritten. Close the file before reprinting the same
 document.</p>
+<p>AURCO now includes its own <b>built-in PDF viewer</b> for document files, which
+helps connected PCs review the same shared PDF inside the system without needing
+a separate desktop viewer.</p>
 <h2>Users and roles</h2>
 <p>Administrator, Manager, Storekeeper and Viewer. Turn on <b>Require login</b> in
 Settings → Security. Deleting or reversing a document can require an
 administrator password. The <b>Audit Trail</b> records who did what and when.</p>
+<p>Packaged Windows copies can also require an offline <b>license key</b> per PC:
+the user copies the Installation ID, the developer issues the key, and the app
+activates locally without depending on the shared database.</p>
 """),
     ("File protection", """
 <h2>File protection — nothing gets deleted</h2>
