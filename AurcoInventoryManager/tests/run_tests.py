@@ -449,6 +449,18 @@ def main() -> int:
     app.processEvents()
     check(_studio.page_total == 3 and "pdf_studio_sample.pdf" in _studio.sub.text(),
           "advanced PDF studio opens and shows the sample PDF")
+    _studio.fit_mode.setCurrentText("Fit Width")
+    _studio.zoom_slider.setValue(120)
+    _studio.render_current_page()
+    check(_studio.render_engine_scale > _studio.render_display_scale >= 0.25,
+          "PDF studio uses a higher-quality render scale for the on-screen preview")
+    check("Fit Width" in _studio.page_meta.toPlainText() and "Render" in _studio.page_meta.toPlainText(),
+          "PDF studio preview shows fit-mode and render details")
+    check(_studio.thumbs.count() >= 3, "advanced PDF studio builds page thumbnails")
+    _studio.reset_zoom()
+    app.processEvents()
+    check(_studio.fit_mode.currentText() == "Actual Size" and _studio.zoom_slider.value() == 100,
+          "PDF studio can reset to actual-size preview")
     _studio.search.setText("UniquePdfStudioToken 3")
     _studio.run_search()
     check(_studio.search_hits.count() >= 1, "advanced PDF studio shows search hits")
@@ -492,14 +504,42 @@ def main() -> int:
                           "item_group": EP.GROUP_COVERALL, "item_code": "MAN-COV-01",
                           "item_desc": "Coverall L", "size_text": "L", "qty": 1,
                           "uom": "PCS", "remarks": "Manual issue"})
+    from openpyxl import Workbook as _WB
+    _ppe_sheet = root / "ppe_import.xlsx"
+    _wb = _WB(); _ws = _wb.active
+    _ws.append(["Issue Date", "Employee Code", "Employee Name", "Project / Site", "Item Code",
+                "Description", "Qty", "UOM", "Delivery Note No.", "Remarks"])
+    _ws.append([database.today(), "EMP-003", "Yousuf Ali", "Camp D", "PPE-SHOE-43",
+                "Safety Shoes Size 43", 1, "PAIR", "DN-IMP-001", "Excel import"])
+    _ws.append([database.today(), "EMP-004", "Sajid", "Camp D", "PPE-BLK-02",
+                "Blanket Double Bed", 1, "PCS", "DN-IMP-002", "Returned"])
+    _wb.save(_ppe_sheet)
+    _hdrs, _sheet_rows = EP.read_file(_ppe_sheet)
+    _map = EP.auto_map(_hdrs)
+    _preview = EP.preview(_hdrs, _sheet_rows, _map)
+    check(len(_preview) == 2 and _preview[0]["item_group"] == EP.GROUP_SHOES,
+          "PPE Excel preview reads the sheet and auto-detects shoes")
+    check(any(r["status"] == EP.ST_RETURNED for r in _preview),
+          "PPE Excel preview reads a returned record from the sheet")
+    _ins_sheet, _sk_sheet = EP.import_records(_pdb, _preview, str(_ppe_sheet))
+    check(_ins_sheet == 2 and _sk_sheet == 0, "PPE Excel sheet imports as separate register records")
+    _batches = EP.batches(_pdb)
+    check(bool(_batches) and _batches[0]["rows"] >= 2, "PPE Excel import history is recorded")
+    _undo_n = EP.undo_batch(_pdb, _batches[0]["id"])
+    check(_undo_n >= 2, "PPE Excel import can be undone")
+    _ins_sheet2, _sk_sheet2 = EP.import_records(_pdb, _preview, str(_ppe_sheet))
+    check(_ins_sheet2 == 2 and _sk_sheet2 == 0, "PPE Excel records can be imported again after undo")
     _title_ppe, _cols_ppe, _data_ppe = EP.build_report(_pdb, "Safety Shoes Register", {})
     check("Description" in _cols_ppe and any(_ppe_dn in str(r) for r in _data_ppe),
           "PPE report builds from synced delivery-note records")
     ppe_page = win.page_ppe
     ppe_page.refresh_all()
     app.processEvents()
-    check(ppe_page.t_reg.rowCount() >= 4, "Employee PPE page lists synced and manual records")
+    check(any("Import Sheet" in ppe_page.tabs.tabText(i) for i in range(ppe_page.tabs.count())),
+          "Employee PPE page includes an Excel import tab")
+    check(ppe_page.t_reg.rowCount() >= 6, "Employee PPE page lists synced, manual and imported records")
     check(ppe_page.t_sync.rowCount() >= 3, "Employee PPE sync preview shows detected delivery-note lines")
+    check(ppe_page.importer.hist.rowCount() >= 1, "Employee PPE import history is visible on the page")
 
     # ------------------------------------------------ export presentation
     section("PDF and Excel presentation")

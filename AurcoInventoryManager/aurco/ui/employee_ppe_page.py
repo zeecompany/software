@@ -6,8 +6,8 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                               QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-                               QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
+                               QFileDialog, QFormLayout, QGridLayout, QGroupBox,
+                               QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
                                QTabWidget, QVBoxLayout, QWidget)
 
 from ..core import documents as D
@@ -95,6 +95,7 @@ class IssueDialog(QDialog):
             "status": P.ST_RETURNED if self.returned.isChecked() else self.status.currentText(),
             "return_date": iso(self.return_date) if self.returned.isChecked() else "",
             "issued_by": self.row.get("issued_by", self.pdb.current_user),
+            "batch_id": self.row.get("batch_id"),
             "remarks": self.remarks.toPlainText().strip(),
         }
         try:
@@ -103,6 +104,152 @@ class IssueDialog(QDialog):
             W.error_box(self, str(exc))
             return
         self.accept()
+
+
+class PPEImportTab(QWidget):
+    imported = Signal()
+
+    def __init__(self, pdb: P.PPEIssueDB, db: Database, parent=None):
+        super().__init__(parent)
+        self.pdb = pdb
+        self.db = db
+        v = QVBoxLayout(self)
+        v.setContentsMargins(4, 6, 4, 6)
+        v.setSpacing(10)
+
+        card = W.Card("Import PPE issues from Excel / CSV")
+        cols, sample = P.template_rows()
+        t = W.DataTable()
+        t.fill(cols, sample)
+        t.setMaximumHeight(130)
+        card.add(t)
+        note = QLabel(
+            "Load your Excel / CSV sheet or paste rows from Excel. The module recognises "
+            "common headings automatically: employee code, employee name, project, item code, "
+            "description, size, qty, UOM, DN number, remarks and return date. If Item Group is "
+            "missing, AURCO detects Shoes, Blanket, FRC and Coverall from the description."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{W.MUTED};")
+        card.add(note)
+        row = QHBoxLayout()
+        row.addWidget(W.button("📂  Load Excel / CSV...", "Primary", self._file))
+        row.addWidget(W.button("⬇  Download Template", slot=self._template))
+        row.addStretch(1)
+        h = QWidget(); h.setLayout(row)
+        card.add(h)
+        v.addWidget(card)
+
+        pc = W.Card("Paste rows from Excel")
+        self.paste = QPlainTextEdit()
+        self.paste.setLineWrapMode(QPlainTextEdit.NoWrap)
+        from PySide6.QtGui import QFont, QFontDatabase, QFontMetricsF
+        _f = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        _f.setPointSize(9)
+        _f.setFixedPitch(True)
+        self.paste.setFont(_f)
+        self.paste.setTabStopDistance(QFontMetricsF(_f).horizontalAdvance(" ") * 14)
+        self.paste.setMinimumHeight(170)
+        self.paste.setPlaceholderText(
+            "Issue Date\tEmployee Code\tEmployee Name\tProject / Site\tItem Group\tItem Code\tDescription\tSize\tQty\tUOM\tDelivery Note No.\tRemarks"
+        )
+        pc.add(self.paste, 1)
+        r2 = QHBoxLayout()
+        r2.addWidget(W.button("✔  Read && Import", "Primary", self._paste_import))
+        r2.addWidget(W.button("🧹  Clear", slot=self.paste.clear))
+        r2.addStretch(1)
+        h2 = QWidget(); h2.setLayout(r2)
+        pc.add(h2)
+        v.addWidget(pc, 1)
+
+        hc = W.Card("Import history — an import can be undone completely")
+        self.hist = W.DataTable()
+        hc.add(self.hist, 1)
+        r3 = QHBoxLayout()
+        r3.addWidget(W.button("↩  Undo Selected Import", slot=self._undo))
+        r3.addWidget(W.button("🔄  Refresh", slot=self.reload))
+        r3.addStretch(1)
+        h3 = QWidget(); h3.setLayout(r3)
+        hc.add(h3)
+        v.addWidget(hc, 1)
+        self.reload()
+
+    def reload(self):
+        self.hist.fill(["Batch", "When", "Source", "Imported", "Skipped", "Still present"],
+                       [[b["id"], b["ts"], Path(str(b["source"])).name or b["source"],
+                         b["rows"], b["skipped"], b["live"]]
+                        for b in P.batches(self.pdb)])
+
+    def _template(self):
+        cols, sample = P.template_rows()
+        f = D.export_excel(self.db, "Employee PPE Template", cols, sample,
+                           Path(D.config.folder(P.FOLDER)) / "Employee_PPE_Template.xlsx",
+                           totals=False)
+        W.toast(self, f"Template saved: {f.name}")
+        D.open_path(f)
+
+    def _file(self):
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Select the PPE sheet", "",
+            "Spreadsheets and text (*.xlsx *.xlsm *.csv *.txt);;All files (*)")
+        if not f:
+            return
+        try:
+            headers, rows = P.read_file(f)
+        except Exception as exc:  # noqa: BLE001
+            W.error_box(self, f"Could not read that file.\n\n{exc}")
+            return
+        self._run(headers, rows, f)
+
+    def _paste_import(self):
+        txt = self.paste.toPlainText()
+        if not txt.strip():
+            W.error_box(self, "Paste the rows into the box first.")
+            return
+        headers, rows = P.sniff(txt)
+        self._run(headers, rows, "pasted rows")
+
+    def _run(self, headers, rows, source):
+        if not rows:
+            W.error_box(self, "No data rows were found.")
+            return
+        mapping = P.auto_map(headers)
+        if not mapping:
+            W.error_box(self, "None of the columns were recognised.\n\nMake sure the heading row is included.")
+            return
+        recs = P.preview(headers, rows, mapping)
+        if not recs:
+            W.error_box(self, "No usable rows were found.")
+            return
+        known = ", ".join(sorted({P.LABELS.get(f, f) for f in mapping.values()}))
+        if not W.confirm(self, f"{len(recs)} row(s) ready to import from {Path(str(source)).name}.\n\n"
+                               f"Recognised columns:\n{known}\n\nImport now?"):
+            return
+        ins, sk = P.import_records(self.pdb, recs, str(source))
+        self.paste.clear()
+        self.reload()
+        self.imported.emit()
+        W.info_box(self, f"{ins} PPE record(s) imported."
+                         + (f"\n{sk} duplicate row(s) skipped." if sk else "")
+                         + "\n\nYou can edit any imported row later from the Register tab.",
+                   "Import complete")
+
+    def _undo(self):
+        r = self.hist.currentRow()
+        if r < 0:
+            W.error_box(self, "Select an import from the history first.")
+            return
+        bid = int(self.hist.item(r, 0).text())
+        live = int(self.hist.item(r, 5).text())
+        if not live:
+            W.error_box(self, "That import has no records left to remove.")
+            return
+        if not W.confirm(self, f"Remove the {live} record(s) from import #{bid}?"):
+            return
+        n = P.undo_batch(self.pdb, bid)
+        self.reload()
+        self.imported.emit()
+        W.toast(self, f"{n} record(s) removed.")
 
 
 class EmployeePPEPage(QWidget):
@@ -122,10 +269,17 @@ class EmployeePPEPage(QWidget):
         self.tabs.addTab(self._dashboard_tab(), "📊 Dashboard")
         self.tabs.addTab(self._register_tab(), "📋 Register")
         self.tabs.addTab(self._sync_tab(), "🔄 Sync from Delivery Notes")
+        self.importer = PPEImportTab(self.pdb, db, self)
+        self.tabs.addTab(self.importer, "⬆ Import Sheet")
         self.tabs.addTab(self._reports_tab(), "📈 Reports")
         v.addWidget(self.tabs, 1)
         v.addWidget(ShareBar(db, lambda: self.last_file, self))
+        self.importer.imported.connect(self._after_import)
         self.refresh_all()
+
+    def _after_import(self):
+        self.refresh_all()
+        self.dataChanged.emit()
 
     def _ensure_user(self):
         self.pdb.current_user = getattr(self.db, "current_user", "admin") or "admin"
@@ -241,6 +395,8 @@ class EmployeePPEPage(QWidget):
         self.preview_sync()
         self.reload_dashboard()
         self.run_report()
+        if hasattr(self, "importer"):
+            self.importer.reload()
 
     def reload_dashboard(self):
         d = P.dashboard_data(self.pdb)

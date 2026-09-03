@@ -942,9 +942,10 @@ class SettingsPage(QWidget):
         g2 = QGroupBox("AURCO PDF Studio")
         f2 = QFormLayout(g2)
         f2.addRow(QLabel("PDF files opened from AURCO are shown in the built-in PDF Studio. It supports "
-                         "viewing, search, thumbnails, annotations, conversion, protection, sharing and "
-                         "page organization. When the shared PDF changes on disk, the viewer refreshes as "
-                         "long as you are not holding an unsaved working copy."))
+                         "Fit Page / Fit Width / Actual Size preview modes, sharper on-screen rendering, "
+                         "search, thumbnails, annotations, conversion, protection, sharing and page "
+                         "organization. When the shared PDF changes on disk, the viewer refreshes as long "
+                         "as you are not holding an unsaved working copy."))
         v.addWidget(g2)
         v.addStretch(1)
         self._refresh_license_status()

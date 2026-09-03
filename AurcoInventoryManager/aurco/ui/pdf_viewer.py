@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QColorDialog, QDialog,
                                QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
@@ -46,11 +46,14 @@ class PdfViewerDialog(QDialog):
         self.work_path: Path | None = None
         self.page_index = 0
         self.page_total = 0
-        self.zoom_pct = 110
+        self.zoom_pct = 100
         self.view_rotation = 0
         self.source_mtime = 0.0
         self.restored = False
         self.text_pages: list[str] = []
+        self.page_metrics: list[tuple[float, float]] = []
+        self.render_display_scale = 1.0
+        self.render_engine_scale = 1.0
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -95,11 +98,15 @@ class PdfViewerDialog(QDialog):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search text inside this PDF...")
         self.search.returnPressed.connect(self.run_search)
+        self.fit_mode = QComboBox()
+        self.fit_mode.addItems(["Fit Page", "Fit Width", "Actual Size"])
+        self.fit_mode.currentTextChanged.connect(self._schedule_render)
         self.zoom_slider = QSlider(Qt.Horizontal)
-        self.zoom_slider.setRange(40, 260)
-        self.zoom_slider.setValue(self.zoom_pct)
+        self.zoom_slider.setRange(50, 250)
+        self.zoom_slider.setPageStep(10)
+        self.zoom_slider.setValue(100)
         self.zoom_slider.valueChanged.connect(self.set_zoom)
-        self.lbl_zoom = QLabel("110%")
+        self.lbl_zoom = QLabel("100%")
         nav.addWidget(self.btn_prev)
         nav.addWidget(self.btn_next)
         nav.addWidget(QLabel("Page"))
@@ -113,9 +120,13 @@ class PdfViewerDialog(QDialog):
         nav.addWidget(self.search, 1)
         nav.addWidget(W.button("Find", slot=self.run_search))
         nav.addSpacing(12)
-        nav.addWidget(QLabel("Zoom"))
+        nav.addWidget(QLabel("Preview"))
+        nav.addWidget(self.fit_mode)
+        nav.addWidget(W.button("－", slot=lambda: self.zoom_slider.setValue(max(self.zoom_slider.minimum(), self.zoom_slider.value() - 10))))
         nav.addWidget(self.zoom_slider)
+        nav.addWidget(W.button("＋", slot=lambda: self.zoom_slider.setValue(min(self.zoom_slider.maximum(), self.zoom_slider.value() + 10))))
         nav.addWidget(self.lbl_zoom)
+        nav.addWidget(W.button("100%", slot=self.reset_zoom))
         root.addLayout(nav)
 
         split = QSplitter()
@@ -131,7 +142,7 @@ class PdfViewerDialog(QDialog):
         self.thumbs = QListWidget()
         self.thumbs.setViewMode(QListWidget.IconMode)
         self.thumbs.setResizeMode(QListWidget.Adjust)
-        self.thumbs.setIconSize(QPixmap(90, 120).size())
+        self.thumbs.setIconSize(QPixmap(110, 150).size())
         self.thumbs.setMovement(QListWidget.Static)
         self.thumbs.itemClicked.connect(self._open_thumbnail)
         left.addTab(self.thumbs, "Thumbnails")
@@ -151,16 +162,17 @@ class PdfViewerDialog(QDialog):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setAlignment(Qt.AlignCenter)
+        self.scroll.setStyleSheet("QScrollArea{background:#dfe6ee;border:1px solid #c9d3df;border-radius:14px;}")
         self.page_view = ClickableLabel()
         self.page_view.setAlignment(Qt.AlignCenter)
         self.page_view.setMinimumSize(420, 520)
-        self.page_view.setStyleSheet("background:#e9ecef;border:1px solid #ced4da;border-radius:12px;")
+        self.page_view.setStyleSheet("background:white;border:1px solid #cbd5e1;border-radius:14px;padding:14px;")
         self.page_view.setText("Open a PDF to start.")
         self.page_view.pointPicked.connect(self.capture_point)
         self.scroll.setWidget(self.page_view)
         mv.addWidget(self.scroll, 1)
         self.page_meta = QTextBrowser()
-        self.page_meta.setMaximumHeight(110)
+        self.page_meta.setMaximumHeight(150)
         self.page_meta.setOpenExternalLinks(True)
         mv.addWidget(self.page_meta)
         split.addWidget(middle)
@@ -325,6 +337,11 @@ class PdfViewerDialog(QDialog):
         self.timer.setInterval(2500)
         self.timer.timeout.connect(self._check_source_update)
         self.timer.start()
+        self.resize_timer = QTimer(self)
+        self.resize_timer.setSingleShot(True)
+        self.resize_timer.setInterval(120)
+        self.resize_timer.timeout.connect(self._rerender_after_resize)
+        self.scroll.viewport().installEventFilter(self)
         self.reload_recent()
         self._update_actions()
 
@@ -344,6 +361,11 @@ class PdfViewerDialog(QDialog):
                 ev.acceptProposedAction()
                 return
         ev.ignore()
+
+    def eventFilter(self, obj, ev):
+        if obj is self.scroll.viewport() and ev.type() == QEvent.Resize and self._current_pdf():
+            self._schedule_render()
+        return super().eventFilter(obj, ev)
 
     # ---------------------------------------------------------------- helpers
     def _db(self):
@@ -434,6 +456,54 @@ class PdfViewerDialog(QDialog):
         PT._write_pages(PT._reader(pdf), idx, out, rot)
         return out
 
+    def _schedule_render(self, *_):
+        if self._current_pdf():
+            self.resize_timer.start()
+
+    def _rerender_after_resize(self):
+        if self._current_pdf():
+            self.render_current_page()
+
+    def reset_zoom(self):
+        self.zoom_slider.setValue(100)
+        self.fit_mode.setCurrentText("Actual Size")
+
+    def _current_page_dims(self) -> tuple[float, float]:
+        if not self.page_metrics or not (0 <= self.page_index < len(self.page_metrics)):
+            return 595.0, 842.0
+        w, h = self.page_metrics[self.page_index]
+        if self.view_rotation % 180:
+            return h, w
+        return w, h
+
+    def _page_label(self, width_pt: float, height_pt: float) -> str:
+        mm_w = width_pt * 25.4 / 72.0
+        mm_h = height_pt * 25.4 / 72.0
+        long_edge = max(mm_w, mm_h)
+        short_edge = min(mm_w, mm_h)
+        if abs(short_edge - 210) < 8 and abs(long_edge - 297) < 8:
+            return "A4"
+        if abs(short_edge - 216) < 8 and abs(long_edge - 279) < 8:
+            return "Letter"
+        if abs(short_edge - 148) < 8 and abs(long_edge - 210) < 8:
+            return "A5"
+        return f"{round(mm_w)} × {round(mm_h)} mm"
+
+    def _preview_scales(self) -> tuple[float, float]:
+        width_pt, height_pt = self._current_page_dims()
+        vp = self.scroll.viewport().size()
+        avail_w = max(220, vp.width() - 34)
+        avail_h = max(260, vp.height() - 34)
+        fit_page = min(avail_w / max(1.0, width_pt), avail_h / max(1.0, height_pt))
+        fit_width = avail_w / max(1.0, width_pt)
+        actual = 96.0 / 72.0
+        mode = self.fit_mode.currentText()
+        base = fit_page if mode == "Fit Page" else fit_width if mode == "Fit Width" else actual
+        display_scale = max(0.25, base * (self.zoom_pct / 100.0))
+        quality_boost = 1.0 if mode == "Actual Size" else 1.7
+        engine_scale = max(0.5, min(6.0, display_scale * quality_boost))
+        return display_scale, engine_scale
+
     # ---------------------------------------------------------------- opening
     def pick_file(self):
         p, _ = QFileDialog.getOpenFileName(self, "Open PDF", str(Path.home()), "PDF Files (*.pdf)")
@@ -452,7 +522,8 @@ class PdfViewerDialog(QDialog):
         self.sub.setText(str(self.source_path))
         self.page_index = 0
         self.view_rotation = 0
-        self.zoom_slider.setValue(110)
+        self.fit_mode.setCurrentText("Fit Page")
+        self.zoom_slider.setValue(100)
         self.reload_recent()
         self.reload_document(keep_page=False)
         self.show()
@@ -481,6 +552,7 @@ class PdfViewerDialog(QDialog):
         self.page_index = min(old if keep_page else 0, max(0, self.page_total - 1))
         self.spin_page.setValue(self.page_index + 1)
         self.spin_page.blockSignals(False)
+        self.page_metrics = PT.page_sizes(self.work_path)
         self.text_pages = PT.extract_text(self.work_path)
         self._load_thumbnails()
         self._load_page_table()
@@ -490,16 +562,27 @@ class PdfViewerDialog(QDialog):
     def render_current_page(self):
         if not self._ensure_open():
             return
-        img = PT.render_page(self.work_path, self.page_index, scale=max(0.4, self.zoom_pct / 100.0 * 1.25),
+        width_pt, height_pt = self._current_page_dims()
+        display_scale, engine_scale = self._preview_scales()
+        self.render_display_scale = display_scale
+        self.render_engine_scale = engine_scale
+        img = PT.render_page(self.work_path, self.page_index, scale=engine_scale,
                              rotation=self.view_rotation)
         pm = QPixmap.fromImage(ImageQt(img))
+        target_w = max(140, int(round(width_pt * display_scale)))
+        target_h = max(180, int(round(height_pt * display_scale)))
+        pm = pm.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.page_view.setPixmap(pm)
         self.page_view.resize(pm.size())
         txt = self.text_pages[self.page_index] if self.page_total and self.page_index < len(self.text_pages) else ""
-        preview = " ".join((txt or "(no searchable text found on this page)").split())[:700]
+        preview = " ".join((txt or "(no searchable text found on this page)").split())[:900]
+        orientation = "Landscape" if width_pt > height_pt else "Portrait"
         self.page_meta.setHtml(
-            f"<b>Page {self.page_index + 1}</b> &nbsp; · &nbsp; Zoom {self.zoom_pct}% &nbsp; · &nbsp; "
-            f"View rotation {self.view_rotation % 360}°<br><br>{preview}"
+            f"<b>Page {self.page_index + 1}</b> &nbsp; · &nbsp; {self._page_label(width_pt, height_pt)}"
+            f" &nbsp; · &nbsp; {orientation} &nbsp; · &nbsp; {self.fit_mode.currentText()}"
+            f" &nbsp; · &nbsp; View {self.zoom_pct}% &nbsp; · &nbsp; Render {round(engine_scale * 100)}%"
+            f" &nbsp; · &nbsp; Rotation {self.view_rotation % 360}°"
+            f"<br><br>{preview}"
         )
         self._highlight_page_selection()
 
@@ -518,12 +601,12 @@ class PdfViewerDialog(QDialog):
         self.zoom_pct = int(value)
         self.lbl_zoom.setText(f"{self.zoom_pct}%")
         if self._current_pdf():
-            self.render_current_page()
+            self._schedule_render()
 
     def rotate_view(self, angle: int):
         self.view_rotation = (self.view_rotation + int(angle)) % 360
         if self._current_pdf():
-            self.render_current_page()
+            self._schedule_render()
 
     def _check_source_update(self):
         if not self.source_path or not self.source_path.exists():
@@ -548,10 +631,10 @@ class PdfViewerDialog(QDialog):
         self.thumbs.clear()
         if not self._current_pdf():
             return
-        limit = min(self.page_total, 60)
+        limit = min(self.page_total, 80)
         for i in range(limit):
             try:
-                thumb = PT.render_page(self.work_path, i, scale=0.22)
+                thumb = PT.render_page(self.work_path, i, scale=0.30)
                 pm = QPixmap.fromImage(ImageQt(thumb))
                 icon = QIcon(pm)
             except Exception:

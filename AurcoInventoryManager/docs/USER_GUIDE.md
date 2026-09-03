@@ -1,6 +1,6 @@
 # AURCO INVENTORY MANAGER — User & Build Guide
 
-**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.26.0
+**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.27.0
 **Platform:** Windows Desktop (.EXE) · offline · local-first · SQLite
 
 ---
@@ -841,11 +841,13 @@ Open File Location · Copy Path**, plus PDF / Excel / CSV export.
   document's folder opened for a one-click attach — no unofficial API.
 * **Global Search** now has a **File Contents** tab that searches searchable text
   extracted from document PDFs, attachments and library files.
-* **AURCO PDF Studio** is the built-in advanced PDF tool. It supports viewing,
-  thumbnails, page navigation, zoom, search, rotate, annotations, signature-image
-  pasting, merge/split/reorder/extract, image/Word/Excel export, print-job
-  preparation, recent-file history, drag-and-drop opening, sharing, and password-
-  protected PDF copies.
+* **AURCO PDF Studio** is the built-in advanced PDF tool. It now has a sharper,
+  more professional preview with **Fit Page**, **Fit Width** and **Actual Size**
+  modes, higher-quality on-screen rendering, zoom-step buttons, thumbnails, page
+  navigation, search, rotate, annotations, signature-image pasting,
+  merge/split/reorder/extract, image/Word/Excel export, print-job preparation,
+  recent-file history, drag-and-drop opening, sharing, and password-protected
+  PDF copies.
 
 ### Drafts and adjusted quantities
 
@@ -1151,6 +1153,15 @@ aurco/
 │   ├── gdn.py         General Delivery Notes (no inventory dependency)
 │   └── demo.py        sample dataset
 └── ui/                one module per screen (PySide6)
+```
+
+New modules (procurement, assets, equipment tracking, multi-warehouse) plug in
+by adding a `documents`/`document_lines` doc-type plus a UI page — the ledger,
+numbering, PDF, export and audit layers are reused as-is.
+
+Performance verified: **20,000 items imported in 2.8 s**, dashboard 0.6 s,
+reports over ~20,000 ledger rows in under 0.5 s.
+e6)
 ```
 
 New modules (procurement, assets, equipment tracking, multi-warehouse) plug in

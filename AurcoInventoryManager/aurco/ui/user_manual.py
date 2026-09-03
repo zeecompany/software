@@ -460,11 +460,13 @@ open so you can attach it.</p>
 <p><b>Global Search</b> now includes a <b>File Contents</b> tab that searches
 searchable text extracted from PDFs, TXT/CSV notes, DOCX and XLSX files already
 saved in documents, attachments and the document library.</p>
-<p><b>AURCO PDF Studio</b> is the built-in advanced PDF tool. It provides page
-viewing, zoom, rotate, search hits, thumbnails, drag-and-drop open, recent-file
-history, annotations, signature-image pasting, merge/split/reorder/extract,
-image/Word/Excel export, print-job preparation, sharing and password-protected
-copies.</p>
+<p><b>AURCO PDF Studio</b> is the built-in advanced PDF tool. It now gives a
+sharper, more professional preview with <b>Fit Page</b>, <b>Fit Width</b> and
+<b>Actual Size</b> modes, higher-quality rendering for on-screen reading,
+zoom-step buttons, thumbnails, search hits, drag-and-drop open and recent-file
+history. It also supports annotations, signature-image pasting,
+merge/split/reorder/extract, image/Word/Excel export, print-job preparation,
+sharing and password-protected copies.</p>
 <h2>General Delivery Note Maker</h2>
 <p><b>Ctrl+G.</b> A fully branded delivery note for anything that is <i>not</i> a
 stocked item — hired tools, a subcontractor's material, a sample. Lines are free
