@@ -1,0 +1,31 @@
+AURCO Inventory Manager 2.22.0 / software v 18
+Files changed since software v 17.zip
+=========================================
+
+Modified files:
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/database.py
+- AurcoInventoryManager/aurco/core/documents.py
+- AurcoInventoryManager/aurco/core/protection.py
+- AurcoInventoryManager/aurco/core/services.py
+- AurcoInventoryManager/aurco/ui/common.py
+- AurcoInventoryManager/aurco/ui/documents_page.py
+- AurcoInventoryManager/aurco/ui/general_dn.py
+- AurcoInventoryManager/aurco/ui/main_window.py
+- AurcoInventoryManager/aurco/ui/transactions.py
+- AurcoInventoryManager/aurco/ui/user_manual.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+
+New files:
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.22.0.txt
+
+Removed from package scope:
+- uploads/AURCO WITHOUT BG.png
+- uploads/image.png
+- uploads/AURCO_Handover_WH-087IS2308202601.pdf
+- after.png
+- after_shown.png
+- before.png

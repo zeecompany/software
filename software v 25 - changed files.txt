@@ -1,0 +1,31 @@
+AURCO Inventory Manager 2.28.1
+Package: software v 25.zip
+Compared against: software v 24.zip
+
+What was fixed
+==============
+Employee PPE Register would not start on databases created by older
+versions (v22 and earlier) with the error:
+
+    sqlite3.OperationalError: no such column: batch_id
+
+Root cause: the v24 schema added a batch_id column to the records table AND
+an index on that column inside the DDL. The index creation ran before the
+migration that adds batch_id to old databases, so SQLite failed and the
+whole application could not start.
+
+Fix: the batch_id migration now runs first (in _apply_schema_fixes) and the
+batch index is created afterwards. Existing PPE data is preserved and the
+migration is idempotent.
+
+Modified files (5):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/employee_ppe.py
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py (new migration regression test)
+
+New files (1):
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.1.txt
+
+Removed files (0):
