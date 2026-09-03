@@ -486,27 +486,129 @@ def list_records(db: PPEIssueDB, text: str = "", item_group: str = "", status: s
     return out
 
 
-def dashboard_data(db: PPEIssueDB) -> dict[str, Any]:
-    rows = list_records(db)
-    groups = {g: 0 for g in GROUPS}
+def dashboard_data(db: PPEIssueDB, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    filters = filters or {}
+    rows = list_records(
+        db,
+        text=str(filters.get("text", "") or ""),
+        item_group=str(filters.get("item_group", "") or ""),
+        status=str(filters.get("status", "") or ""),
+        source_type=str(filters.get("source_type", "") or ""),
+        date_from=str(filters.get("date_from", "") or ""),
+        date_to=str(filters.get("date_to", "") or ""),
+    )
+    group_count = {g: 0 for g in GROUPS}
+    group_qty = {g: 0.0 for g in GROUPS}
+    status_count = {s: 0 for s in STATUSES}
+    status_qty = {s: 0.0 for s in STATUSES}
+    source_count = {"MANUAL": 0, "DN": 0}
+    source_qty = {"MANUAL": 0.0, "DN": 0.0}
+    missing_by_group = {g: 0 for g in GROUPS}
     employees = set()
-    synced = 0
-    missing = 0
+    employee_qty: dict[str, float] = {}
+    employee_count: dict[str, int] = {}
+    item_qty: dict[str, float] = {}
+    item_count: dict[str, int] = {}
+    project_qty: dict[str, float] = {}
+    project_count: dict[str, int] = {}
+    month_issue: dict[str, float] = {}
+    month_return: dict[str, float] = {}
+    synced = manual = missing = returned_records = outstanding_records = 0
+    total_qty = returned_qty = outstanding_qty = 0.0
+    active_dns: set[str] = set()
     for r in rows:
-        groups[r.get("item_group") or GROUP_OTHER] = groups.get(r.get("item_group") or GROUP_OTHER, 0) + 1
+        group = (r.get("item_group") or GROUP_OTHER).strip() or GROUP_OTHER
+        if group not in group_count:
+            group_count[group] = 0
+            group_qty[group] = 0.0
+            missing_by_group[group] = 0
+        status = compute_status(r)
+        if status not in status_count:
+            status_count[status] = 0
+            status_qty[status] = 0.0
+        source = (r.get("source_type") or "MANUAL").strip().upper() or "MANUAL"
+        if source not in source_count:
+            source_count[source] = 0
+            source_qty[source] = 0.0
+        qty = float(r.get("qty") or 0)
+        total_qty += qty
+        group_count[group] += 1
+        group_qty[group] += qty
+        status_count[status] += 1
+        status_qty[status] += qty
+        source_count[source] += 1
+        source_qty[source] += qty
         if r.get("employee_code") or r.get("employee_name"):
             employees.add((r.get("employee_code") or "", r.get("employee_name") or ""))
-        if r.get("source_type") == "DN":
+        label = (r.get("employee_code") or "").strip() or (r.get("employee_name") or "").strip() or "(Missing employee)"
+        employee_qty[label] = employee_qty.get(label, 0.0) + qty
+        employee_count[label] = employee_count.get(label, 0) + 1
+        item_label = (r.get("item_desc") or r.get("item_code") or "(Blank item)").strip()
+        item_qty[item_label] = item_qty.get(item_label, 0.0) + qty
+        item_count[item_label] = item_count.get(item_label, 0) + 1
+        project_label = (r.get("project") or r.get("department") or "(Unassigned)").strip()
+        project_qty[project_label] = project_qty.get(project_label, 0.0) + qty
+        project_count[project_label] = project_count.get(project_label, 0) + 1
+        issue_month = str(r.get("issue_date") or "")[:7]
+        if issue_month:
+            month_issue[issue_month] = month_issue.get(issue_month, 0.0) + qty
+        return_date = str(r.get("return_date") or "")[:7]
+        if return_date:
+            month_return[return_date] = month_return.get(return_date, 0.0) + qty
+        if source == "DN" and (r.get("dn_no") or "").strip():
+            active_dns.add(str(r["dn_no"]).strip())
             synced += 1
-        if compute_status(r) == ST_NEEDS_INFO:
+        else:
+            manual += 1
+        if status == ST_RETURNED:
+            returned_records += 1
+            returned_qty += qty
+        else:
+            outstanding_records += 1
+            outstanding_qty += qty
+        if status == ST_NEEDS_INFO:
             missing += 1
+            missing_by_group[group] = missing_by_group.get(group, 0) + 1
+
+    def _top(src: dict[str, float | int], limit: int = 8) -> list[tuple[str, float]]:
+        ranked = sorted(src.items(), key=lambda kv: (-float(kv[1]), kv[0].lower()))[:limit]
+        return [(k, float(v)) for k, v in ranked]
+
+    months = sorted(set(month_issue) | set(month_return))
+    if len(months) > 12:
+        months = months[-12:]
+    month_pairs = [(m, round(month_issue.get(m, 0.0), 2), round(month_return.get(m, 0.0), 2))
+                   for m in months]
+    recent = rows[:20]
+    return_rate = (returned_qty / total_qty * 100.0) if total_qty > 0 else 0.0
     return {
         "total_records": len(rows),
         "employees": len(employees),
         "synced": synced,
+        "manual_records": manual,
         "missing_info": missing,
-        "by_group": groups,
-        "recent": rows[:20],
+        "active_dns": len(active_dns),
+        "returned_records": returned_records,
+        "outstanding_records": outstanding_records,
+        "total_qty": round(total_qty, 2),
+        "returned_qty": round(returned_qty, 2),
+        "outstanding_qty": round(outstanding_qty, 2),
+        "return_rate": round(return_rate, 2),
+        "by_group": group_count,
+        "by_group_qty": {k: round(v, 2) for k, v in group_qty.items()},
+        "by_status": status_count,
+        "by_status_qty": {k: round(v, 2) for k, v in status_qty.items()},
+        "by_source": source_count,
+        "by_source_qty": {k: round(v, 2) for k, v in source_qty.items()},
+        "missing_by_group": missing_by_group,
+        "monthly_issue_return": month_pairs,
+        "top_employees": _top(employee_qty),
+        "top_employees_count": _top(employee_count),
+        "top_items": _top(item_qty),
+        "top_items_count": _top(item_count),
+        "top_projects": _top(project_qty),
+        "top_projects_count": _top(project_count),
+        "recent": recent,
     }
 
 

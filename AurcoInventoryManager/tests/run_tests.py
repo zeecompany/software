@@ -464,6 +464,44 @@ def main() -> int:
     _studio.search.setText("UniquePdfStudioToken 3")
     _studio.run_search()
     check(_studio.search_hits.count() >= 1, "advanced PDF studio shows search hits")
+    check(hasattr(_studio, "p_printer") and _studio.p_printer.count() >= 1,
+          "PDF studio shows a printer selector")
+    _studio.p_printer.setCurrentText("Warehouse LaserJet")
+    _studio.save_default_printer()
+    check(db.get_setting("printer_name") == "Warehouse LaserJet",
+          "PDF studio can save the selected printer as default")
+    _studio.p_printer.setCurrentIndex(0)
+    _studio.save_default_printer()
+    check(db.get_setting("printer_name") == "",
+          "PDF studio can return to the system default printer")
+    _print_calls = []
+    _old_print_file = D.print_file
+    D.print_file = lambda _db, _path, printer_name=None: _print_calls.append(printer_name)
+    try:
+        _studio.p_printer.setCurrentText("Warehouse LaserJet")
+        _studio.print_with_options()
+    finally:
+        D.print_file = _old_print_file
+    check(_print_calls and _print_calls[0] == "Warehouse LaserJet",
+          "PDF studio passes the selected printer to the print helper")
+    from PySide6.QtGui import QImage as _SigImage, QColor as _SigColor
+    _sig = root / "pdf_signature.png"
+    _img_sig = _SigImage(220, 80, _SigImage.Format_ARGB32)
+    _img_sig.fill(_SigColor("#ffffff"))
+    _img_sig.save(str(_sig))
+    _studio.a_kind.setCurrentText("Signature")
+    _studio.a_image.setText(str(_sig))
+    _studio.render_current_page()
+    app.processEvents()
+    check(_studio.sig_overlay.isVisible() and _studio.sig_overlay.pixmap() is not None,
+          "PDF studio shows a draggable signature preview on the page")
+    from PySide6.QtCore import QPoint as _SigPoint
+    _studio._move_signature_overlay(_SigPoint(70, 90))
+    check(_studio.a_x.value() > 0 and _studio.a_y.value() > 0,
+          "moving the signature preview updates the saved X/Y position")
+    _studio.reset_signature_position()
+    check(_studio.a_x.value() == 8 and _studio.a_y.value() == 8,
+          "the signature preview position can be reset")
 
     # ------------------------------------------------ Employee PPE register
     section("Employee PPE register")
@@ -540,6 +578,27 @@ def main() -> int:
     check(ppe_page.t_reg.rowCount() >= 6, "Employee PPE page lists synced, manual and imported records")
     check(ppe_page.t_sync.rowCount() >= 3, "Employee PPE sync preview shows detected delivery-note lines")
     check(ppe_page.importer.hist.rowCount() >= 1, "Employee PPE import history is visible on the page")
+    _dash_ppe = EP.dashboard_data(_pdb)
+    for key in ("total_qty", "returned_qty", "outstanding_qty", "return_rate", "active_dns",
+                "by_status", "by_source", "monthly_issue_return", "top_employees",
+                "top_items", "top_projects", "missing_by_group"):
+        check(key in _dash_ppe, f"PPE dashboard exposes '{key}'")
+    check(any(m[1] > 0 for m in _dash_ppe["monthly_issue_return"]),
+          "PPE dashboard has monthly issued quantities")
+    check(hasattr(ppe_page, "dash_cards") and len(ppe_page.dash_cards) == 8,
+          "Employee PPE page shows an expanded KPI dashboard")
+    for ch in ("ch_group", "ch_status", "ch_source", "ch_month", "ch_employees",
+               "ch_items", "ch_projects", "ch_missing"):
+        check(hasattr(ppe_page, ch), f"Employee PPE dashboard has chart {ch}")
+    before_ppe = ppe_page.dash_cards["total_records"].lbl_value.text()
+    ppe_page.dash_group.setCurrentText(EP.GROUP_SHOES)
+    app.processEvents()
+    after_ppe = ppe_page.dash_cards["total_records"].lbl_value.text()
+    check(before_ppe != after_ppe, "changing a PPE dashboard filter updates the KPI cards")
+    ppe_page.reset_dashboard_filters()
+    app.processEvents()
+    check(ppe_page.dash_cards["total_records"].lbl_value.text() == before_ppe,
+          "resetting the PPE dashboard restores the full view")
 
     # ------------------------------------------------ export presentation
     section("PDF and Excel presentation")
@@ -660,6 +719,42 @@ def main() -> int:
           "delivery deducts stock only at DN time")
     check(db.scalar("SELECT status FROM material_requests WHERE id=?", (mr_id,))
           == M.PART_DELIVERED, "request becomes partially delivered")
+
+    opr_item = S.save_item(db, {"code": "OPR-1", "description": "Open request item",
+                                "uom": "PCS", "warehouse": "Main", "opening_balance": 20})
+    opr_mr = M.save_request(db, {"mr_date": "2026-09-03", "project_id": "POPR",
+                                 "requested_by": "Picker User"},
+                            M.enrich(db, [{"item_code": "OPR-1", "description": "Open request item",
+                                            "uom": "PCS", "qty": 5, "pr_no": "PR-OPEN-1"}]))
+    opr_id = db.scalar("SELECT id FROM material_requests WHERE mr_no=?", (opr_mr,))
+    opr_line = M.request_lines(db, opr_id)[0]
+    M.set_prepared(db, opr_line["id"], 2)
+    open_rows = M.open_request_lines(db, mr_no=opr_mr)
+    check(len(open_rows) == 1 and open_rows[0]["ready_qty"] == 2,
+          "open_request_lines exposes prepared quantities for the DN picker")
+    check(open_rows[0]["pending_qty"] == 5 and open_rows[0]["can_pick_now"] >= 2,
+          "the DN picker sees pending and can-pick-now quantities")
+    check(M.validate_picked_lines(db, [(opr_line["id"], 2)]) == 1,
+          "picked request quantities validate before the DN is finalized")
+    opr_dn = S.post_issue(db, S.DocHeader(doc_type="DN", issued_to="Open Request Site"),
+                          [S.Line(item_id=opr_item, qty=2, pr_no="PR-OPEN-1")], finalize=True)
+    check(M.deliver_picked_lines(db, [(opr_line["id"], 2)], opr_dn) == 1,
+          "the DN maker can link a finalized Delivery Note back to the picked MR line")
+    opr_after = M.request_lines(db, opr_id)[0]
+    check(opr_after["qty_delivered"] == 2 and opr_dn in str(opr_after["dn_no"] or ""),
+          "the picked MR line stores the delivered quantity and DN number")
+    check(M.open_request_lines(db, mr_no=opr_mr)[0]["pending_qty"] == 3,
+          "after linking the DN, the open quantity is reduced")
+    from aurco.ui.transactions import OpenRequestPicker as _ORP
+    picker = _ORP(db)
+    picker.f_mr.setText(opr_mr)
+    picker.reload()
+    picker.table.selectRow(0)
+    picker._fill_pick("pending_qty")
+    picker.accept()
+    check(bool(picker.selected) and picker.selected[0].get("mr_line_id") == opr_line["id"],
+          "the open-request picker returns the selected MR line id to the DN screen")
+    picker.close()
 
     # -------------------------------------------------- signatures / design
     section("Signatories and document design")

@@ -684,6 +684,152 @@ def ready_lines(db: Database, project: str = "", mr_no: str = "",
     return [dict(r) for r in db.query(sql, p)]
 
 
+def open_request_lines(db: Database, text: str = "", project: str = "", mr_no: str = "",
+                       pr_no: str = "", ready_only: bool = False) -> list[dict]:
+    """Live request lines suitable for picking straight into a Delivery Note.
+
+    This is used by the DN maker when the storekeeper wants to choose items from
+    open PR / MR lines without leaving the screen.
+    """
+    sql = """SELECT l.*, m.mr_no, m.mr_date, m.project_id AS mr_project, m.site,
+                    m.department, m.requested_by, m.reference,
+                    (l.qty_requested - l.qty_delivered) AS pending_qty,
+                    (l.qty_prepared - l.qty_delivered) AS ready_qty
+             FROM mr_lines l
+             JOIN material_requests m ON m.id = l.mr_id
+             WHERE l.status <> 'Cancelled'
+               AND m.status <> 'Cancelled'
+               AND (l.qty_requested - l.qty_delivered) > 0"""
+    p: list[Any] = []
+    if ready_only:
+        sql += " AND (l.qty_prepared - l.qty_delivered) > 0"
+    if text:
+        like = f"%{text}%"
+        sql += (" AND (m.mr_no LIKE ? OR m.project_id LIKE ? OR m.site LIKE ? OR m.requested_by LIKE ?"
+                " OR l.pr_no LIKE ? OR l.item_code LIKE ? OR l.description LIKE ?)")
+        p += [like] * 7
+    if project:
+        like = f"%{project}%"
+        sql += " AND (m.project_id LIKE ? OR m.site LIKE ? OR l.project_id LIKE ?)"
+        p += [like, like, like]
+    if mr_no:
+        sql += " AND m.mr_no LIKE ?"
+        p.append(f"%{mr_no}%")
+    if pr_no:
+        sql += " AND l.pr_no LIKE ?"
+        p.append(f"%{pr_no}%")
+    sql += " ORDER BY m.mr_date DESC, m.mr_no DESC, CAST(l.line_no AS INTEGER), l.id"
+    out: list[dict] = []
+    for r in db.query(sql, p):
+        row = dict(r)
+        row["pending_qty"] = max(0.0, float(row.get("pending_qty") or 0))
+        row["ready_qty"] = max(0.0, float(row.get("ready_qty") or 0))
+        if row.get("item_id"):
+            a = availability(db, row["item_id"], exclude_mr_id=row["mr_id"])
+            own = float(db.scalar(
+                """SELECT COALESCE(SUM(MAX(qty_prepared-qty_delivered,0)),0) FROM mr_lines
+                   WHERE mr_id=? AND item_id=? AND id<>?""",
+                (row["mr_id"], row["item_id"], row["id"])) or 0)
+            row["on_hand"] = a["on_hand"]
+            row["reserved"] = a["reserved"] + own
+            row["available"] = max(0.0, a["available"] - own)
+            row["stock_status"] = ""
+            item = db.one("SELECT * FROM items WHERE id=?", (row["item_id"],))
+            if item:
+                row["warehouse"] = item["warehouse"]
+                row["location"] = item["location"]
+                row["rack"] = item["rack"]
+                row["uom"] = row.get("uom") or item["uom"]
+                row["unit_cost"] = float(item["unit_cost"] or 0)
+                row["stock_status"] = S.stock_status(db, item)
+                row["item_code"] = row.get("item_code") or item["code"]
+                row["system_description"] = item["description"]
+        else:
+            row.update({"on_hand": 0.0, "reserved": 0.0, "available": 0.0,
+                        "warehouse": "", "location": "", "rack": "",
+                        "unit_cost": 0.0, "stock_status": ""})
+        row["can_pick_now"] = min(row["pending_qty"], row["ready_qty"] + row["available"])
+        row["pick_default"] = row["ready_qty"] if row["ready_qty"] > 0 else min(row["pending_qty"], row["available"])
+        out.append(row)
+    return out
+
+
+def _merge_dn_numbers(existing: str, new_dn: str) -> str:
+    seen: list[str] = []
+    for part in re.split(r"\s*,\s*", str(existing or "").strip()):
+        if part and part not in seen:
+            seen.append(part)
+    if new_dn and new_dn not in seen:
+        seen.append(new_dn)
+    return ", ".join(seen)
+
+
+def validate_picked_lines(db: Database, line_qtys: Sequence[tuple[int, float]] | dict[int, float]) -> int:
+    """Validate open PR / MR quantities before a DN is finalized."""
+    pairs = list(line_qtys.items()) if isinstance(line_qtys, dict) else list(line_qtys)
+    checked = 0
+    for line_id, qty in pairs:
+        qty = max(0.0, float(qty or 0))
+        if qty <= 0:
+            continue
+        ln = db.one(
+            """SELECT l.*, m.mr_no FROM mr_lines l
+               JOIN material_requests m ON m.id=l.mr_id
+               WHERE l.id=?""", (line_id,))
+        if ln is None:
+            raise S.StockError(f"Request line #{line_id} no longer exists.")
+        if ln["status"] == CANCELLED:
+            raise S.StockError(f"{ln['mr_no']} / {ln['item_code']}: that request line was cancelled.")
+        pending = max(0.0, float(ln["qty_requested"] or 0) - float(ln["qty_delivered"] or 0))
+        if qty > pending + 1e-9:
+            raise S.StockError(f"{ln['item_code'] or ln['description']}: only {pending:g} still pending on {ln['mr_no']}.")
+        checked += 1
+    return checked
+
+
+def deliver_picked_lines(db: Database, line_qtys: Sequence[tuple[int, float]] | dict[int, float], dn_no: str) -> int:
+    """Update MR lines after a DN is created directly from the DN maker.
+
+    The stock movement has already been posted by the normal DN flow; this only
+    links the issued quantity back to the selected open PR / MR lines.
+    """
+    pairs = list(line_qtys.items()) if isinstance(line_qtys, dict) else list(line_qtys)
+    validate_picked_lines(db, pairs)
+    changed = 0
+    touched: set[int] = set()
+    mrs: set[str] = set()
+    for line_id, qty in pairs:
+        qty = max(0.0, float(qty or 0))
+        if qty <= 0:
+            continue
+        ln = db.one(
+            """SELECT l.*, m.mr_no FROM mr_lines l
+               JOIN material_requests m ON m.id=l.mr_id
+               WHERE l.id=?""", (line_id,))
+        if ln is None or ln["status"] == CANCELLED:
+            continue
+        delivered = float(ln["qty_delivered"] or 0) + qty
+        prepared = max(float(ln["qty_prepared"] or 0), delivered)
+        status = _line_status(float(ln["qty_requested"] or 0), prepared, delivered, ln["status"])
+        db.execute(
+            """UPDATE mr_lines
+                  SET qty_prepared=?, qty_delivered=?, status=?, dn_no=?,
+                      prepared_by=CASE WHEN COALESCE(prepared_by,'')='' THEN ? ELSE prepared_by END,
+                      delivered_at=datetime('now','localtime')
+                WHERE id=?""",
+            (prepared, delivered, status, _merge_dn_numbers(ln["dn_no"], dn_no), db.current_user, line_id),
+        )
+        touched.add(int(ln["mr_id"]))
+        mrs.add(str(ln["mr_no"]))
+        changed += 1
+    for mr_id in touched:
+        _refresh_status(db, mr_id)
+    if changed:
+        db.commit()
+        db.audit("ISSUED", "MR", ", ".join(sorted(mrs)), f"linked to {dn_no} from DN maker")
+    return changed
+
+
 def deliver_lines(db: Database, line_ids: list[int], header: S.DocHeader) -> str:
     """Turn prepared MR lines into a real Delivery Note (stock leaves here)."""
     if not line_ids:

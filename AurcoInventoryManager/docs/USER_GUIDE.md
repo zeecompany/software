@@ -1,6 +1,6 @@
 # AURCO INVENTORY MANAGER — User & Build Guide
 
-**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.27.0
+**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.28.0
 **Platform:** Windows Desktop (.EXE) · offline · local-first · SQLite
 
 ---

@@ -4,12 +4,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QTime, Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
-                               QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMenu,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
+                               QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout,
+                               QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMenu,
                                QLineEdit, QPlainTextEdit, QSizePolicy, QSplitter, QTabWidget,
                                QLayout, QTimeEdit, QVBoxLayout, QWidget)
 
-from ..core import config, documents as D, reports, signatories as SG
+from ..core import config, documents as D, material as M, reports, signatories as SG
 from ..core import services as S
 from ..core.database import Database
 from . import widgets as W
@@ -807,6 +808,8 @@ class StockOutPage(_TxnPage):
         bar.addWidget(W.button("Fill down ▼", slot=self._fill_pr,
                                tip="Copy the PR of the current row into all rows below"))
         bar.addWidget(W.button("Clear PR", slot=lambda: self.pr_input.clear()))
+        bar.addWidget(W.button("📋 Pick from Open PR / MR", slot=self.pick_from_open_request,
+                               tip="Load item lines from open material requests / PRs"))
         self.pr_lbl = QLabel("")
         self.pr_lbl.setStyleSheet(f"color:{W.MUTED};")
         self.pr_lbl.setWordWrap(True)
@@ -824,6 +827,46 @@ class StockOutPage(_TxnPage):
         n = self.lines.fill_pr_down()
         W.toast(self, f"PR copied down into {n} row(s)." if n
                 else "Select a row first, then Fill down.")
+
+    def pick_from_open_request(self):
+        picked = OpenRequestPicker.pick(self.db, self)
+        if not picked:
+            return
+        self.lines.add_items(picked)
+        mrs = []
+        prs = []
+        projects = []
+        requesters = []
+        for row in picked:
+            if row.get("mr_no") and row["mr_no"] not in mrs:
+                mrs.append(row["mr_no"])
+            if row.get("pr_no") and row["pr_no"] not in prs:
+                prs.append(row["pr_no"])
+            if row.get("mr_project") and row["mr_project"] not in projects:
+                projects.append(row["mr_project"])
+            if row.get("requested_by") and row["requested_by"] not in requesters:
+                requesters.append(row["requested_by"])
+        if len(projects) == 1 and not self.project.currentText().strip():
+            self.project.setCurrentText(projects[0])
+        if len(requesters) == 1 and not self.req.text().strip():
+            self.req.setText(requesters[0])
+        if mrs and not self.ref.text().strip():
+            self.ref.setText(", ".join(mrs))
+        if len(prs) == 1 and not self.pr_input.text().strip():
+            self.pr_input.setText(prs[0])
+        W.toast(self, f"{len(picked)} open PR / MR line(s) added to the Delivery Note.")
+
+    def _picked_request_links(self) -> list[tuple[int, float]]:
+        links: list[tuple[int, float]] = []
+        for row in range(min(self.lines.rowCount(), len(self.lines.items))):
+            src = self.lines.items[row]
+            line_id = src.get("mr_line_id")
+            if not line_id:
+                continue
+            qty = self.lines._num(row, 4)
+            if qty > 0:
+                links.append((int(line_id), float(qty)))
+        return links
 
     def update_totals(self):
         super().update_totals()
@@ -973,12 +1016,19 @@ class StockOutPage(_TxnPage):
 
     def save(self, finalize: bool = True):
         posting = self.lines.to_lines()
+        picked_links = self._picked_request_links()
         missing = [l for l in posting if not (l.pr_no or "").strip()]
         if missing and finalize:
             if not W.confirm(
                     self, f"{len(missing)} of {len(posting)} line(s) have no PR number.\n\n"
                           "Continue and finalize the Delivery Note anyway?",
                     "Lines without a PR number"):
+                return
+        if finalize and picked_links:
+            try:
+                M.validate_picked_lines(self.db, picked_links)
+            except S.StockError as exc:
+                W.error_box(self, str(exc))
                 return
         # ---- editing an existing draft: rewrite it instead of making a new one
         if self.editing_draft():
@@ -994,6 +1044,12 @@ class StockOutPage(_TxnPage):
             self.no.setText(no)
             self.clear_draft_mode()
             if finalize:
+                if picked_links:
+                    try:
+                        M.deliver_picked_lines(self.db, picked_links, no)
+                    except Exception as exc:  # noqa: BLE001
+                        W.error_box(self, f"Delivery Note {no} was finalized, but the linked PR/MR lines could not be updated.\n\n{exc}")
+                        return
                 self._after_post("DN", no,
                                  (f"Delivery Note {no} re-finalized after reversal — stock deducted again."
                                   if was_reversed else
@@ -1016,6 +1072,12 @@ class StockOutPage(_TxnPage):
             return
         self.no.setText(no)
         if finalize:
+            if picked_links:
+                try:
+                    M.deliver_picked_lines(self.db, picked_links, no)
+                except Exception as exc:  # noqa: BLE001
+                    W.error_box(self, f"Delivery Note {no} was finalized, but the linked PR/MR lines could not be updated.\n\n{exc}")
+                    return
             self._after_post("DN", no, f"Delivery Note {no} finalized — stock deducted.")
         else:
             self._register_attachments("DN", no)
@@ -1066,6 +1128,166 @@ class PreviewDialog(QDialog):
         h.addStretch(1)
         h.addWidget(W.button("Close", "Primary", self.accept))
         v.addLayout(h)
+
+
+class OpenRequestPicker(QDialog):
+    """Pick item lines from open PR / MR requests into the Delivery Note maker."""
+
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.rows: list[dict] = []
+        self.selected: list[dict] = []
+        self.setWindowTitle("Pick Items from Open PR / MR")
+        self.resize(1320, 720)
+        v = QVBoxLayout(self)
+
+        note = QLabel(
+            "Select one or more lines from open material requests. The chosen quantity "
+            "is added to the Delivery Note with the same PR / MR number, and when the "
+            "DN is finalized the request is updated automatically."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"background:{W.CARD}; border:1px solid {W.BORDER}; border-radius:8px; padding:8px;")
+        v.addWidget(note)
+
+        flt = QHBoxLayout()
+        self.f_text = W.SearchBox("Search MR / PR / project / item...")
+        self.f_text.textChanged.connect(self.reload)
+        self.f_project = W.SearchBox("Project / Site")
+        self.f_project.textChanged.connect(self.reload)
+        self.f_mr = W.SearchBox("MR Number")
+        self.f_mr.textChanged.connect(self.reload)
+        self.f_pr = W.SearchBox("PR Number")
+        self.f_pr.textChanged.connect(self.reload)
+        self.only_ready = QCheckBox("Only ready / prepared lines")
+        self.only_ready.toggled.connect(self.reload)
+        for w in (self.f_text, self.f_project, self.f_mr, self.f_pr, self.only_ready):
+            flt.addWidget(w)
+        flt.addWidget(W.button("🔄 Refresh", slot=self.reload))
+        v.addLayout(flt)
+
+        self.summary = QLabel("")
+        self.summary.setTextFormat(Qt.RichText)
+        self.summary.setStyleSheet(f"color:{W.NAVY}; font-weight:600;")
+        v.addWidget(self.summary)
+
+        self.table = W.DataTable()
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.doubleClicked.connect(self.accept)
+        v.addWidget(self.table, 1)
+
+        btns = QHBoxLayout()
+        btns.addWidget(W.button("Use Ready Qty", slot=lambda: self._fill_pick("ready_qty")))
+        btns.addWidget(W.button("Use Pending Qty", slot=lambda: self._fill_pick("pending_qty")))
+        btns.addWidget(W.button("Use Can Pick Now", slot=lambda: self._fill_pick("can_pick_now")))
+        btns.addWidget(W.button("☑ Select All", slot=lambda: self.table.selectAll()))
+        btns.addStretch(1)
+        v.addLayout(btns)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Add Selected to Delivery Note")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+        self.reload()
+
+    def reload(self):
+        self.rows = M.open_request_lines(
+            self.db,
+            text=self.f_text.text().strip(),
+            project=self.f_project.text().strip(),
+            mr_no=self.f_mr.text().strip(),
+            pr_no=self.f_pr.text().strip(),
+            ready_only=self.only_ready.isChecked(),
+        )
+        grid = []
+        for r in self.rows:
+            grid.append([
+                r["mr_no"], r["mr_project"] or r["site"], r["pr_no"], r["item_code"],
+                r["description"], r["uom"], round(float(r["pending_qty"] or 0), 2),
+                round(float(r["ready_qty"] or 0), 2), round(float(r["available"] or 0), 2),
+                round(float(r["can_pick_now"] or 0), 2), round(float(r["pick_default"] or 0), 2),
+                r["status"], r["stock_status"], r["requested_by"] or "",
+            ])
+        self.table.fill(["MR Number", "Project / Site", "PR / MR No.", "Item Code", "Description",
+                         "UOM", "Pending", "Ready", "Available", "Can Pick Now", "Pick Qty",
+                         "Request Status", "Stock Status", "Requested By"],
+                        grid, status_col=11)
+        pick_col = 10
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, pick_col)
+            if item is None:
+                continue
+            item.setFlags(item.flags() | Qt.ItemIsEditable)
+            item.setToolTip("Editable — enter the quantity to add to the Delivery Note")
+        pending = sum(float(r.get("pending_qty") or 0) for r in self.rows)
+        ready = sum(float(r.get("ready_qty") or 0) for r in self.rows)
+        can = sum(float(r.get("can_pick_now") or 0) for r in self.rows)
+        self.summary.setText(
+            f"<b>{len(self.rows)}</b> open line(s) &nbsp;·&nbsp; pending <b>{pending:,.2f}</b> "
+            f"&nbsp;·&nbsp; ready <b>{ready:,.2f}</b> &nbsp;·&nbsp; can pick now <b>{can:,.2f}</b>"
+        )
+
+    def _fill_pick(self, field: str):
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        if not rows:
+            rows = list(range(self.table.rowCount()))
+        self.table.blockSignals(True)
+        for r in rows:
+            self.table.item(r, 10).setText(f"{round(float(self.rows[r].get(field) or 0), 2):g}")
+        self.table.blockSignals(False)
+
+    def _num(self, row: int, col: int) -> float:
+        it = self.table.item(row, col)
+        if it is None:
+            return 0.0
+        try:
+            return float(str(it.text()).replace(",", "").strip() or 0)
+        except ValueError:
+            return 0.0
+
+    def accept(self):
+        picked_rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        if not picked_rows:
+            W.error_box(self, "Select one or more request lines first.")
+            return
+        out: list[dict] = []
+        for r in picked_rows:
+            row = self.rows[r]
+            qty = self._num(r, 10)
+            if qty <= 0:
+                continue
+            if not row.get("item_id"):
+                W.error_box(self, f"{row['item_code'] or row['description']}: link it to an Item Master record first.")
+                return
+            if qty > float(row.get("pending_qty") or 0) + 1e-9:
+                W.error_box(self, f"{row['item_code']}: pick qty cannot exceed pending qty.")
+                return
+            if qty > float(row.get("can_pick_now") or 0) + 1e-9:
+                W.error_box(self, f"{row['item_code']}: only {row['can_pick_now']:g} can be picked now.")
+                return
+            item = dict(self.db.one("SELECT * FROM items WHERE id=?", (row["item_id"],)))
+            item.update({
+                "qty": qty,
+                "pr_no": row.get("pr_no", ""),
+                "remarks": row.get("remarks", ""),
+                "mr_line_id": row["id"],
+                "mr_no": row.get("mr_no", ""),
+                "mr_project": row.get("mr_project") or row.get("site") or "",
+                "requested_by": row.get("requested_by") or "",
+            })
+            out.append(item)
+        if not out:
+            W.error_box(self, "The selected rows have no pick quantity yet.")
+            return
+        self.selected = out
+        super().accept()
+
+    @staticmethod
+    def pick(db: Database, parent=None) -> list[dict]:
+        dlg = OpenRequestPicker(db, parent)
+        return dlg.selected if dlg.exec() == QDialog.Accepted else []
 
 
 # =================================================================== RETURNS

@@ -1513,11 +1513,11 @@ def open_file_location(path: str | Path) -> None:
         open_path(p.parent)
 
 
-def print_file(db: Database, path: str | Path) -> None:
+def print_file(db: Database, path: str | Path, printer_name: str | None = None) -> None:
     """Send a PDF to the default/configured Windows printer."""
     p = Path(path)
     if platform.system() == "Windows":
-        printer = db.get_setting("printer_name", "")
+        printer = str(printer_name or db.get_setting("printer_name", "") or "").strip()
         try:
             if printer:
                 os.startfile(str(p), "printto", f'"{printer}"')  # type: ignore
@@ -1527,7 +1527,8 @@ def print_file(db: Database, path: str | Path) -> None:
             os.startfile(str(p))  # type: ignore
     else:
         open_path(p)
-    db.audit("PRINTED", "file", p.name)
+    details = f" -> {printer_name}" if str(printer_name or "").strip() else ""
+    db.audit("PRINTED", "file", p.name, details)
 
 
 def whatsapp_url(number: str = "", message: str = "") -> str:

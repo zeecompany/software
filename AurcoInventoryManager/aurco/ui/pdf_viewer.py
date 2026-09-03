@@ -14,6 +14,10 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QColorDialog, QD
                                QSlider, QSpinBox, QSplitter, QTabWidget, QTableWidget,
                                QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget, QCheckBox,
                                QComboBox)
+try:
+    from PySide6.QtPrintSupport import QPrinterInfo
+except Exception:  # noqa: BLE001
+    QPrinterInfo = None
 
 from ..core import documents as D
 from ..core import pdf_tools as PT
@@ -54,6 +58,8 @@ class PdfViewerDialog(QDialog):
         self.page_metrics: list[tuple[float, float]] = []
         self.render_display_scale = 1.0
         self.render_engine_scale = 1.0
+        self.sig_dragging = False
+        self.sig_drag_offset = QPoint(0, 0)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -166,9 +172,13 @@ class PdfViewerDialog(QDialog):
         self.page_view = ClickableLabel()
         self.page_view.setAlignment(Qt.AlignCenter)
         self.page_view.setMinimumSize(420, 520)
-        self.page_view.setStyleSheet("background:white;border:1px solid #cbd5e1;border-radius:14px;padding:14px;")
+        self.page_view.setStyleSheet("background:white;border:1px solid #cbd5e1;border-radius:14px;")
         self.page_view.setText("Open a PDF to start.")
         self.page_view.pointPicked.connect(self.capture_point)
+        self.sig_overlay = QLabel(self.page_view)
+        self.sig_overlay.setVisible(False)
+        self.sig_overlay.setStyleSheet("background:rgba(11,61,107,0.08);border:2px dashed #0b3d6b;border-radius:8px;")
+        self.sig_overlay.installEventFilter(self)
         self.scroll.setWidget(self.page_view)
         mv.addWidget(self.scroll, 1)
         self.page_meta = QTextBrowser()
@@ -206,6 +216,7 @@ class PdfViewerDialog(QDialog):
         ibar = QHBoxLayout(); ibar.addWidget(self.a_image, 1)
         ibar.addWidget(W.button("Browse", slot=self.pick_signature_image))
         ibar.addWidget(W.button("Paste", slot=self.paste_signature_image))
+        ibar.addWidget(W.button("Reset position", slot=self.reset_signature_position))
         iw = QWidget(); iw.setLayout(ibar)
         f.addRow("Pages", self.a_pages)
         f.addRow("Tool", self.a_kind)
@@ -219,10 +230,14 @@ class PdfViewerDialog(QDialog):
         ag.addWidget(W.button("Apply to PDF", "Accent", self.apply_annotation))
         ag.addWidget(W.button("Save Signed Copy", slot=self.save_signed_copy))
         av.addLayout(ag)
-        hint = QLabel("Tip: click anywhere on the PDF preview to capture X/Y placement in percentage coordinates.")
+        hint = QLabel("Tip: click anywhere on the PDF preview to capture X/Y placement. For signatures, paste or browse the signature image, then drag the on-page preview to the exact position you want.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#5f6368")
         av.addWidget(hint)
+        self.a_kind.currentTextChanged.connect(self._refresh_signature_overlay)
+        self.a_image.textChanged.connect(self._refresh_signature_overlay)
+        for _sp in (self.a_x, self.a_y, self.a_w, self.a_h):
+            _sp.valueChanged.connect(self._refresh_signature_overlay)
         av.addStretch(1)
         right.addTab(annot, "Annotate")
 
@@ -276,9 +291,17 @@ class PdfViewerDialog(QDialog):
         self.p_range.setPlaceholderText("Blank = all pages, or e.g. 1-3,5")
         self.p_orientation = QComboBox(); self.p_orientation.addItems(["Original", "Portrait", "Landscape"])
         self.p_copies = QSpinBox(); self.p_copies.setRange(1, 99); self.p_copies.setValue(1)
+        self.p_printer = W.combo([], editable=True)
+        self.p_printer.setMinimumWidth(280)
+        pbar = QHBoxLayout()
+        pbar.addWidget(self.p_printer, 1)
+        pbar.addWidget(W.button("Refresh", slot=self.reload_printers))
+        pbar.addWidget(W.button("Save as default", slot=self.save_default_printer))
+        pw = QWidget(); pw.setLayout(pbar)
         pf.addRow("Page range", self.p_range)
         pf.addRow("Orientation", self.p_orientation)
         pf.addRow("Copies", self.p_copies)
+        pf.addRow("Printer", pw)
         pv.addWidget(pg)
         prow = QHBoxLayout()
         prow.addWidget(W.button("Preview Print Job", slot=self.preview_print_job))
@@ -342,6 +365,7 @@ class PdfViewerDialog(QDialog):
         self.resize_timer.setInterval(120)
         self.resize_timer.timeout.connect(self._rerender_after_resize)
         self.scroll.viewport().installEventFilter(self)
+        self.reload_printers()
         self.reload_recent()
         self._update_actions()
 
@@ -365,6 +389,19 @@ class PdfViewerDialog(QDialog):
     def eventFilter(self, obj, ev):
         if obj is self.scroll.viewport() and ev.type() == QEvent.Resize and self._current_pdf():
             self._schedule_render()
+        elif obj is self.sig_overlay:
+            if ev.type() == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
+                self.sig_dragging = True
+                self.sig_drag_offset = ev.position().toPoint()
+                return True
+            if ev.type() == QEvent.MouseMove and self.sig_dragging:
+                pos = self.sig_overlay.pos() + ev.position().toPoint() - self.sig_drag_offset
+                self._move_signature_overlay(pos)
+                return True
+            if ev.type() == QEvent.MouseButtonRelease and self.sig_dragging:
+                self.sig_dragging = False
+                self._set_status("Signature position updated from the preview.")
+                return True
         return super().eventFilter(obj, ev)
 
     # ---------------------------------------------------------------- helpers
@@ -504,6 +541,113 @@ class PdfViewerDialog(QDialog):
         engine_scale = max(0.5, min(6.0, display_scale * quality_boost))
         return display_scale, engine_scale
 
+    def _selected_printer_name(self) -> str:
+        name = (self.p_printer.currentText() or "").strip()
+        return "" if name == "(Use system default)" else name
+
+    def reload_printers(self):
+        current = self._selected_printer_name() if hasattr(self, "p_printer") else ""
+        names: list[str] = []
+        if QPrinterInfo is not None:
+            try:
+                names = [p.printerName().strip() for p in QPrinterInfo.availablePrinters() if p.printerName().strip()]
+            except Exception:
+                names = []
+            if not names:
+                try:
+                    default_name = (QPrinterInfo.defaultPrinter().printerName() or "").strip()
+                    if default_name:
+                        names = [default_name]
+                except Exception:
+                    pass
+        db = self._db()
+        saved = (db.get_setting("printer_name", "") if db else "") or ""
+        for extra in (saved, current):
+            extra = (extra or "").strip()
+            if extra and extra not in names:
+                names.append(extra)
+        self.p_printer.blockSignals(True)
+        self.p_printer.clear()
+        self.p_printer.addItem("(Use system default)")
+        for name in names:
+            self.p_printer.addItem(name)
+        target = current or saved
+        if target:
+            idx = self.p_printer.findText(target)
+            if idx >= 0:
+                self.p_printer.setCurrentIndex(idx)
+            else:
+                self.p_printer.setCurrentText(target)
+        else:
+            self.p_printer.setCurrentIndex(0)
+        self.p_printer.blockSignals(False)
+
+    def save_default_printer(self):
+        db = self._db()
+        if not db:
+            W.error_box(self, "Database is not available right now.")
+            return
+        printer = self._selected_printer_name()
+        db.set_setting("printer_name", printer)
+        self._set_status("Saved the selected printer as the PDF Studio default." if printer
+                         else "PDF Studio will now use the system default printer.")
+
+    def reset_signature_position(self):
+        self.a_x.setValue(8)
+        self.a_y.setValue(8)
+        self.a_w.setValue(30)
+        self.a_h.setValue(8)
+        self._refresh_signature_overlay()
+
+    def _signature_overlay_ready(self) -> bool:
+        if self.a_kind.currentText() != "Signature":
+            return False
+        img_path = self.a_image.text().strip()
+        if not img_path:
+            return False
+        pm = self.page_view.pixmap()
+        return bool(pm and not pm.isNull() and Path(img_path).exists())
+
+    def _refresh_signature_overlay(self, *_):
+        if not self._signature_overlay_ready():
+            self.sig_overlay.hide()
+            return
+        page_pm = self.page_view.pixmap()
+        sig_pm = QPixmap(self.a_image.text().strip())
+        if sig_pm.isNull() or page_pm is None or page_pm.isNull():
+            self.sig_overlay.hide()
+            return
+        width = max(40, int(round(page_pm.width() * (self.a_w.value() / 100.0))))
+        height = max(24, int(round(page_pm.height() * (self.a_h.value() / 100.0))))
+        sig_scaled = sig_pm.scaled(width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.sig_overlay.setPixmap(sig_scaled)
+        self.sig_overlay.resize(sig_scaled.size())
+        self.sig_overlay.setToolTip("Drag this signature preview to place it visually on the page.")
+        self._move_signature_overlay(QPoint(
+            int(round(page_pm.width() * (self.a_x.value() / 100.0))),
+            int(round(page_pm.height() * (self.a_y.value() / 100.0))),
+        ), update_fields=False)
+        self.sig_overlay.raise_()
+        self.sig_overlay.show()
+
+    def _move_signature_overlay(self, pos: QPoint, update_fields: bool = True):
+        page_pm = self.page_view.pixmap()
+        if page_pm is None or page_pm.isNull():
+            self.sig_overlay.hide()
+            return
+        max_x = max(0, page_pm.width() - self.sig_overlay.width())
+        max_y = max(0, page_pm.height() - self.sig_overlay.height())
+        x = max(0, min(max_x, pos.x()))
+        y = max(0, min(max_y, pos.y()))
+        self.sig_overlay.move(x, y)
+        if update_fields:
+            self.a_x.blockSignals(True)
+            self.a_y.blockSignals(True)
+            self.a_x.setValue(round((x / max(1, page_pm.width())) * 100.0))
+            self.a_y.setValue(round((y / max(1, page_pm.height())) * 100.0))
+            self.a_x.blockSignals(False)
+            self.a_y.blockSignals(False)
+
     # ---------------------------------------------------------------- opening
     def pick_file(self):
         p, _ = QFileDialog.getOpenFileName(self, "Open PDF", str(Path.home()), "PDF Files (*.pdf)")
@@ -585,6 +729,7 @@ class PdfViewerDialog(QDialog):
             f"<br><br>{preview}"
         )
         self._highlight_page_selection()
+        self._refresh_signature_overlay()
 
     def goto_page(self, page_index: int, sync: bool = True):
         if not self._ensure_open() or self.page_total < 1:
@@ -952,7 +1097,8 @@ class PdfViewerDialog(QDialog):
         if out:
             dlg = PdfViewerDialog(self)
             dlg.open_file(out, title=f"Print Preview — {Path(out).name}")
-            self._set_status(f"Print preview created with {self.p_copies.value()} copy/copies.")
+            printer = self._selected_printer_name() or "system default printer"
+            self._set_status(f"Print preview created with {self.p_copies.value()} copy/copies for {printer}.")
 
     def print_with_options(self):
         pdf = self._make_subset()
@@ -960,9 +1106,12 @@ class PdfViewerDialog(QDialog):
             return
         db = self._db()
         copies = self.p_copies.value()
+        printer = self._selected_printer_name()
         for _ in range(copies):
-            D.print_file(db, pdf)
-        self._set_status(f"Sent {copies} print job(s) for {pdf.name}.")
+            D.print_file(db, pdf, printer_name=printer or None)
+        self._set_status(
+            f"Sent {copies} print job(s) for {pdf.name} to {printer or 'the system default printer'}."
+        )
 
     # -------------------------------------------------------------- security
     def protect_copy(self):
