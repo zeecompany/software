@@ -14,6 +14,7 @@ from ..core.database import Database
 from . import widgets as W
 from .auth_dialogs import AdminAuthDialog
 from .common import ItemPicker, ShareBar, date_edit, iso
+from . import pdf_viewer as PDFV
 
 TYPES = {"All Documents": "", "Delivery Notes (DN)": "DN", "Goods Receipts (GRN)": "GRN",
          "Returns (RET)": "RET", "Transfers (TRF)": "TRF", "Adjustments (ADJ)": "ADJ",
@@ -61,6 +62,8 @@ class DocumentsPage(QWidget):
         btns.addWidget(W.button("🔍  Show Details", slot=self.show_details,
                                 tip="Load the lines of the selected document"))
         btns.addWidget(W.button("👁  View / Regenerate PDF", "Primary", self.view_pdf))
+        btns.addWidget(W.button("📑  Open PDF Studio", slot=self.open_pdf_studio,
+                                tip="Open AURCO's advanced built-in PDF tool"))
         btns.addWidget(W.button("🖨  Reprint", slot=self.reprint))
         btns.addWidget(W.button("📄  Duplicate / Copy", slot=self.duplicate))
         btns.addWidget(W.button("✏  Edit Draft / Re-open", "Primary", self.edit_draft,
@@ -223,6 +226,18 @@ class DocumentsPage(QWidget):
         existing = Path(d.get("pdf_path") or "") if d.get("pdf_path") else None
         self.last_pdf = existing if existing and existing.exists() else D.document_pdf(self.db, d["id"])
         D.open_path(self.last_pdf)
+
+    def open_pdf_studio(self):
+        d = self._sel()
+        if d and d.get("pdf_path") and Path(d["pdf_path"]).exists():
+            self.last_pdf = Path(d["pdf_path"])
+            PDFV.show_pdf(self.last_pdf, self, title=d["doc_no"])
+            return
+        if d:
+            self.last_pdf = D.document_pdf(self.db, d["id"])
+            PDFV.show_pdf(self.last_pdf, self, title=d["doc_no"])
+            return
+        PDFV.open_studio(self)
 
     def reprint(self):
         d = self._sel()

@@ -17,12 +17,12 @@ VSVersionInfo(
         '040904B0',
         [StringStruct('CompanyName', 'AURCO'),
          StringStruct('FileDescription', 'AURCO Inventory Manager - Inventory & Warehouse Management'),
-         StringStruct('FileVersion', '2.24.0.0'),
+         StringStruct('FileVersion', '2.25.0.0'),
          StringStruct('InternalName', 'AurcoInventoryManager'),
          StringStruct('LegalCopyright', 'Created by Zain Shami'),
          StringStruct('OriginalFilename', 'AURCO Inventory Manager.exe'),
          StringStruct('ProductName', 'AURCO Inventory Manager'),
-         StringStruct('ProductVersion', '2.24.0.0')])
+         StringStruct('ProductVersion', '2.25.0.0')])
     ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]

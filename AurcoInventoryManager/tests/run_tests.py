@@ -70,8 +70,8 @@ def main() -> int:
     D.open_file_location = lambda *a, **k: None
 
     import os
-    from aurco.core import (config, database, demo, licensing as LIC, material as M, reports,
-                            services as S, signatories as SG, theming)
+    from aurco.core import (config, database, demo, licensing as LIC, material as M, pdf_tools as PT,
+                            reports, services as S, signatories as SG, theming)
     from aurco.ui import pdf_viewer as PV
 
     app = QApplication.instance() or QApplication(sys.argv)
@@ -380,8 +380,8 @@ def main() -> int:
     check(sp.t_files.rowCount() >= 1 and "File Contents" in sp.tabs.tabText(3),
           "Global Search page shows a File Contents result tab")
 
-    # ------------------------------------------- licensing and built-in view
-    section("Licensing && built-in PDF viewer")
+    # ------------------------------------- licensing and advanced PDF studio
+    section("Licensing && advanced PDF studio")
     LIC.clear_license_key()
     _iid = LIC.installation_id()
     _lic = LIC.generate_license_key(_iid, "Arena QA", "2099-12-31", 5)
@@ -393,6 +393,63 @@ def main() -> int:
     check(not LIC.validate_license_key(_other, _iid)["valid"],
           "license key is rejected for a different installation id")
     check("WhatsApp Desk" not in win.pages, "dedicated WhatsApp module removed from navigation")
+
+    from reportlab.pdfgen import canvas as _cv
+    _sample_pdf = root / "pdf_studio_sample.pdf"
+    _cvs = _cv.Canvas(str(_sample_pdf))
+    for _n in range(1, 4):
+        _cvs.drawString(72, 770, f"PDF Studio Page {_n}")
+        _cvs.drawString(72, 748, f"UniquePdfStudioToken {_n}")
+        _cvs.showPage()
+    _cvs.save()
+    PT.remember_recent(_sample_pdf)
+    check(Path(PT.recent_files()[0]).name == _sample_pdf.name,
+          "recent PDF history records the latest opened file")
+    _hits_pdf = PT.search_text(_sample_pdf, "UniquePdfStudioToken 2")
+    check(bool(_hits_pdf) and _hits_pdf[0]["page"] == 2,
+          "PDF text search finds the expected page")
+    _split = PT.split_pdf(_sample_pdf, ["1-2", "3"], root / "pdf_split")
+    check(len(_split) == 2 and PT.page_count(_split[0]) == 2 and PT.page_count(_split[1]) == 1,
+          "PDF split creates the requested pieces")
+    _merged = root / "pdf_merged.pdf"
+    PT.merge_pdfs(_split, _merged)
+    check(PT.page_count(_merged) == 3, "PDF merge combines the selected files")
+    _rot = root / "pdf_rotated.pdf"
+    PT.rotate_pages(_sample_pdf, [0], 90, _rot)
+    _sizes = PT.page_sizes(_rot)
+    check(_sizes[0][1] > _sizes[0][0], "PDF rotation swaps the first page orientation")
+    _dup = root / "pdf_dup_pages.pdf"
+    PT.duplicate_pages(_sample_pdf, [1], _dup)
+    check(PT.page_count(_dup) == 4, "PDF page duplication works")
+    _del = root / "pdf_deleted.pdf"
+    PT.delete_pages(_sample_pdf, [1], _del)
+    check(PT.page_count(_del) == 2, "PDF page deletion works")
+    _ext = root / "pdf_extract.pdf"
+    PT.extract_pages(_sample_pdf, [2], _ext)
+    check(PT.page_count(_ext) == 1, "PDF page extraction works")
+    _ann = root / "pdf_annotated.pdf"
+    PT.annotate_pdf(_sample_pdf, [{"page": 1, "type": "stamp", "text": "APPROVED",
+                                   "x": 8, "y": 10, "w": 28, "h": 8, "color": "#1a7f37"}], _ann)
+    check(_ann.exists() and PT.page_count(_ann) == 3, "PDF annotation / stamp save works")
+    _prot = root / "pdf_protected.pdf"
+    PT.protect_pdf(_sample_pdf, _prot, "1234", "owner", True, False, False)
+    from pypdf import PdfReader as _PdfReader
+    check(_PdfReader(str(_prot)).is_encrypted, "PDF protection saves an encrypted copy")
+    _docx = PT.convert_to_docx(_sample_pdf, root / "pdf_export.docx")
+    _xlsx = PT.convert_to_xlsx(_sample_pdf, root / "pdf_export.xlsx")
+    _txt = PT.convert_to_txt(_sample_pdf, root / "pdf_export.txt")
+    _html = PT.convert_to_html(_sample_pdf, root / "pdf_export.html")
+    _imgs = PT.export_all_images(_sample_pdf, root / "pdf_images", fmt="png", scale=1.1)
+    check(_docx.exists() and _xlsx.exists() and _txt.exists() and _html.exists() and len(_imgs) == 3,
+          "PDF conversion exports Word, Excel, text, HTML and images")
+    _studio = PV.open_studio(win)
+    _studio.open_file(_sample_pdf)
+    app.processEvents()
+    check(_studio.page_total == 3 and "pdf_studio_sample.pdf" in _studio.sub.text(),
+          "advanced PDF studio opens and shows the sample PDF")
+    _studio.search.setText("UniquePdfStudioToken 3")
+    _studio.run_search()
+    check(_studio.search_hits.count() >= 1, "advanced PDF studio shows search hits")
 
     # ------------------------------------------------ export presentation
     section("PDF and Excel presentation")

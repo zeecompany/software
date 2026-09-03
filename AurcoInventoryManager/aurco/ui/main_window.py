@@ -35,6 +35,7 @@ from .documents_page import AuditPage, DocumentsPage, HistoryPage, SearchPage
 from .items import ItemsPage
 from .reports_page import ReportsPage
 from .settings_page import SettingsPage
+from . import pdf_viewer as PDFV
 from .transactions import (AdjustmentPage, ReturnsPage, StockCountPage, StockInPage, StockOutPage,
                            TransferPage)
 
@@ -257,6 +258,7 @@ class MainWindow(QMainWindow):
                 ("↩ Return", lambda: self.go("Returns"), "Quick Return"),
                 ("📋 Requests", lambda: self.go("Material Requests"),
                  "Material requests (Ctrl+M)"),
+                ("📑 PDF", lambda: PDFV.open_studio(self), "Open AURCO PDF Studio"),
                 ("🧮", self._calculator, "Calculator (Ctrl+Alt+C or F4)"),
                 ("🔄", self.refresh_all, "Refresh (F5)")):
             b = W.button(text, "Primary" if text.startswith("＋") else "", slot, tip)

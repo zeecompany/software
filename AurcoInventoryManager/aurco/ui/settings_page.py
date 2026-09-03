@@ -939,12 +939,12 @@ class SettingsPage(QWidget):
         f.addRow(tip)
         v.addWidget(g)
 
-        g2 = QGroupBox("Built-in PDF viewer")
+        g2 = QGroupBox("AURCO PDF Studio")
         f2 = QFormLayout(g2)
-        f2.addRow(QLabel("PDF files opened from AURCO are shown in the built-in viewer whenever "
-                         "Qt PDF support is available. The viewer auto-refreshes when the shared PDF "
-                         "file changes, so multiple PCs can look at the same document from the same "
-                         "storage folder."))
+        f2.addRow(QLabel("PDF files opened from AURCO are shown in the built-in PDF Studio. It supports "
+                         "viewing, search, thumbnails, annotations, conversion, protection, sharing and "
+                         "page organization. When the shared PDF changes on disk, the viewer refreshes as "
+                         "long as you are not holding an unsaved working copy."))
         v.addWidget(g2)
         v.addStretch(1)
         self._refresh_license_status()

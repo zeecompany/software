@@ -1,6 +1,6 @@
 # AURCO INVENTORY MANAGER — User & Build Guide
 
-**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.22.0
+**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.25.0
 **Platform:** Windows Desktop (.EXE) · offline · local-first · SQLite
 
 ---
@@ -803,8 +803,11 @@ Open File Location · Copy Path**, plus PDF / Excel / CSV export.
   document's folder opened for a one-click attach — no unofficial API.
 * **Global Search** now has a **File Contents** tab that searches searchable text
   extracted from document PDFs, attachments and library files.
-* **PDF files opened by AURCO** are shown in the built-in viewer when available,
-  so connected PCs can review the same shared document inside the system.
+* **AURCO PDF Studio** is the built-in advanced PDF tool. It supports viewing,
+  thumbnails, page navigation, zoom, search, rotate, annotations, signature-image
+  pasting, merge/split/reorder/extract, image/Word/Excel export, print-job
+  preparation, recent-file history, drag-and-drop opening, sharing, and password-
+  protected PDF copies.
 
 ### Drafts and adjusted quantities
 
@@ -945,8 +948,9 @@ Everyone works on the same live data — one shared database, separate logins.
 * every action in the audit trail with the user name **and the computer**
 * **Who is connected** shows the live session list; the status bar shows
   "👥 N other user(s) online"
-* **Built-in PDF viewer** lets connected PCs review the same shared document
-  inside AURCO, with automatic refresh when the PDF changes on the shared folder
+* **AURCO PDF Studio** lets connected PCs review the same shared PDF inside the
+  system, and refreshes when the shared file changes if you are not holding an
+  unsaved working copy
 * **Multi-user health check** reports share speed, journal mode and locks
 
 **Under the hood** — WAL journaling plus a 15-second busy timeout, so a second
