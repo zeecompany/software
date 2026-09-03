@@ -62,7 +62,8 @@ def main() -> int:
     import aurco.ui.common as _c, aurco.ui.transactions as _t, aurco.ui.items as _i
     import aurco.ui.documents_page as _d, aurco.ui.bulk_check as _b
     import aurco.ui.material_page as _m, aurco.ui.signature_ui as _s
-    for mod in (_c, _t, _i, _d, _b, _m, _s):
+    import aurco.ui.employee_ppe_page as _ep
+    for mod in (_c, _t, _i, _d, _b, _m, _s, _ep):
         mod.W.confirm, mod.W.info_box = W.confirm, W.info_box
         mod.W.error_box, mod.W.toast = W.error_box, W.toast
     from aurco.core import documents as D
@@ -70,8 +71,9 @@ def main() -> int:
     D.open_file_location = lambda *a, **k: None
 
     import os
-    from aurco.core import (config, database, demo, licensing as LIC, material as M, pdf_tools as PT,
-                            reports, services as S, signatories as SG, theming)
+    from aurco.core import (config, database, demo, employee_ppe as EP, licensing as LIC,
+                            material as M, pdf_tools as PT, reports, services as S,
+                            signatories as SG, theming)
     from aurco.ui import pdf_viewer as PV
 
     app = QApplication.instance() or QApplication(sys.argv)
@@ -450,6 +452,54 @@ def main() -> int:
     _studio.search.setText("UniquePdfStudioToken 3")
     _studio.run_search()
     check(_studio.search_hits.count() >= 1, "advanced PDF studio shows search hits")
+
+    # ------------------------------------------------ Employee PPE register
+    section("Employee PPE register")
+    check("Employee PPE Register" in win.pages, "Employee PPE register page is available")
+    _shoe_id = S.save_item(db, {"code": "PPE-SHOE-42", "description": "Safety Shoes Size 42",
+                                "category": "PPE", "uom": "PAIR", "warehouse": "Main",
+                                "location": "Rack-PPE", "opening_balance": 10})
+    _blanket_id = S.save_item(db, {"code": "PPE-BLANKET-01", "description": "Blanket Single Bed",
+                                   "category": "Camp Welfare", "uom": "PCS", "warehouse": "Main",
+                                   "location": "Rack-BLK", "opening_balance": 20})
+    _frc_id = S.save_item(db, {"code": "PPE-FRC-L", "description": "FRC Coverall XL",
+                               "category": "PPE", "uom": "PCS", "warehouse": "Main",
+                               "location": "Rack-FRC", "opening_balance": 8})
+    _ppe_dn = S.post_issue(db, S.DocHeader(doc_type="DN", issued_to="Camp Welfare",
+                                           handover_to="Ahmed Salem", handover_id="EMP-001",
+                                           project="Camp A", warehouse="Main"),
+                           [S.Line(item_id=_shoe_id, qty=1),
+                            S.Line(item_id=_blanket_id, qty=2),
+                            S.Line(item_id=_frc_id, qty=1)], finalize=True)
+    _ppe_doc_id = db.scalar("SELECT id FROM documents WHERE doc_type='DN' AND doc_no=?", (_ppe_dn,))
+    _ppe_pdf = D.document_pdf(db, _ppe_doc_id)
+    check(_ppe_pdf.exists(), "employee-PPE delivery note PDF renders")
+    _pdb = EP.get_db(db.current_user)
+    _cand = EP.sync_candidates(db, _pdb)
+    check(any(c["doc_no"] == _ppe_dn and c["item_group"] == EP.GROUP_SHOES for c in _cand),
+          "PPE sync detects shoes from a delivery note")
+    check(any(c["doc_no"] == _ppe_dn and c["item_group"] == EP.GROUP_BLANKET for c in _cand),
+          "PPE sync detects blankets from a delivery note")
+    check(any(c["doc_no"] == _ppe_dn and c["item_group"] == EP.GROUP_FRC for c in _cand),
+          "PPE sync detects FRC / coverall items from a delivery note")
+    _ins, _sk = EP.import_from_delivery_notes(db, _pdb)
+    check(_ins >= 3, "PPE sync imports detected delivery-note lines into the separate module")
+    _rows = EP.list_records(_pdb, text="EMP-001")
+    check(any(r["dn_no"] == _ppe_dn and r["employee_code"] == "EMP-001" for r in _rows),
+          "synced PPE records keep the employee code from the delivery note")
+    EP.save_record(_pdb, {"issue_date": database.today(), "employee_code": "EMP-002",
+                          "employee_name": "Bilal Khan", "project": "Camp B",
+                          "item_group": EP.GROUP_COVERALL, "item_code": "MAN-COV-01",
+                          "item_desc": "Coverall L", "size_text": "L", "qty": 1,
+                          "uom": "PCS", "remarks": "Manual issue"})
+    _title_ppe, _cols_ppe, _data_ppe = EP.build_report(_pdb, "Safety Shoes Register", {})
+    check("Description" in _cols_ppe and any(_ppe_dn in str(r) for r in _data_ppe),
+          "PPE report builds from synced delivery-note records")
+    ppe_page = win.page_ppe
+    ppe_page.refresh_all()
+    app.processEvents()
+    check(ppe_page.t_reg.rowCount() >= 4, "Employee PPE page lists synced and manual records")
+    check(ppe_page.t_sync.rowCount() >= 3, "Employee PPE sync preview shows detected delivery-note lines")
 
     # ------------------------------------------------ export presentation
     section("PDF and Excel presentation")

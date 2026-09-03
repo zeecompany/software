@@ -255,8 +255,8 @@ covering prepare, link, create item, print, copy, cancel, restore and delete.</p
 <tr><td><b>Ctrl+D</b> Documents</td><td><b>Ctrl+R</b> Report Center</td><td><b>Ctrl+M</b> Material Requests</td></tr>
 <tr><td><b>Ctrl+K</b> Bulk check</td><td><b>Ctrl+T</b> Notes &amp; Tasks</td><td><b>Ctrl+,</b> Settings</td></tr>
 <tr><td><b>Ctrl+Shift+A</b> Admin Station</td><td><b>Ctrl+G</b> General DN Maker</td><td><b>Ctrl+F</b> Search / scan</td></tr>
-<tr><td><b>Ctrl+Shift+O</b> Company Issuance</td><td><b>Ctrl+Alt+C</b> Calculator</td><td><b>F1</b> This manual</td></tr>
-<tr><td><b>Ctrl+L</b> Document Library</td><td colspan='2'>Scanned delivery notes</td></tr>
+<tr><td><b>Ctrl+Shift+O</b> Company Issuance</td><td><b>Ctrl+Shift+E</b> Employee PPE Register</td><td><b>F1</b> This manual</td></tr>
+<tr><td><b>Ctrl+L</b> Document Library</td><td><b>Ctrl+Alt+C</b> Calculator</td><td>Scanned delivery notes</td></tr>
 </table>
 <h3>Working</h3>
 <table border='1' cellpadding='5' cellspacing='0' width='100%'>
@@ -541,6 +541,35 @@ DN number in the Evidence column is kept as the reference.</p>
 
 <p><b>Backups:</b> the Backup button copies the database. The photographs live in
 the Evidence folder — copy that folder too for a complete archive.</p>
+"""),
+    ("Employee PPE Register", """
+<h2>Employee PPE Register</h2>
+<p><b>Ctrl+Shift+E.</b> A separate register for <b>shoes, blankets, FRCs and
+coveralls</b> issued to employees, tracked by <b>employee code</b>.</p>
+<p>This module is for items that often leave on a normal <b>Delivery Note</b> but
+later need a clean employee-wise history. It keeps that extra record without
+changing stock again.</p>
+
+<h3>Register</h3>
+<p><b>New Manual Issue</b> records the employee code, employee name,
+project/department, item, size, quantity, DN number and remarks. Existing lines
+can be edited later, for example when a synced DN line needs its employee code
+completed.</p>
+
+<h3>Sync from Delivery Notes</h3>
+<p><b>Preview Matches</b> scans FINAL Delivery Notes and detects matching lines by
+item description, code and category. The module recognises <b>Safety Shoes</b>,
+<b>Blanket</b>, <b>FRC</b> and <b>Coverall</b>, and tries to read the size from the
+description too. <b>Import All New Records</b> brings those lines into the
+register and safely skips anything already imported.</p>
+<p>The source <b>DN number</b> and PDF path stay linked, so the original delivery
+note can be opened from the register. If a synced line has no employee code or
+name, it is flagged as <b>Needs Employee Info</b>.</p>
+
+<h3>Reports</h3>
+<p>Built-in reports include Full PPE Register, Safety Shoes Register, Blanket
+Register, FRC Register, Coverall Register, By Employee, By Delivery Note,
+Missing Employee Codes and Synced Delivery Note PPE.</p>
 """),
     ("Document Library", """
 <h2>Document Library — your scanned delivery notes</h2>

@@ -1,6 +1,6 @@
 # AURCO INVENTORY MANAGER — User & Build Guide
 
-**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.25.0
+**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.26.0
 **Platform:** Windows Desktop (.EXE) · offline · local-first · SQLite
 
 ---
@@ -529,6 +529,44 @@ stock value · audit trail. All with PDF, Excel, CSV, print and share.
 > The module has its own **Backup / Restore** buttons — the main database backup
 > does not include it.
 
+---
+
+## 3g. Employee PPE Register (Ctrl+Shift+E)
+
+A separate register for **shoes, blankets, FRCs and coveralls** issued to
+employees, tracked by **employee code**.
+
+### Why this module exists
+These items often leave the store through a normal **Delivery Note**, but later
+you need an employee-wise history: who received the shoes, which blanket went to
+which worker, and which DN carried it. This module keeps that record without
+changing stock a second time.
+
+### What it does
+* **Manual issue entry** for employee code, employee name, project/site,
+  description, size, quantity, DN number and remarks.
+* **DN sync** that scans finalized Delivery Notes and detects matching PPE lines
+  by item description, code and category.
+* Automatically groups records as **Safety Shoes, Blanket, FRC, Coverall** or
+  other PPE, and also tries to read the **size** from the description.
+* Keeps the source **DN number and PDF path** so the original document can be
+  opened from the register.
+* Flags lines that still need employee details with **Needs Employee Info**.
+
+### Reports
+Built-in reports include:
+* **Full PPE Register**
+* **Safety Shoes Register**
+* **Blanket Register**
+* **FRC Register**
+* **Coverall Register**
+* **By Employee**
+* **By Delivery Note**
+* **Missing Employee Codes**
+* **Synced Delivery Note PPE**
+
+This gives you a separate employee-issued record while still using the normal
+Delivery Note workflow in inventory.
 
 ---
 

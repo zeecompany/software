@@ -30,6 +30,7 @@ from .cable_records import CableRecordsPage
 from .tool_station import ToolStationPage
 from .general_dn import GeneralDNPage
 from .issuance_page import IssuancePage
+from .employee_ppe_page import EmployeePPEPage
 from .library_page import LibraryPage
 from .documents_page import AuditPage, DocumentsPage, HistoryPage, SearchPage
 from .items import ItemsPage
@@ -72,6 +73,7 @@ NAV = [
     ("Cable Records", "🧵", "Ctrl+Shift+B"),
     ("General DN Maker", "🧾", "Ctrl+G"),
     ("Company Issuance", "🏢", "Ctrl+Shift+O"),
+    ("Employee PPE Register", "🦺", "Ctrl+Shift+E"),
     ("SYSTEM", None, None),
     ("Settings", "⚙", "Ctrl+,"),
     ("Calculator", "🧮", "Ctrl+Alt+C"),
@@ -292,6 +294,7 @@ class MainWindow(QMainWindow):
         self.page_cables = CableRecordsPage(db)
         self.page_gdn = GeneralDNPage(db)
         self.page_issuance = IssuancePage(db)
+        self.page_ppe = EmployeePPEPage(db)
         self.page_library = LibraryPage(db)
         self.page_settings = SettingsPage(db, self.session)
         for name, page in (("Dashboard", self.page_dashboard), ("Global Search", self.page_search),
@@ -310,6 +313,7 @@ class MainWindow(QMainWindow):
                            ("Cable Records", self.page_cables),
                            ("General DN Maker", self.page_gdn),
                            ("Company Issuance", self.page_issuance),
+                           ("Employee PPE Register", self.page_ppe),
                            ("Settings", self.page_settings)):
             self.pages[name] = page
             self.stack.addWidget(page)
@@ -324,6 +328,7 @@ class MainWindow(QMainWindow):
         self.page_material.openHistory.connect(self._open_history)
         self.page_material.dataChanged.connect(self.refresh_all)
         self.page_workspace.dataChanged.connect(self.refresh_all)
+        self.page_ppe.dataChanged.connect(self.refresh_all)
         self.page_bulk.requestDN.connect(self._bulk_to_dn)
         self.page_docs.editDraft.connect(self._edit_draft)
         for p in (self.page_items, self.page_in, self.page_out, self.page_ret, self.page_trf,
@@ -432,6 +437,8 @@ class MainWindow(QMainWindow):
             "General DN Maker": "Create a delivery note without any inventory record",
             "Company Issuance": "Material issued to other companies, with photo proof "
                                 "of issue and return",
+            "Employee PPE Register": "Shoes, blankets, FRCs and coveralls issued to employees, "
+                                     "with employee-code tracking and Delivery Note sync",
             "Settings": "Company, storage, alerts, numbering, users and backup",
         }
         self.title.setText(name)
@@ -498,6 +505,7 @@ class MainWindow(QMainWindow):
             self.page_items.reload()
             self.page_docs.reload()
             self.page_audit.reload()
+            self.page_ppe.refresh_all()
             d = S.dashboard_data(self.db)
             cur = self.db.get_setting("currency", "")
             self.status_lbl.setText(
