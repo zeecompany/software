@@ -1108,6 +1108,69 @@ def main() -> int:
     database.Database(path).close()  # idempotent re-open
     check(True, "migration is repeatable")
 
+    # Employee PPE DB upgraded from v22 schema (no batch_id, no batches table)
+    from aurco.core import employee_ppe as _EP2
+    _ppe_old = _EP2.db_path()
+    if _ppe_old.exists():
+        _ppe_old.unlink()
+    _raw = sqlite3.connect(str(_ppe_old))
+    _raw.executescript("""
+        CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            issue_no TEXT NOT NULL UNIQUE,
+            issue_date TEXT NOT NULL DEFAULT '',
+            employee_code TEXT DEFAULT '', employee_name TEXT DEFAULT '',
+            department TEXT DEFAULT '', project TEXT DEFAULT '',
+            item_group TEXT DEFAULT '', item_code TEXT DEFAULT '',
+            item_desc TEXT DEFAULT '', size_text TEXT DEFAULT '',
+            qty REAL NOT NULL DEFAULT 0, uom TEXT DEFAULT '', dn_no TEXT DEFAULT '',
+            doc_date TEXT DEFAULT '', pdf_path TEXT DEFAULT '',
+            source_type TEXT NOT NULL DEFAULT 'MANUAL', source_doc_id INTEGER,
+            source_line_id INTEGER, status TEXT NOT NULL DEFAULT 'Issued',
+            return_date TEXT DEFAULT '', issued_by TEXT DEFAULT '',
+            remarks TEXT DEFAULT '', created_by TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime')),
+            UNIQUE(source_type, source_doc_id, source_line_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_ppe_emp ON records(employee_code, employee_name);
+        CREATE TABLE IF NOT EXISTS audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT DEFAULT (datetime('now','localtime')),
+            username TEXT DEFAULT '', action TEXT NOT NULL,
+            entity TEXT DEFAULT '', entity_id TEXT DEFAULT '', details TEXT DEFAULT '');
+    """)
+    _raw.execute(
+        "INSERT INTO records(issue_no,issue_date,employee_code,employee_name,item_group,item_desc,qty)"
+        " VALUES('PPE-2025-99999','2025-01-01','OLD-EMP','Old User','Safety Shoes','Safety Shoes Size 40',1)")
+    _raw.commit()
+    _raw.close()
+    try:
+        _ppe_db = _EP2.PPEIssueDB(str(_ppe_old), current_user=db.current_user)
+        _ppe_opened = True
+    except sqlite3.OperationalError:
+        _ppe_opened = False
+    check(_ppe_opened, "v22 Employee PPE database opens without 'no such column: batch_id'")
+    if _ppe_opened:
+        _ppe_cols = {str(r[1]) for r in _ppe_db.query("PRAGMA table_info(records)")}
+        check("batch_id" in _ppe_cols, "PPE migration adds records.batch_id")
+        _ppe_idx = {str(r[0]) for r in _ppe_db.query(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='ix_ppe_batch'")}
+        check(bool(_ppe_idx), "PPE migration creates ix_ppe_batch only after the column exists")
+        check(_ppe_db.scalar("SELECT COUNT(*) FROM records") == 1,
+              "PPE migration preserves existing records")
+        check(len(_EP2.list_records(_ppe_db)) == 1, "PPE register lists old records after migration")
+        _ins, _sk = _EP2.import_records(_ppe_db, [
+            {"issue_date": database.today(), "employee_code": "NEW-1", "employee_name": "New User",
+             "item_desc": "FRC Jacket", "item_group": _EP2.GROUP_FRC, "qty": 1}],
+            source="migration-test")
+        check(_ins == 1 and _EP2.batches(_ppe_db) and _EP2.batches(_ppe_db)[0]["rows"] == 1,
+              "PPE batch import works after migration (batch_id flow)")
+        check(_ppe_db.scalar("SELECT COUNT(*) FROM records") == 2,
+              "PPE import adds records after migration")
+        _ppe_db.close()
+
 
     # =================================================== v2.4 new modules
     section("Admin Station — separate database")

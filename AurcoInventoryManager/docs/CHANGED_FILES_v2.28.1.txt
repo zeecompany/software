@@ -1,0 +1,39 @@
+AURCO Inventory Manager 2.28.1 (hotfix)
+Package: software v 25.zip
+Compared against: software v 24.zip
+
+What was fixed
+==============
+Employee PPE Register would not start for databases created by older
+versions (schema v1, e.g. v22 and earlier):
+
+    sqlite3.OperationalError: no such column: batch_id
+
+Cause: the v24 schema added a batch_id column to the records table together
+with an INDEX on that column inside the CREATE TABLE / index DDL block. The
+DDL script ran BEFORE the migration that adds batch_id to older databases,
+so SQLite hit "no such column: batch_id" while creating the index and the
+whole PPE page (and therefore the main window) failed to start.
+
+Fix (AurcoInventoryManager/aurco/core/employee_ppe.py):
+- The ix_ppe_batch index is no longer created in the DDL block.
+- PPEIssueDB._apply_schema_fixes() now runs the migration FIRST
+  (ALTER TABLE records ADD COLUMN batch_id) and only then creates
+  ix_ppe_batch, so old databases are upgraded in the correct order.
+- Migration is idempotent: databases already on v24/v25 schema are
+  untouched, and existing PPE records are preserved.
+
+Files changed vs v24
+====================
+Modified files (5):
+- AurcoInventoryManager/aurco/core/config.py              (version -> 2.28.1)
+- AurcoInventoryManager/aurco/core/employee_ppe.py        (schema migration fix)
+- AurcoInventoryManager/packaging/installer.iss           (version -> 2.28.1)
+- AurcoInventoryManager/packaging/version_info.txt        (version -> 2.28.1)
+- AurcoInventoryManager/tests/run_tests.py                (regression test for the v22 -> v25 PPE migration)
+
+New file (1):
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.1.txt
+
+No database re-install is needed: the fix upgrades the existing Employee
+PPE Register database automatically on first launch.

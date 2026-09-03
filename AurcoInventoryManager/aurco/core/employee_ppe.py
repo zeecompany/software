@@ -176,7 +176,10 @@ CREATE INDEX IF NOT EXISTS ix_ppe_group ON records(item_group);
 CREATE INDEX IF NOT EXISTS ix_ppe_dn    ON records(dn_no);
 CREATE INDEX IF NOT EXISTS ix_ppe_date  ON records(issue_date);
 CREATE INDEX IF NOT EXISTS ix_ppe_stat  ON records(status);
-CREATE INDEX IF NOT EXISTS ix_ppe_batch ON records(batch_id);
+-- NOTE: ix_ppe_batch is created in PPEIssueDB._apply_schema_fixes() AFTER the
+-- batch_id column migration, because older databases (schema v1) already have
+-- the records table without batch_id. Creating the index in the DDL would fail
+-- with "no such column: batch_id" on those databases.
 
 CREATE TABLE IF NOT EXISTS batches (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -280,10 +283,17 @@ class PPEIssueDB:
         self.set_setting("schema_version", str(SCHEMA_VERSION))
 
     def _apply_schema_fixes(self) -> None:
-        cols = {str(r[1]) for r in self.query("PRAGMA table_info(records)")}
-        if "batch_id" not in cols:
-            self.execute("ALTER TABLE records ADD COLUMN batch_id INTEGER")
-            self.conn.commit()
+        # Migration must happen BEFORE any statement that references the new
+        # columns/indexes. Databases created by older versions (schema v1, e.g.
+        # v22) already have the records table WITHOUT batch_id, so the batch_id
+        # column has to be added here before ix_ppe_batch is created.
+        tables = {str(r[0]) for r in self.query("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "records" in tables:
+            cols = {str(r[1]) for r in self.query("PRAGMA table_info(records)")}
+            if "batch_id" not in cols:
+                self.execute("ALTER TABLE records ADD COLUMN batch_id INTEGER")
+            self.execute("CREATE INDEX IF NOT EXISTS ix_ppe_batch ON records(batch_id)")
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
