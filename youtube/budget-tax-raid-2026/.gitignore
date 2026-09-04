@@ -3,3 +3,4 @@ build_log.txt
 client_secret*.json
 token.json
 .yt-creds/
+upload_log.txt
