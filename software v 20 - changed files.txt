@@ -1,0 +1,28 @@
+AURCO Inventory Manager 2.24.0
+Package: software v 20.zip
+Compared against: software v 19.zip
+
+Modified files (13):
+- .config/AURCO/AurcoInventoryManager/bootstrap.json
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/documents.py
+- AurcoInventoryManager/aurco/core/reports.py
+- AurcoInventoryManager/aurco/ui/documents_page.py
+- AurcoInventoryManager/aurco/ui/main_window.py
+- AurcoInventoryManager/aurco/ui/settings_page.py
+- AurcoInventoryManager/aurco/ui/user_manual.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/main.py
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+
+New files (5):
+- AurcoInventoryManager/aurco/core/licensing.py
+- AurcoInventoryManager/aurco/ui/license_dialog.py
+- AurcoInventoryManager/aurco/ui/pdf_viewer.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.24.0.txt
+- AurcoInventoryManager/tools/generate_license.py
+
+Removed files (1):
+- AurcoInventoryManager/aurco/ui/whatsapp_page.py

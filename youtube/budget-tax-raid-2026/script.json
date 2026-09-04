@@ -1,0 +1,251 @@
+{
+  "project": "The £25bn Budget Tax Raid — 7 taxes about to rise",
+  "voice_id": "voice-00",
+  "language": "en-GB",
+  "publish_date": "2026-09-04",
+  "segments": [
+    {
+      "id": "s1_hook",
+      "chapter": "The £25bn question",
+      "bg": "bg_westminster.jpg",
+      "text": "In less than eight weeks, on the 28th of October, the Chancellor will stand up in the Commons with a hole in the public finances of at least ten billion pounds, and possibly a lot more. He's promised not to raise income tax, National Insurance or VAT. So where does the money come from? Almost certainly, from you: your savings, your pension, your home, your investments. Economists now say the Budget could bring up to 25 billion pounds of tax rises, and this week's bond market rout has made it worse. In the next six minutes: the seven taxes most likely to go up, the ones that are already locked in, what it costs you, and six things to do before the 28th."
+    },
+    {
+      "id": "s2_hole",
+      "chapter": "Why there's a hole",
+      "bg": "bg_coins.jpg",
+      "text": "First, why is there a hole at all? Back in November, Rachel Reeves raised taxes by 26 billion pounds and left herself a buffer of around 25 billion against the fiscal rules. Then this week's surge in government borrowing costs, with the 30-year gilt yield hitting 5.89 per cent, its highest since 1998, blew a chunk of that away. Economists estimate the headroom is now closer to 14 billion. On top of that, Andy Burnham has promised the biggest council-house building programme since the war, an overhaul of social care, and defence spending rising towards three per cent of GDP. The Resolution Foundation puts that defence pledge alone at 28 billion a year. Capital Economics says the Budget could raise up to 25 billion in tax. Even the cautious estimates say 10 to 15. And that's on top of around 70 billion of rises since 2024, with the tax take already heading for a record 38 per cent of GDP."
+    },
+    {
+      "id": "s3_trap",
+      "chapter": "The manifesto trap",
+      "bg": "bg_redbox.jpg",
+      "text": "Here's the trap. Labour's manifesto promised not to raise the rates of income tax, employee National Insurance or VAT, and the Prime Minister has said he'll keep that promise. Those three taxes bring in well over half of all government revenue. Rule them out, and every extra pound has to come from what's left: capital gains, inheritance, pensions, savings, dividends, property, and business. Andy Burnham has said Britain over-taxes labour and under-taxes wealth. That's not a throwaway line. It's a roadmap. And the Resolution Foundation's warning this week was blunt: if you want a bigger state, middle earners have to pay more, one way or another."
+    },
+    {
+      "id": "s4_locked",
+      "chapter": "Already locked in",
+      "bg": "bg_payslip.jpg",
+      "text": "Before the speculation, here's what's already locked in, whatever happens on the 28th. Income tax thresholds are frozen until April 2031: the personal allowance stays at 12,570 pounds, the higher-rate threshold at 50,270. The OBR says that drags 4.8 million more people into the 40 per cent band, and the IFS says it raises about 39 billion a year, the same as three and a half pence on every rate of income tax. From April 2027, the cash ISA allowance for under-65s falls from 20,000 to 12,000 pounds, unused pension pots start counting towards inheritance tax, and tax on dividends, savings interest and rental income goes up by two percentage points. None of that needs a new announcement. It's already law."
+    },
+    {
+      "id": "s5_seven",
+      "chapter": "The 7 taxes in the frame",
+      "bg": "bg_assets.jpg",
+      "text": "Now, the seven taxes most likely to rise on the 28th. One: capital gains tax. Currently 18 or 24 per cent, with a 3,000-pound allowance. The talk is of moving rates towards income tax, cutting the allowance, or charging CGT on death. And CGT changes usually take effect on Budget day itself. Two: pensions. The tax-free lump sum, capped at 268,275 pounds, and higher-rate relief on contributions. Three: inheritance tax, with tighter gifting and trust rules. Four: a new one-penny defence or social care levy, worth around 10 billion, without technically breaking the manifesto. Five: savings and dividends, again, by cutting the personal savings allowance. Six: banks, by reversing the surcharge cut. And seven, for business owners: taxing buy-backs, liquidations and LLP profits as income instead of capital gains."
+    },
+    {
+      "id": "s6_cost",
+      "chapter": "What it costs you",
+      "bg": "bg_man_letter.jpg",
+      "text": "What does this actually cost? Three real situations. Sarah earns 50,000 pounds. Her tax rate has never risen, but thanks to frozen thresholds, Hargreaves Lansdown calculates she'll pay 8,165 pounds more between 2021 and 2031 than if thresholds had tracked inflation. Dev sells shares with a 25,000-pound gain. After the 3,000 allowance, he pays 24 per cent on 22,000: 5,280 pounds. Align CGT with his 40 per cent income tax rate, and it becomes 8,800. A 3,520-pound difference, on one sale. And Margaret, 68, with 200,000 pounds in an untouched pension: from April 2027, that pot counts towards inheritance tax, potentially costing her family 40 per cent of whatever sits above the thresholds. These aren't edge cases. They're the squeezed middle the Budget is aiming at."
+    },
+    {
+      "id": "s7_actions",
+      "chapter": "6 things to do before 28 Oct",
+      "bg": "bg_woman_plan.jpg",
+      "text": "So, six things to do before the 28th of October. One: use your ISA allowance now. Anything inside an ISA is immune to whatever happens to capital gains and dividend tax. Two: if you're sitting on investment gains, consider using this year's 3,000-pound CGT allowance before Budget day, because CGT changes can take effect immediately. Three: if you were planning a lump-sum pension contribution this year, there's a case for making it while today's relief rules definitely apply. Four: check where you sit against the 50,270 and 100,000-pound thresholds. A pension contribution that keeps you under one can be worth thousands. Five: if you're planning to gift money to family, the seven-year clock only starts when you do it. Six, and most important: don't make big, irreversible decisions on rumours. Prepare, don't panic, and if the sums are large, pay for an hour with a qualified adviser. This is information, not advice."
+    },
+    {
+      "id": "s8_outro",
+      "chapter": "Your turn",
+      "bg": "bg_sunrise.jpg",
+      "text": "Whatever's in the red box on the 28th, the direction is clear: the money is coming from savings, pensions, property and investments, because the big three are off the table. So tell me: which of these seven worries you most? And if you've already moved money because of the Budget, what did you do? Drop it in the comments. Subscribe, because I'll be covering the Bank of England decision on the 17th of September, and I'll break down the Budget on the 28th within hours of the Chancellor sitting down. Thanks for watching, and look after your money."
+    }
+  ],
+  "voice_tempo": 1.05,
+  "sources": [
+    "Guardian",
+    "BBC",
+    "Telegraph",
+    "i",
+    "OBR",
+    "IFS",
+    "HMRC",
+    "Resolution Foundation",
+    "Capital Economics"
+  ],
+  "title_card": {
+    "title": "THE £25bn TAX RAID",
+    "subtitle": "7 TAXES ABOUT TO RISE ON 28 OCTOBER",
+    "pill": "WHAT IT COSTS YOU · WHAT TO DO NOW",
+    "date": "4 SEPTEMBER 2026",
+    "bg": "bg_westminster.jpg"
+  },
+  "end_card": {
+    "bg": "bg_sunrise.jpg",
+    "lines": [
+      "Subscribe for the Bank of England decision (17 Sept)",
+      "and the Budget breakdown (28 Oct) within hours.",
+      "Comment: which of the 7 worries you most?"
+    ],
+    "duration": 5.0
+  },
+  "graphics": {
+    "s1_hook": {
+      "headline": [
+        "THE £25bn",
+        "BUDGET TAX RAID"
+      ],
+      "stat": "28 OCT",
+      "stat_label": "BUDGET DAY · 8 WEEKS AWAY · UP TO £25bn OF TAX RISES",
+      "tag": "BREAKING",
+      "accent": "RED"
+    },
+    "s2_hole": {
+      "headline": [
+        "WHY THERE'S",
+        "A HOLE"
+      ],
+      "stat": "£14bn",
+      "stat_label": "FISCAL HEADROOM LEFT · WAS ~£25bn IN NOVEMBER",
+      "tag": "THE NUMBERS",
+      "accent": "YELLOW",
+      "rows": [
+        [
+          "30-yr gilt yield",
+          "5.89%",
+          "highest since 1998"
+        ],
+        [
+          "Defence to 3% of GDP",
+          "£28bn / yr",
+          "Resolution Foundation"
+        ],
+        [
+          "Tax rises expected",
+          "£10–25bn",
+          "i / Capital Economics"
+        ]
+      ]
+    },
+    "s3_trap": {
+      "headline": [
+        "THE MANIFESTO",
+        "TRAP"
+      ],
+      "stat": "3",
+      "stat_label": "TAXES RULED OUT: INCOME TAX · NI · VAT RATES",
+      "tag": "THE CONSTRAINT",
+      "accent": "YELLOW",
+      "rows": [
+        [
+          "Off the table",
+          "Income tax · NI · VAT",
+          "over half of all revenue"
+        ],
+        [
+          "Left to raise from",
+          "Wealth · savings · pensions",
+          "'under-taxed wealth' — Burnham"
+        ],
+        [
+          "Middle earners",
+          "MUST PAY MORE",
+          "Resolution Foundation, 2 Sept"
+        ]
+      ]
+    },
+    "s4_locked": {
+      "headline": [
+        "ALREADY",
+        "LOCKED IN"
+      ],
+      "stat": "4.8M",
+      "stat_label": "MORE PEOPLE DRAGGED INTO 40% TAX BY 2031 · OBR",
+      "tag": "NO ANNOUNCEMENT NEEDED",
+      "accent": "RED",
+      "rows": [
+        [
+          "Thresholds frozen to 2031",
+          "£39bn / yr",
+          "= 3.5p on every rate (IFS)"
+        ],
+        [
+          "Cash ISA cap (under-65s)",
+          "£20k to £12k",
+          "from April 2027"
+        ],
+        [
+          "Pensions in IHT net",
+          "April 2027",
+          "+2p on dividends, savings, rent"
+        ]
+      ]
+    },
+    "s5_seven": {
+      "headline": [
+        "THE 7 TAXES",
+        "IN THE FRAME"
+      ],
+      "stat": "7",
+      "stat_label": "MOST-TIPPED RISES FOR 28 OCTOBER",
+      "tag": "THE WATCHLIST",
+      "accent": "YELLOW",
+      "bullets": [
+        "Capital gains tax — rates, £3k allowance, CGT on death (effective on the day)",
+        "Pensions — £268,275 tax-free lump sum, higher-rate relief",
+        "Inheritance tax — gifting & trust rules",
+        "New 1p defence / social care levy (~£10bn)",
+        "Savings & dividends — personal savings allowance",
+        "Banks — reverse the surcharge cut (~£1.5bn)",
+        "Business owners — buy-backs, liquidations, LLPs taxed as income"
+      ]
+    },
+    "s6_cost": {
+      "headline": [
+        "WHAT IT",
+        "COSTS YOU"
+      ],
+      "stat": "£8,165",
+      "stat_label": "EXTRA TAX ON A £50K SALARY, 2021–31 · FROZEN THRESHOLDS",
+      "tag": "THE MATHS",
+      "accent": "RED",
+      "rows": [
+        [
+          "Sarah, £50k salary",
+          "+£8,165",
+          "fiscal drag to 2031 (HL)"
+        ],
+        [
+          "Dev, £25k share gain",
+          "£5,280 to £8,800",
+          "if CGT aligned to 40%"
+        ],
+        [
+          "Margaret, £200k pension",
+          "40% IHT exposure",
+          "from April 2027"
+        ]
+      ]
+    },
+    "s7_actions": {
+      "headline": [
+        "6 THINGS TO DO",
+        "BEFORE 28 OCT"
+      ],
+      "stat": "6",
+      "stat_label": "MOVES WHILE TODAY'S RULES STILL APPLY",
+      "tag": "ACTION PLAN",
+      "accent": "GREEN",
+      "bullets": [
+        "Use this year's £20,000 ISA allowance",
+        "Use the £3,000 CGT allowance before Budget day",
+        "Bring forward planned lump-sum pension contributions",
+        "Check the £50,270 and £100,000 thresholds",
+        "Start the 7-year clock on planned gifts",
+        "Prepare, don't panic — rumours are often wrong"
+      ]
+    },
+    "s8_outro": {
+      "headline": [
+        "WHICH ONE",
+        "WORRIES YOU?"
+      ],
+      "stat": "17 SEPT",
+      "stat_label": "BANK OF ENGLAND DECISION · BUDGET 28 OCT",
+      "tag": "YOUR TURN",
+      "accent": "YELLOW"
+    }
+  }
+}

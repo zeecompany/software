@@ -1,0 +1,19 @@
+AURCO Inventory Manager 2.26.0
+Package: software v 22.zip
+Compared against: software v 21.zip
+
+Modified files (7):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/ui/main_window.py
+- AurcoInventoryManager/aurco/ui/user_manual.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+
+New files (3):
+- AurcoInventoryManager/aurco/core/employee_ppe.py
+- AurcoInventoryManager/aurco/ui/employee_ppe_page.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.26.0.txt
+
+Removed files (0):
