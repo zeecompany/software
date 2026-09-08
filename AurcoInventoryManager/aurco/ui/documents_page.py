@@ -215,24 +215,27 @@ class DocumentsPage(QWidget):
                           (r["pr_no"] if "pr_no" in r.keys() else "") or "", r["unit_cost"],
                           r["total_cost"], r["condition"], r["batch"], r["system_qty"],
                           r["counted_qty"], r["variance"], r["remarks"]] for r in rows])
-        if d["pdf_path"] and Path(d["pdf_path"]).exists():
-            self.last_pdf = Path(d["pdf_path"])
+        resolved = D.resolve_document_pdf_path(self.db, d)
+        if resolved is not None:
+            self.last_pdf = resolved
 
     def view_pdf(self):
         d = self._sel()
         if not d:
             W.error_box(self, "Select a document first.")
             return
-        existing = Path(d.get("pdf_path") or "") if d.get("pdf_path") else None
+        existing = D.resolve_document_pdf_path(self.db, d)
         self.last_pdf = existing if existing and existing.exists() else D.document_pdf(self.db, d["id"])
         D.open_path(self.last_pdf)
 
     def open_pdf_studio(self):
         d = self._sel()
-        if d and d.get("pdf_path") and Path(d["pdf_path"]).exists():
-            self.last_pdf = Path(d["pdf_path"])
-            PDFV.show_pdf(self.last_pdf, self, title=d["doc_no"])
-            return
+        if d:
+            resolved = D.resolve_document_pdf_path(self.db, d)
+            if resolved and resolved.exists():
+                self.last_pdf = resolved
+                PDFV.show_pdf(self.last_pdf, self, title=d["doc_no"])
+                return
         if d:
             self.last_pdf = D.document_pdf(self.db, d["id"])
             PDFV.show_pdf(self.last_pdf, self, title=d["doc_no"])

@@ -30,7 +30,7 @@ from .database import Database
 
 FOLDER = "Employee PPE Register"
 DB_NAME = "employee_ppe.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 GROUP_SHOES = "Safety Shoes"
 GROUP_BLANKET = "Blanket"
@@ -176,7 +176,6 @@ CREATE INDEX IF NOT EXISTS ix_ppe_group ON records(item_group);
 CREATE INDEX IF NOT EXISTS ix_ppe_dn    ON records(dn_no);
 CREATE INDEX IF NOT EXISTS ix_ppe_date  ON records(issue_date);
 CREATE INDEX IF NOT EXISTS ix_ppe_stat  ON records(status);
-CREATE INDEX IF NOT EXISTS ix_ppe_batch ON records(batch_id);
 
 CREATE TABLE IF NOT EXISTS batches (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -274,16 +273,45 @@ class PPEIssueDB:
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.current_user = current_user or "admin"
-        self.conn.executescript(DDL)
-        self.conn.commit()
-        self._apply_schema_fixes()
+        self._init_schema()
         self.set_setting("schema_version", str(SCHEMA_VERSION))
+
+    def _init_schema(self) -> None:
+        try:
+            self.conn.executescript(DDL)
+            self.conn.commit()
+        except sqlite3.OperationalError as exc:
+            if "batch_id" not in str(exc):
+                raise
+            self.conn.rollback()
+            ddl = DDL.replace(
+                "    batch_id        INTEGER,\n",
+                "",
+            )
+            self.conn.executescript(ddl)
+            self.conn.commit()
+        self._apply_schema_fixes()
 
     def _apply_schema_fixes(self) -> None:
         cols = {str(r[1]) for r in self.query("PRAGMA table_info(records)")}
-        if "batch_id" not in cols:
-            self.execute("ALTER TABLE records ADD COLUMN batch_id INTEGER")
-            self.conn.commit()
+        for col, sql in (
+            ("source_doc_id", "ALTER TABLE records ADD COLUMN source_doc_id INTEGER"),
+            ("source_line_id", "ALTER TABLE records ADD COLUMN source_line_id INTEGER"),
+            ("status", f"ALTER TABLE records ADD COLUMN status TEXT NOT NULL DEFAULT '{ST_ISSUED}'"),
+            ("return_date", "ALTER TABLE records ADD COLUMN return_date TEXT DEFAULT ''"),
+            ("issued_by", "ALTER TABLE records ADD COLUMN issued_by TEXT DEFAULT ''"),
+            ("remarks", "ALTER TABLE records ADD COLUMN remarks TEXT DEFAULT ''"),
+            ("batch_id", "ALTER TABLE records ADD COLUMN batch_id INTEGER"),
+            ("created_by", "ALTER TABLE records ADD COLUMN created_by TEXT DEFAULT ''"),
+            ("created_at", "ALTER TABLE records ADD COLUMN created_at TEXT DEFAULT ''"),
+            ("updated_at", "ALTER TABLE records ADD COLUMN updated_at TEXT DEFAULT ''"),
+        ):
+            if col not in cols:
+                self.execute(sql)
+                cols.add(col)
+        self.execute("CREATE INDEX IF NOT EXISTS ix_ppe_batch ON records(batch_id)")
+        self.execute("CREATE INDEX IF NOT EXISTS ix_ppe_stat ON records(status)")
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()

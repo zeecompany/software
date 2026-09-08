@@ -4,8 +4,10 @@ from __future__ import annotations
 import csv
 import datetime as _dt
 import io
+import json
 import os
 import platform
+import shutil
 import subprocess
 import urllib.parse
 import webbrowser
@@ -808,13 +810,71 @@ def _signatures(db: Database, blocks: list[dict], layout: dict | None = None) ->
     return t
 
 
+def attachment_folder(doc_type: str, doc_no: str) -> Path:
+    return (config.folder("Attachments") /
+            safe_file_part(doc_type or "DOC", "DOC") /
+            safe_file_part(doc_no or "document", "document"))
+
+
+def store_document_attachment(doc_type: str, doc_no: str, src_path: str | Path) -> Path:
+    src = Path(src_path)
+    folder = attachment_folder(doc_type, doc_no)
+    folder.mkdir(parents=True, exist_ok=True)
+    name = f"{safe_file_part(src.stem, 'attachment')}{src.suffix if len(src.suffix) <= 10 else ''}"
+    dest = folder / name
+    n = 2
+    while dest.exists():
+        try:
+            if src.exists() and src.resolve() == dest.resolve():
+                return dest
+        except OSError:
+            pass
+        dest = folder / f"{safe_file_part(src.stem, 'attachment')}_{n}{src.suffix if len(src.suffix) <= 10 else ''}"
+        n += 1
+    if src.exists() and src.is_file():
+        shutil.copy2(src, dest)
+        return dest
+    return src
+
+
+def resolve_attachment_path(db: Database, doc_type: str, doc_no: str,
+                            file_path: str | Path) -> Path | None:
+    raw = Path(str(file_path or ""))
+    if raw.exists():
+        return raw
+    name = raw.name
+    if not name:
+        return None
+    doc_folder = attachment_folder(doc_type, doc_no)
+    candidates = [doc_folder / name, config.folder("Attachments") / name]
+    if doc_folder.parent.exists():
+        candidates.extend(doc_folder.parent.glob(f"**/{name}"))
+    for cand in candidates:
+        cand = Path(cand)
+        if cand.exists() and cand.is_file():
+            return cand
+    return None
+
+
 def _attachment_rows(db: Database, doc_type: str, doc_no: str):
-    return db.query(
-        "SELECT file_path, added_at, COALESCE(source,'file') AS source,"
-        " COALESCE(page_order,1) AS page_order"
-        " FROM attachments WHERE doc_type=? AND doc_no=?"
-        " ORDER BY COALESCE(page_order,1), id",
-        (doc_type, doc_no))
+    rows = []
+    changed = False
+    for r in db.query(
+            "SELECT id, file_path, added_at, COALESCE(source,'file') AS source,"
+            " COALESCE(page_order,1) AS page_order"
+            " FROM attachments WHERE doc_type=? AND doc_no=?"
+            " ORDER BY COALESCE(page_order,1), id",
+            (doc_type, doc_no)):
+        rec = dict(r)
+        fixed = resolve_attachment_path(db, doc_type, doc_no, rec["file_path"])
+        if fixed is not None and str(fixed) != str(rec["file_path"] or ""):
+            db.execute("UPDATE attachments SET file_path=? WHERE id=?", (str(fixed), rec["id"]))
+            rec["file_path"] = str(fixed)
+            changed = True
+        rows.append(rec)
+    if changed:
+        db.commit()
+    return rows
 
 
 def _attachment_block(db: Database, doc_type: str, doc_no: str) -> list[Any]:
@@ -840,6 +900,9 @@ DOC_TITLES = {"DN": "Delivery Note", "GRN": "Goods Receipt Note", "RET": "Return
               "CNT": "Physical Stock Count Sheet"}
 DOC_FOLDERS = {"DN": "Delivery Notes", "GRN": "Inventory", "RET": "Returns",
                "ADJ": "Stock Adjustments", "TRF": "Stock Transfers", "CNT": "Stock Counts"}
+DRAFT_DOC_FOLDERS = {"DN": "Draft Delivery Notes", "GRN": "Draft Inventory",
+                     "RET": "Draft Returns", "ADJ": "Draft Stock Adjustments",
+                     "TRF": "Draft Stock Transfers", "CNT": "Draft Stock Counts"}
 REVERSED_DOC_FOLDERS = {
     "DN": "Reversed Delivery Notes",
     "GRN": "Reversed Inventory",
@@ -848,13 +911,136 @@ REVERSED_DOC_FOLDERS = {
     "TRF": "Reversed Stock Transfers",
     "CNT": "Reversed Stock Counts",
 }
+EDITABLE_REVERSED_DOC_TYPES = {"DN", "GRN"}
+DOCUMENT_REF_SUFFIX = ".aurco.json"
 
 
 def document_output_folder(doc_type: str, status: str = "FINAL") -> Path:
     status = str(status or "").upper()
+    if status == "DRAFT":
+        return config.folder(DRAFT_DOC_FOLDERS.get(doc_type, "Draft Documents"))
+    if status == "REVERSED" and doc_type in EDITABLE_REVERSED_DOC_TYPES:
+        return config.folder(DRAFT_DOC_FOLDERS.get(doc_type, "Draft Documents"))
     if status == "REVERSED":
         return config.folder(REVERSED_DOC_FOLDERS.get(doc_type, "Reports"))
     return config.folder(DOC_FOLDERS.get(doc_type, "Reports"))
+
+
+def document_reference_path(path: str | Path) -> Path:
+    p = Path(path)
+    return p.with_suffix(p.suffix + DOCUMENT_REF_SUFFIX)
+
+
+def write_document_reference(path: str | Path, doc_row) -> None:
+    p = Path(path)
+    if p.suffix.lower() != ".pdf":
+        return
+    data = {
+        "doc_id": int(doc_row["id"]),
+        "doc_type": _doc_field(doc_row, "doc_type"),
+        "doc_no": _doc_field(doc_row, "doc_no"),
+        "status": _doc_field(doc_row, "status"),
+        "pdf_path": str(p),
+        "updated_at": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    ref = document_reference_path(p)
+    ref.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def remove_document_reference(path: str | Path) -> None:
+    ref = document_reference_path(path)
+    try:
+        ref.unlink()
+    except OSError:
+        pass
+
+
+def read_document_reference(path: str | Path) -> dict[str, Any] | None:
+    ref = document_reference_path(path)
+    if not ref.exists():
+        return None
+    try:
+        data = json.loads(ref.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _candidate_document_paths(db: Database, doc_row, lines) -> list[Path]:
+    dtype = _doc_field(doc_row, "doc_type")
+    status = _doc_field(doc_row, "status").upper() or "FINAL"
+    doc_no = safe_file_part(_doc_field(doc_row, "doc_no"), "document")
+    base = document_basename(db, doc_row, lines)
+    rev_base = reversed_document_basename(db, doc_row, lines)
+    saved = _doc_field(doc_row, "pdf_path")
+    candidates: list[Path] = []
+    if saved:
+        candidates.append(Path(saved))
+    for st, nm in ((status, rev_base if status == "REVERSED" else base),
+                   ("FINAL", base), ("DRAFT", base), ("REVERSED", rev_base)):
+        candidates.append(document_output_folder(dtype, st) / f"{nm}.pdf")
+    for folder in {
+        document_output_folder(dtype, "FINAL"),
+        document_output_folder(dtype, "DRAFT"),
+        config.folder(REVERSED_DOC_FOLDERS.get(dtype, "Reports")),
+    }:
+        candidates.extend(folder.glob(f"*{doc_no}*.pdf"))
+    seen: set[str] = set()
+    out: list[Path] = []
+    for cand in candidates:
+        try:
+            key = str(cand.resolve()) if cand.exists() else str(cand)
+        except OSError:
+            key = str(cand)
+        if key not in seen:
+            seen.add(key)
+            out.append(Path(cand))
+    return out
+
+
+def resolve_document_pdf_path(db: Database, doc_row, lines=None, update: bool = True) -> Path | None:
+    if lines is None:
+        lines = db.query("SELECT * FROM document_lines WHERE doc_id=? ORDER BY id", (doc_row["id"],))
+    current = _doc_field(doc_row, "pdf_path")
+    for cand in _candidate_document_paths(db, doc_row, lines):
+        if cand.exists() and cand.is_file():
+            if update and str(cand) != current:
+                db.execute("UPDATE documents SET pdf_path=? WHERE id=?", (str(cand), doc_row["id"]))
+                db.commit()
+            return cand
+    return None
+
+
+def document_binding_for_path(db: Database | None, path: str | Path) -> dict[str, Any] | None:
+    if db is None:
+        return None
+    p = Path(path)
+    ref = read_document_reference(p)
+    row = None
+    if ref and ref.get("doc_id"):
+        row = db.one("SELECT * FROM documents WHERE id=?", (int(ref["doc_id"]),))
+        if row and _doc_field(row, "doc_no") != str(ref.get("doc_no") or ""):
+            row = None
+    if row is None:
+        row = db.one("SELECT * FROM documents WHERE pdf_path=?", (str(p),))
+    if row is None:
+        try:
+            row = db.one("SELECT * FROM documents WHERE pdf_path=?", (str(p.resolve()),))
+        except OSError:
+            row = None
+    return dict(row) if row else None
+
+
+def document_target_path(db: Database, doc_row, lines, out_path: str | Path | None = None) -> Path:
+    if out_path is not None:
+        return Path(out_path)
+    dtype = _doc_field(doc_row, "doc_type")
+    status = _doc_field(doc_row, "status").upper() or "FINAL"
+    base = reversed_document_basename(db, doc_row, lines) if status == "REVERSED" else document_basename(db, doc_row, lines)
+    saved = _doc_field(doc_row, "pdf_path")
+    if saved and status != "REVERSED":
+        return Path(saved)
+    return document_output_folder(dtype, status) / f"{base}.pdf"
 
 
 def reversed_document_basename(db: Database, doc_row, lines) -> str:
@@ -971,6 +1157,8 @@ def document_pdf(db: Database, doc_id: int, out_path: str | Path | None = None,
     dtype = d["doc_type"]
     title = DOC_TITLES.get(dtype, dtype)
     from . import signatories as SG
+    official_output = out_path is None
+    old_pdf = resolve_document_pdf_path(db, d, lines, update=False) or (Path(d["pdf_path"]) if _doc_field(d, "pdf_path") else None)
 
     def _g(k):
         """Safe column read (older databases may lack newer columns)."""
@@ -981,10 +1169,7 @@ def document_pdf(db: Database, doc_id: int, out_path: str | Path | None = None,
 
     layout = SG.get_layout(db, dtype)
     status = str(d["status"] or "").upper()
-    base_name = (reversed_document_basename(db, d, lines) if status == "REVERSED"
-                 else document_basename(db, d, lines))
-    out = Path(out_path) if out_path else (document_output_folder(dtype, status) /
-                                           f"{base_name}.pdf")
+    out = document_target_path(db, d, lines, out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     story: list[Any] = [Paragraph(title, P_TITLE),
                         Paragraph(f"Document No: <b>{d['doc_no']}</b> &nbsp;|&nbsp; Status: "
@@ -1177,8 +1362,17 @@ def document_pdf(db: Database, doc_id: int, out_path: str | Path | None = None,
     if include_attachments:
         n_att = _append_attachments(db, dtype, d["doc_no"], out)
 
-    db.execute("UPDATE documents SET pdf_path=? WHERE id=?", (str(out), doc_id))
-    db.commit()
+    if official_output:
+        db.execute("UPDATE documents SET pdf_path=? WHERE id=?", (str(out), doc_id))
+        db.commit()
+        write_document_reference(out, d)
+        if old_pdf is not None and out.resolve() != old_pdf.resolve():
+            remove_document_reference(old_pdf)
+            try:
+                if old_pdf.exists() and old_pdf.is_file():
+                    old_pdf.unlink()
+            except OSError:
+                pass
     db.audit("PRINTED", dtype, d["doc_no"],
              f"PDF -> {out.name}" + (f" (+{n_att} attachment page(s))" if n_att else ""))
     return out

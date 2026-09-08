@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QDate, QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
+from PySide6.QtGui import QBrush, QColor, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCheckBox,
                                QComboBox,
                                QDateEdit, QDialog, QDialogButtonBox,
@@ -87,6 +87,71 @@ def store_attachment_file(src: str | Path, dest_dir: str | Path | None = None,
     return dest
 
 
+def _save_attachment_image(image, dest_dir: str | Path | None = None,
+                           prefix: str = "clipboard", source: str = "clipboard") -> dict[str, Any] | None:
+    dest_dir = Path(dest_dir or config.folder("Attachments"))
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    img = None
+    if isinstance(image, QImage):
+        img = image
+    elif isinstance(image, QPixmap):
+        img = image.toImage()
+    elif hasattr(image, "toImage"):
+        try:
+            img = image.toImage()
+        except Exception:
+            img = None
+    if img is None or img.isNull():
+        return None
+    stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = unique_attachment_path(dest_dir, f"{prefix}_{stamp}.png")
+    if not img.save(str(dest), "PNG"):
+        raise ValueError("The copied image could not be saved as an attachment.")
+    return {"file_path": str(dest), "source": source, "page_order": 2 if source == "clipboard" else 1}
+
+
+def mime_attachment_entries(mime, dest_dir: str | Path | None = None,
+                            prefix: str = "attachment", source: str = "drop") -> list[dict[str, Any]]:
+    """Return attachment entries from a QMimeData object.
+
+    Supports file URLs, pasted path text, and dragged / pasted images.
+    """
+    dest_dir = Path(dest_dir or config.folder("Attachments"))
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    out: list[dict[str, Any]] = []
+
+    def add_file(p: Path):
+        out.append({"file_path": str(p), "source": source,
+                    "page_order": 2 if source == "clipboard" else 1})
+
+    urls = list(mime.urls()) if mime and mime.hasUrls() else []
+    for url in urls:
+        local = Path(url.toLocalFile())
+        if local.exists() and local.is_file():
+            add_file(store_attachment_file(local, dest_dir))
+    if out:
+        return out
+
+    if mime and mime.hasImage():
+        ent = _save_attachment_image(mime.imageData(), dest_dir, prefix, source)
+        if ent is not None:
+            return [ent]
+
+    text = (mime.text() if mime and mime.hasText() else "") or ""
+    text = text.strip()
+    if text:
+        for line in text.splitlines():
+            raw = line.strip().strip('"').strip("'")
+            if not raw:
+                continue
+            p = Path(raw)
+            if p.exists() and p.is_file():
+                add_file(store_attachment_file(p, dest_dir))
+        if out:
+            return out
+    return out
+
+
 def clipboard_attachment_entries(dest_dir: str | Path | None = None,
                                  prefix: str = "clipboard") -> list[dict[str, Any]]:
     """Return copied files / screenshot images from the clipboard as attachment entries.
@@ -99,40 +164,14 @@ def clipboard_attachment_entries(dest_dir: str | Path | None = None,
     dest_dir.mkdir(parents=True, exist_ok=True)
     cb = QApplication.clipboard()
     mime = cb.mimeData()
-    out: list[dict[str, Any]] = []
-
-    def add_file(p: Path):
-        out.append({"file_path": str(p), "source": "clipboard", "page_order": 2})
-
-    urls = list(mime.urls()) if mime and mime.hasUrls() else []
-    for url in urls:
-        local = Path(url.toLocalFile())
-        if local.exists() and local.is_file():
-            add_file(store_attachment_file(local, dest_dir))
+    out = mime_attachment_entries(mime, dest_dir, prefix, source="clipboard")
     if out:
         return out
-
     img = cb.image()
     if not img.isNull():
-        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest = unique_attachment_path(dest_dir, f"{prefix}_{stamp}.png")
-        if not img.save(str(dest), "PNG"):
-            raise ValueError("The copied image could not be saved as an attachment.")
-        add_file(dest)
-        return out
-
-    text = (cb.text() or "").strip()
-    if text:
-        for line in text.splitlines():
-            raw = line.strip().strip('"').strip("'")
-            if not raw:
-                continue
-            p = Path(raw)
-            if p.exists() and p.is_file():
-                add_file(store_attachment_file(p, dest_dir))
-        if out:
-            return out
-
+        ent = _save_attachment_image(img, dest_dir, prefix, source="clipboard")
+        if ent is not None:
+            return [ent]
     raise ValueError("The clipboard does not contain a file or image attachment yet.")
 
 

@@ -454,8 +454,8 @@ def main() -> int:
     _studio.render_current_page()
     check(_studio.render_engine_scale > _studio.render_display_scale >= 0.25,
           "PDF studio uses a higher-quality render scale for the on-screen preview")
-    check("Fit Width" in _studio.page_meta.toPlainText() and "Render" in _studio.page_meta.toPlainText(),
-          "PDF studio preview shows fit-mode and render details")
+    check("Fit Width" in _studio.page_meta.text() and "Render" in _studio.page_meta.text(),
+          "PDF studio preview shows fit-mode and render details without the old text panel")
     check(_studio.thumbs.count() >= 3, "advanced PDF studio builds page thumbnails")
     _studio.reset_zoom()
     app.processEvents()
@@ -525,6 +525,42 @@ def main() -> int:
     _ppe_pdf = D.document_pdf(db, _ppe_doc_id)
     check(_ppe_pdf.exists(), "employee-PPE delivery note PDF renders")
     _pdb = EP.get_db(db.current_user)
+    _legacy_ppe = root / "legacy_employee_ppe.db"
+    _legacy_conn = sqlite3.connect(_legacy_ppe)
+    _legacy_conn.execute("CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT)")
+    _legacy_conn.execute("""CREATE TABLE records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        issue_no TEXT NOT NULL UNIQUE,
+        issue_date TEXT NOT NULL DEFAULT '',
+        employee_code TEXT DEFAULT '',
+        employee_name TEXT DEFAULT '',
+        department TEXT DEFAULT '',
+        project TEXT DEFAULT '',
+        item_group TEXT DEFAULT '',
+        item_code TEXT DEFAULT '',
+        item_desc TEXT DEFAULT '',
+        size_text TEXT DEFAULT '',
+        qty REAL NOT NULL DEFAULT 0,
+        uom TEXT DEFAULT '',
+        dn_no TEXT DEFAULT '',
+        doc_date TEXT DEFAULT '',
+        pdf_path TEXT DEFAULT '',
+        source_type TEXT NOT NULL DEFAULT 'MANUAL',
+        source_doc_id INTEGER,
+        source_line_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'Issued',
+        return_date TEXT DEFAULT '',
+        issued_by TEXT DEFAULT '',
+        remarks TEXT DEFAULT '',
+        created_by TEXT DEFAULT '',
+        created_at TEXT DEFAULT '',
+        updated_at TEXT DEFAULT ''
+    )""")
+    _legacy_conn.commit(); _legacy_conn.close()
+    _legacy_db = EP.PPEIssueDB(_legacy_ppe, db.current_user)
+    check("batch_id" in {r[1] for r in _legacy_db.query("PRAGMA table_info(records)")},
+          "legacy PPE databases upgrade cleanly by adding the missing batch_id column")
+    _legacy_db.close()
     _cand = EP.sync_candidates(db, _pdb)
     check(any(c["doc_no"] == _ppe_dn and c["item_group"] == EP.GROUP_SHOES for c in _cand),
           "PPE sync detects shoes from a delivery note")
@@ -788,6 +824,9 @@ def main() -> int:
           "Issued/Delivered/Handover/Received stored on the document")
     check(db.scalar("SELECT COUNT(*) FROM attachments WHERE doc_no=?", (dn2,)) == 1,
           "supporting document attached to the DN")
+    _att_path = Path(db.one("SELECT file_path FROM attachments WHERE doc_no=?", (dn2,))[0])
+    check(_att_path.exists() and dn2 in str(_att_path.parent),
+          "DN attachments are stored inside a document-specific folder for reliable retrieval")
     check(db.scalar("SELECT COUNT(*) FROM document_signatures WHERE doc_no=?", (dn2,)) >= 1,
           "chosen signatories saved against the document")
 
@@ -903,6 +942,11 @@ def main() -> int:
     _img_rows = _clip_att()
     check(len(_img_rows) == 1 and Path(_img_rows[0]["file_path"]).suffix.lower() == ".png",
           "clipboard screenshots are saved as PNG attachments")
+    from aurco.ui.common import mime_attachment_entries as _mime_att
+    _drop_rows = _mime_att(QApplication.clipboard().mimeData(), source="drop")
+    check(len(_drop_rows) == 1 and _drop_rows[0]["source"] == "drop"
+          and _drop_rows[0]["page_order"] == 1,
+          "drag-and-drop attachments are accepted for delivery-note documents")
 
     # ---- PR / MR labelling
     from aurco.core import header_design as _HD2
@@ -912,6 +956,21 @@ def main() -> int:
     did2 = db.scalar("SELECT id FROM documents WHERE doc_no=?", (dn2,))
     pdf = D.document_pdf(db, did2)
     check(pdf.exists() and pdf.stat().st_size > 3000, "DN PDF with signatures renders")
+    check(D.document_reference_path(pdf).exists(),
+          "official document PDFs save a sidecar reference for stable DN binding")
+    check(D.document_pdf(db, did2) == pdf,
+          "regenerating an official DN reuses the same single-source PDF path")
+    _signed_before = set(PT.PDF_EXPORT_DIR.glob("*.signed.pdf"))
+    _studio.open_file(pdf)
+    _studio.a_pages.setText("1")
+    _studio.a_kind.setCurrentText("Signature")
+    _studio.a_image.setText(str(_sig))
+    _studio.save_signed_copy()
+    check(_studio.bound_doc and _studio.bound_doc.get("doc_no") == dn2,
+          "PDF studio recognises an official DN file even when it is opened directly from the folder")
+    check(set(PT.PDF_EXPORT_DIR.glob("*.signed.pdf")) == _signed_before
+          and db.scalar("SELECT COUNT(*) FROM documents WHERE doc_no=?", (dn2,)) == 1,
+          "signing an official DN PDF updates the same file instead of creating a duplicate document")
     SG.save_layout(db, "DN", {"header_color": "#0f6b4f", "row_stripe": "0", "font_size": "8.4",
                               "show_terms": "1", "terms_text": "Test terms"})
     check(D.document_pdf(db, did2).exists(), "customised document design renders")
@@ -2958,16 +3017,17 @@ def main() -> int:
                                    supplier="S"), [S.Line(item_id=rv_i, qty=25)])
     grn = db.one("SELECT id FROM documents WHERE doc_type='GRN' ORDER BY id DESC LIMIT 1")
     S.reverse_document(db, grn["id"], "supplier recall")
-    check("Reversed Inventory" in str(D.document_pdf(db, grn["id"])),
-          "reversed GRN PDFs go to the reversed inventory folder")
+    _grn_rev_pdf = D.document_pdf(db, grn["id"])
+    check("Draft Inventory" in str(_grn_rev_pdf) and _grn_rev_pdf.name.endswith("REVERSED.pdf"),
+          "reversed GRN PDFs move into the draft inventory folder and keep a reversed tag")
     check(_bal() == 100, "reversing a receipt takes the goods back out")
     S.post_issue(db, S.DocHeader(doc_type="DN", doc_date="2026-08-21",
                                  issued_to="Site"), [S.Line(item_id=rv_i, qty=30)])
     dnr = db.one("SELECT id FROM documents WHERE doc_type='DN' ORDER BY id DESC LIMIT 1")
     S.reverse_document(db, dnr["id"], "wrong site")
     _dn_rev_pdf = D.document_pdf(db, dnr["id"])
-    check("Reversed Delivery Notes" in str(_dn_rev_pdf) and _dn_rev_pdf.name.endswith("REVERSED.pdf"),
-          "reversed DN PDFs go to their own folder and carry a reversed suffix")
+    check("Draft Delivery Notes" in str(_dn_rev_pdf) and _dn_rev_pdf.name.endswith("REVERSED.pdf"),
+          "reversed DN PDFs move into the draft folder and carry a reversed suffix")
     check(_bal() == 100, "reversing an issue puts the goods back")
     blocked_twice = False
     try:
@@ -3895,8 +3955,8 @@ def main() -> int:
 
     S.reverse_document(db, drow["id"], "customer changed site")
     rev_pdf = D.document_pdf(db, drow["id"])
-    check("Reversed Delivery Notes" in str(rev_pdf),
-          "reversing an edited DN regenerates it into the reversal folder")
+    check("Draft Delivery Notes" in str(rev_pdf) and "REVERSED" in rev_pdf.name,
+          "reversing an edited DN moves its saved PDF into the draft area with a reversed tag")
     check(db.scalar("SELECT balance FROM items WHERE id=?", (it2["id"],)) == bal0,
           "reversing the finalized draft restores the stock balance")
     win._edit_draft(drow["id"])
@@ -3916,7 +3976,8 @@ def main() -> int:
           "the reopened reversed DN can be finalized again")
     check(db.scalar("SELECT balance FROM items WHERE id=?", (it2["id"],)) == bal0 - 4,
           "re-finalizing after reversal posts the new corrected quantity")
-    check("Reversed Delivery Notes" not in str(D.document_pdf(db, drow["id"])),
+    _final_pdf = D.document_pdf(db, drow["id"])
+    check("Draft Delivery Notes" not in str(_final_pdf) and "Delivery Notes" in str(_final_pdf),
           "after re-finalizing, the corrected DN returns to the normal folder")
 
     po.lines.clear_lines()

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QColorDialog, QD
                                QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
                                QSlider, QSpinBox, QSplitter, QTabWidget, QTableWidget,
-                               QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget, QCheckBox,
+                               QTableWidgetItem, QVBoxLayout, QWidget, QCheckBox,
                                QComboBox)
 try:
     from PySide6.QtPrintSupport import QPrinterInfo
@@ -58,8 +58,15 @@ class PdfViewerDialog(QDialog):
         self.page_metrics: list[tuple[float, float]] = []
         self.render_display_scale = 1.0
         self.render_engine_scale = 1.0
+        self.bound_doc: dict | None = None
+        self.bound_db = None
         self.sig_dragging = False
         self.sig_drag_offset = QPoint(0, 0)
+        self.pan_dragging = False
+        self.pan_last = QPoint(0, 0)
+        self.ctrl_zoom_dragging = False
+        self.ctrl_zoom_start = QPoint(0, 0)
+        self.ctrl_zoom_base = 100
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -161,7 +168,7 @@ class PdfViewerDialog(QDialog):
         mv = QVBoxLayout(middle)
         mv.setContentsMargins(0, 0, 0, 0)
         mv.setSpacing(6)
-        self.pick_note = QLabel("Tip: drag and drop a PDF here, or open one from Documents / Reports / Library.")
+        self.pick_note = QLabel("Tip: drag and drop a PDF here, or open one from Documents / Reports / Library. Use Ctrl + mouse wheel or Ctrl + drag up/down to zoom, and middle-drag to pan around the page.")
         self.pick_note.setWordWrap(True)
         self.pick_note.setStyleSheet("color:#5f6368")
         mv.addWidget(self.pick_note)
@@ -174,16 +181,21 @@ class PdfViewerDialog(QDialog):
         self.page_view.setMinimumSize(420, 520)
         self.page_view.setStyleSheet("background:white;border:1px solid #cbd5e1;border-radius:14px;")
         self.page_view.setText("Open a PDF to start.")
+        self.page_view.setMouseTracking(True)
+        self.page_view.setCursor(Qt.OpenHandCursor)
+        self.page_view.installEventFilter(self)
         self.page_view.pointPicked.connect(self.capture_point)
         self.sig_overlay = QLabel(self.page_view)
         self.sig_overlay.setVisible(False)
         self.sig_overlay.setStyleSheet("background:rgba(11,61,107,0.08);border:2px dashed #0b3d6b;border-radius:8px;")
         self.sig_overlay.installEventFilter(self)
         self.scroll.setWidget(self.page_view)
+        self.scroll.horizontalScrollBar().setSingleStep(28)
+        self.scroll.verticalScrollBar().setSingleStep(28)
         mv.addWidget(self.scroll, 1)
-        self.page_meta = QTextBrowser()
-        self.page_meta.setMaximumHeight(150)
-        self.page_meta.setOpenExternalLinks(True)
+        self.page_meta = QLabel()
+        self.page_meta.setWordWrap(True)
+        self.page_meta.setStyleSheet("color:#5f6368;padding:2px 4px;")
         mv.addWidget(self.page_meta)
         split.addWidget(middle)
 
@@ -389,6 +401,50 @@ class PdfViewerDialog(QDialog):
     def eventFilter(self, obj, ev):
         if obj is self.scroll.viewport() and ev.type() == QEvent.Resize and self._current_pdf():
             self._schedule_render()
+        elif obj in (self.page_view, self.scroll.viewport()):
+            if ev.type() == QEvent.Wheel and self._current_pdf() and (ev.modifiers() & Qt.ControlModifier):
+                step = 10 if ev.angleDelta().y() > 0 else -10
+                self.zoom_slider.setValue(max(self.zoom_slider.minimum(),
+                                              min(self.zoom_slider.maximum(),
+                                                  self.zoom_slider.value() + step)))
+                return True
+            if ev.type() == QEvent.MouseButtonPress and self._current_pdf():
+                if ev.button() == Qt.MiddleButton:
+                    self.pan_dragging = True
+                    self.pan_last = ev.globalPosition().toPoint()
+                    self.page_view.setCursor(Qt.ClosedHandCursor)
+                    return True
+                if ev.button() == Qt.LeftButton and (ev.modifiers() & Qt.ControlModifier):
+                    self.ctrl_zoom_dragging = True
+                    self.ctrl_zoom_start = ev.globalPosition().toPoint()
+                    self.ctrl_zoom_base = self.zoom_slider.value()
+                    self._set_status("Ctrl+drag zoom is active.")
+                    return True
+            if ev.type() == QEvent.MouseMove:
+                if self.pan_dragging:
+                    pos = ev.globalPosition().toPoint()
+                    delta = pos - self.pan_last
+                    self.pan_last = pos
+                    self.scroll.horizontalScrollBar().setValue(
+                        self.scroll.horizontalScrollBar().value() - delta.x())
+                    self.scroll.verticalScrollBar().setValue(
+                        self.scroll.verticalScrollBar().value() - delta.y())
+                    return True
+                if self.ctrl_zoom_dragging:
+                    dy = self.ctrl_zoom_start.y() - ev.globalPosition().toPoint().y()
+                    val = self.ctrl_zoom_base + int(round(dy / 3.0))
+                    self.zoom_slider.setValue(max(self.zoom_slider.minimum(),
+                                                  min(self.zoom_slider.maximum(), val)))
+                    return True
+            if ev.type() == QEvent.MouseButtonRelease:
+                if ev.button() == Qt.MiddleButton and self.pan_dragging:
+                    self.pan_dragging = False
+                    self.page_view.setCursor(Qt.OpenHandCursor if self._current_pdf() else Qt.ArrowCursor)
+                    return True
+                if ev.button() == Qt.LeftButton and self.ctrl_zoom_dragging:
+                    self.ctrl_zoom_dragging = False
+                    self._set_status(f"Zoom set to {self.zoom_slider.value()}%.")
+                    return True
         elif obj is self.sig_overlay:
             if ev.type() == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
                 self.sig_dragging = True
@@ -410,6 +466,19 @@ class PdfViewerDialog(QDialog):
             return get_db()
         except Exception:
             return None
+
+    def _bind_document(self, path: Path) -> Path:
+        self.bound_db = self._db()
+        self.bound_doc = D.document_binding_for_path(self.bound_db, path)
+        if self.bound_doc and self.bound_db:
+            official = D.resolve_document_pdf_path(self.bound_db, self.bound_doc) or path
+            return official.resolve()
+        return path.resolve()
+
+    def _bound_label(self) -> str:
+        if not self.bound_doc:
+            return ""
+        return f"{self.bound_doc.get('doc_type','DOC')} {self.bound_doc.get('doc_no','')}"
 
     def _set_status(self, text: str):
         self.status.setText(text)
@@ -537,8 +606,10 @@ class PdfViewerDialog(QDialog):
         mode = self.fit_mode.currentText()
         base = fit_page if mode == "Fit Page" else fit_width if mode == "Fit Width" else actual
         display_scale = max(0.25, base * (self.zoom_pct / 100.0))
-        quality_boost = 1.0 if mode == "Actual Size" else 1.7
-        engine_scale = max(0.5, min(6.0, display_scale * quality_boost))
+        quality_boost = 1.6 if mode == "Actual Size" else 2.4
+        if self.a_kind.currentText() in ("Signature", "Stamp"):
+            quality_boost = max(quality_boost, 2.8)
+        engine_scale = max(0.8, min(8.0, display_scale * quality_boost))
         return display_scale, engine_scale
 
     def _selected_printer_name(self) -> str:
@@ -659,11 +730,14 @@ class PdfViewerDialog(QDialog):
         if not p.exists() or p.suffix.lower() != ".pdf":
             self._set_status("PDF file not found.")
             return False
-        self.source_path = p.resolve()
+        self.source_path = self._bind_document(p)
         self.work_path, self.restored = PT.load_workspace(self.source_path)
         self.source_mtime = self.source_path.stat().st_mtime
         self.caption.setText(title or self.source_path.name)
-        self.sub.setText(str(self.source_path))
+        sub = str(self.source_path)
+        if self.bound_doc:
+            sub += f"\nOfficial file bound to {self._bound_label()}"
+        self.sub.setText(sub)
         self.page_index = 0
         self.view_rotation = 0
         self.fit_mode.setCurrentText("Fit Page")
@@ -674,7 +748,8 @@ class PdfViewerDialog(QDialog):
         self.raise_()
         self.activateWindow()
         self._set_status("Recovered the last auto-saved working copy." if self.restored
-                         else "PDF opened in AURCO PDF Studio.")
+                         else (f"Opened the official {self._bound_label()} PDF in AURCO PDF Studio."
+                               if self.bound_doc else "PDF opened in AURCO PDF Studio."))
         return True
 
     def reload_recent(self):
@@ -718,15 +793,13 @@ class PdfViewerDialog(QDialog):
         pm = pm.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.page_view.setPixmap(pm)
         self.page_view.resize(pm.size())
-        txt = self.text_pages[self.page_index] if self.page_total and self.page_index < len(self.text_pages) else ""
-        preview = " ".join((txt or "(no searchable text found on this page)").split())[:900]
         orientation = "Landscape" if width_pt > height_pt else "Portrait"
-        self.page_meta.setHtml(
-            f"<b>Page {self.page_index + 1}</b> &nbsp; · &nbsp; {self._page_label(width_pt, height_pt)}"
-            f" &nbsp; · &nbsp; {orientation} &nbsp; · &nbsp; {self.fit_mode.currentText()}"
-            f" &nbsp; · &nbsp; View {self.zoom_pct}% &nbsp; · &nbsp; Render {round(engine_scale * 100)}%"
-            f" &nbsp; · &nbsp; Rotation {self.view_rotation % 360}°"
-            f"<br><br>{preview}"
+        binding = f"  ·  {self._bound_label()}" if self.bound_doc else ""
+        self.page_meta.setText(
+            f"Page {self.page_index + 1}  ·  {self._page_label(width_pt, height_pt)}"
+            f"  ·  {orientation}  ·  {self.fit_mode.currentText()}"
+            f"  ·  View {self.zoom_pct}%  ·  Render {round(engine_scale * 100)}%"
+            f"  ·  Rotation {self.view_rotation % 360}°{binding}"
         )
         self._highlight_page_selection()
         self._refresh_signature_overlay()
@@ -852,8 +925,16 @@ class PdfViewerDialog(QDialog):
     def save_current(self):
         if not self._ensure_open() or not self.source_path:
             return
-        PT.commit_workspace(self.source_path)
+        saved = PT.commit_workspace(self.source_path)
+        self.source_path = saved.resolve()
         self.source_mtime = self.source_path.stat().st_mtime
+        if self.bound_doc and self.bound_db:
+            self.bound_db.execute("UPDATE documents SET pdf_path=? WHERE id=?",
+                                  (str(self.source_path), self.bound_doc["id"]))
+            self.bound_db.commit()
+            D.write_document_reference(self.source_path, self.bound_doc)
+            self._set_status(f"Saved changes to the official {self._bound_label()} file.")
+            return
         self._set_status(f"Saved changes to {self.source_path.name}.")
 
     def save_as(self):
@@ -863,18 +944,28 @@ class PdfViewerDialog(QDialog):
         if not out:
             return
         PT.commit_workspace(self.source_path, out)
-        self._set_status(f"Saved a new PDF copy: {Path(out).name}")
+        if self.bound_doc:
+            self._set_status(f"External copy saved: {Path(out).name}. The official {self._bound_label()} file was not duplicated in AURCO.")
+        else:
+            self._set_status(f"Saved a new PDF copy: {Path(out).name}")
         self.reload_recent()
 
     def duplicate_file(self):
         if not self._ensure_open():
             return
-        dup = PT.duplicate_file(self._share_pdf() or self._current_pdf())
-        self._set_status(f"Duplicate created: {dup.name}")
+        dest_dir = PT.PDF_EXPORT_DIR if self.bound_doc else None
+        dup = PT.duplicate_file(self._share_pdf() or self._current_pdf(), dest_dir=dest_dir)
+        if self.bound_doc:
+            self._set_status(f"External duplicate created: {dup.name}. The official {self._bound_label()} file stays as the single source document.")
+        else:
+            self._set_status(f"Duplicate created: {dup.name}")
         self.reload_recent()
 
     def rename_file(self):
         if not self._ensure_open() or not self.source_path:
+            return
+        if self.bound_doc:
+            W.error_box(self, f"{self._bound_label()} is controlled by AURCO. Keep the official file name and use Save Copy for any extra file.")
             return
         name, ok = QInputDialog.getText(self, "Rename PDF", "New file name:", text=self.source_path.name)
         if not ok or not name.strip():
@@ -956,6 +1047,12 @@ class PdfViewerDialog(QDialog):
     def save_signed_copy(self):
         anns = self._annotation_rows()
         if not anns:
+            return
+        if self.bound_doc:
+            self._apply_workspace(lambda src, dst: PT.annotate_pdf(src, anns, dst),
+                                  f"{len(anns)} annotation(s) applied.")
+            self.save_current()
+            self._set_status(f"Signature applied to the official {self._bound_label()} PDF. No duplicate document was created.")
             return
         out, _ = QFileDialog.getSaveFileName(self, "Save Signed / Annotated PDF",
                                              str(PT.default_export_path(self.source_path or 'signed', '.signed.pdf')),

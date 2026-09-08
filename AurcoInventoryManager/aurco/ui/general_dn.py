@@ -24,7 +24,7 @@ from ..core import signatories as SG
 from ..core.database import Database, today
 from . import widgets as W
 from .common import (ShareBar, clipboard_attachment_entries, date_edit, iso, lookup,
-                     store_attachment_file)
+                     mime_attachment_entries, store_attachment_file)
 
 COLS = ["Item Code", "Description", "UOM", "Quantity", "Unit Price", "Ref / PR", "Remarks"]
 KEYS = ["item_code", "description", "uom", "qty", "unit_cost", "pr_no", "remarks"]
@@ -148,6 +148,7 @@ class CreateTab(QWidget):
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
         self.db = db
+        self.setAcceptDrops(True)
         self.edit_id: int | None = None
         self.last_file: Path | None = None
         self.attachments: list[dict[str, object] | str] = []
@@ -344,6 +345,23 @@ class CreateTab(QWidget):
             self._refresh_attachments()
             W.toast(self, f"{added} attachment(s) added.")
 
+    def dragEnterEvent(self, ev):
+        mime = ev.mimeData()
+        if mime and (mime.hasUrls() or mime.hasImage() or mime.hasText()):
+            ev.acceptProposedAction()
+            return
+        super().dragEnterEvent(ev)
+
+    def dropEvent(self, ev):
+        added = mime_attachment_entries(ev.mimeData(), source="drop")
+        if added:
+            self.attachments.extend(added)
+            self._refresh_attachments()
+            W.toast(self, f"{len(added)} attachment(s) added by drag and drop.")
+            ev.acceptProposedAction()
+            return
+        super().dropEvent(ev)
+
     def _paste_attachment(self):
         try:
             added = clipboard_attachment_entries()
@@ -367,9 +385,10 @@ class CreateTab(QWidget):
     def _register_attachments(self, doc_no: str):
         for a in self.attachments:
             ent = self._attachment_entry(a)
+            final_path = D.store_document_attachment("GDN", doc_no, ent["file_path"])
             self.db.execute(
                 "INSERT INTO attachments(doc_type,doc_no,file_path,source,page_order) VALUES(?,?,?,?,?)",
-                ("GDN", doc_no, ent["file_path"], ent["source"], ent["page_order"]))
+                ("GDN", doc_no, str(final_path), ent["source"], ent["page_order"]))
         self.db.commit()
         self.attachments = []
         self._refresh_attachments()
