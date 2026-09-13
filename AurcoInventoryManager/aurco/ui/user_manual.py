@@ -888,9 +888,6 @@ a separate desktop viewer.</p>
 <p>Administrator, Manager, Storekeeper and Viewer. Turn on <b>Require login</b> in
 Settings → Security. Deleting or reversing a document can require an
 administrator password. The <b>Audit Trail</b> records who did what and when.</p>
-<p>Packaged Windows copies can also require an offline <b>license key</b> per PC:
-the user copies the Installation ID, the developer issues the key, and the app
-activates locally without depending on the shared database.</p>
 """),
     ("File protection", """
 <h2>File protection — nothing gets deleted</h2>

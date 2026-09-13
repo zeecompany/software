@@ -1,6 +1,6 @@
 # AURCO INVENTORY MANAGER — User & Build Guide
 
-**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.28.2
+**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.28.3
 **Platform:** Windows Desktop (.EXE) · offline · local-first · SQLite
 
 ---
@@ -954,8 +954,6 @@ Ctrl+Shift+I Quick add item
 * **Validate Database** runs `integrity_check` and reconciles every item balance
   against the ledger; **Rebuild Balances from Ledger** repairs any mismatch.
 * Automatic backup on exit, manual backup (Ctrl+B), backup history and restore.
-* Packaged Windows copies can require an offline **license key** per PC: the
-  user sends the Installation ID and the developer returns the activation key.
 * Full audit trail: created, edited, deleted, issued, received, returned,
   adjusted, transferred, finalized, printed, exported — with user and timestamp.
 * Unhandled errors are logged to `Logs\aurco.log` with a friendly message.

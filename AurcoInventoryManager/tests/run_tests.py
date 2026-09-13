@@ -71,7 +71,7 @@ def main() -> int:
     D.open_file_location = lambda *a, **k: None
 
     import os
-    from aurco.core import (config, database, demo, employee_ppe as EP, licensing as LIC,
+    from aurco.core import (config, database, demo, employee_ppe as EP,
                             material as M, pdf_tools as PT, reports, services as S,
                             signatories as SG, theming)
     from aurco.ui import pdf_viewer as PV
@@ -382,18 +382,8 @@ def main() -> int:
     check(sp.t_files.rowCount() >= 1 and "File Contents" in sp.tabs.tabText(3),
           "Global Search page shows a File Contents result tab")
 
-    # ------------------------------------- licensing and advanced PDF studio
-    section("Licensing && advanced PDF studio")
-    LIC.clear_license_key()
-    _iid = LIC.installation_id()
-    _lic = LIC.generate_license_key(_iid, "Arena QA", "2099-12-31", 5)
-    _lic_res = LIC.validate_license_key(_lic, _iid)
-    check(_lic_res["valid"], "license key validates for the current installation")
-    check(LIC.apply_license_key(_lic)["valid"], "license key can be activated locally")
-    check(LIC.current_status()["valid"], "activated license is stored in local bootstrap")
-    _other = LIC.generate_license_key("AUR-OTHER-OTHER-OTHER-OTHER", "Arena QA", "2099-12-31", 1)
-    check(not LIC.validate_license_key(_other, _iid)["valid"],
-          "license key is rejected for a different installation id")
+    # ------------------------------------- advanced PDF studio
+    section("Advanced PDF studio")
     check("WhatsApp Desk" not in win.pages, "dedicated WhatsApp module removed from navigation")
 
     from reportlab.pdfgen import canvas as _cv
