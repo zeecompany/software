@@ -324,6 +324,11 @@ def update_draft(db: Database, doc_id: int, h: DocHeader,
     except Exception:
         db.rollback()
         raise
+    from . import documents as D
+    fresh = db.one("SELECT * FROM documents WHERE id=?", (doc_id,))
+    if fresh is not None:
+        fresh_lines = db.query("SELECT * FROM document_lines WHERE doc_id=? ORDER BY id", (doc_id,))
+        D.purge_document_files(db, fresh, fresh_lines)
     db.audit("EDITED", d["doc_type"], d["doc_no"],
              f"{'reopened from reversal and saved as draft' if was_reversed else 'draft updated'}"
              f" — {len(lines)} line(s), qty {sum(l.qty or 0 for l in lines):g}")

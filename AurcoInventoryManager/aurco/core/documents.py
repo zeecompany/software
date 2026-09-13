@@ -919,8 +919,6 @@ def document_output_folder(doc_type: str, status: str = "FINAL") -> Path:
     status = str(status or "").upper()
     if status == "DRAFT":
         return config.folder(DRAFT_DOC_FOLDERS.get(doc_type, "Draft Documents"))
-    if status == "REVERSED" and doc_type in EDITABLE_REVERSED_DOC_TYPES:
-        return config.folder(DRAFT_DOC_FOLDERS.get(doc_type, "Draft Documents"))
     if status == "REVERSED":
         return config.folder(REVERSED_DOC_FOLDERS.get(doc_type, "Reports"))
     return config.folder(DOC_FOLDERS.get(doc_type, "Reports"))
@@ -1011,6 +1009,47 @@ def resolve_document_pdf_path(db: Database, doc_row, lines=None, update: bool = 
     return None
 
 
+def purge_document_files(db: Database, doc_row, lines=None, keep_path: str | Path | None = None) -> int:
+    """Remove stale official PDFs/sidecars for one document, keeping at most one.
+
+    Only files inside the app's managed document folders are touched. User-made
+    copies outside those folders are left alone.
+    """
+    if lines is None and doc_row and _doc_field(doc_row, "id"):
+        lines = db.query("SELECT * FROM document_lines WHERE doc_id=? ORDER BY id", (doc_row["id"],))
+    dtype = _doc_field(doc_row, "doc_type")
+    official_folders: set[str] = set()
+    for status in ("FINAL", "DRAFT", "REVERSED"):
+        try:
+            official_folders.add(str(document_output_folder(dtype, status).resolve()))
+        except OSError:
+            official_folders.add(str(document_output_folder(dtype, status)))
+    keep = None
+    if keep_path:
+        try:
+            keep = str(Path(keep_path).resolve())
+        except OSError:
+            keep = str(Path(keep_path))
+    removed = 0
+    for cand in _candidate_document_paths(db, doc_row, lines or []):
+        try:
+            parent_key = str(cand.parent.resolve())
+            file_key = str(cand.resolve()) if cand.exists() else str(cand)
+        except OSError:
+            parent_key = str(cand.parent)
+            file_key = str(cand)
+        if parent_key not in official_folders or file_key == keep:
+            continue
+        remove_document_reference(cand)
+        try:
+            if cand.exists() and cand.is_file():
+                cand.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def document_binding_for_path(db: Database | None, path: str | Path) -> dict[str, Any] | None:
     if db is None:
         return None
@@ -1036,11 +1075,19 @@ def document_target_path(db: Database, doc_row, lines, out_path: str | Path | No
         return Path(out_path)
     dtype = _doc_field(doc_row, "doc_type")
     status = _doc_field(doc_row, "status").upper() or "FINAL"
-    base = reversed_document_basename(db, doc_row, lines) if status == "REVERSED" else document_basename(db, doc_row, lines)
+    base = (reversed_document_basename(db, doc_row, lines)
+            if status == "REVERSED" else document_basename(db, doc_row, lines))
+    preferred = document_output_folder(dtype, status) / f"{base}.pdf"
     saved = _doc_field(doc_row, "pdf_path")
-    if saved and status != "REVERSED":
-        return Path(saved)
-    return document_output_folder(dtype, status) / f"{base}.pdf"
+    if saved:
+        sp = Path(saved)
+        try:
+            if sp.suffix.lower() == ".pdf" and sp.parent.resolve() == preferred.parent.resolve():
+                return sp
+        except OSError:
+            if sp.suffix.lower() == ".pdf" and sp.parent == preferred.parent:
+                return sp
+    return preferred
 
 
 def reversed_document_basename(db: Database, doc_row, lines) -> str:
@@ -1365,14 +1412,25 @@ def document_pdf(db: Database, doc_id: int, out_path: str | Path | None = None,
     if official_output:
         db.execute("UPDATE documents SET pdf_path=? WHERE id=?", (str(out), doc_id))
         db.commit()
-        write_document_reference(out, d)
-        if old_pdf is not None and out.resolve() != old_pdf.resolve():
-            remove_document_reference(old_pdf)
+        fresh = db.one("SELECT * FROM documents WHERE id=?", (doc_id,)) or d
+        write_document_reference(out, fresh)
+        if old_pdf is not None:
             try:
-                if old_pdf.exists() and old_pdf.is_file():
-                    old_pdf.unlink()
+                old_key = str(old_pdf.resolve())
             except OSError:
-                pass
+                old_key = str(old_pdf)
+            try:
+                new_key = str(out.resolve())
+            except OSError:
+                new_key = str(out)
+            if old_key != new_key:
+                remove_document_reference(old_pdf)
+                try:
+                    if old_pdf.exists() and old_pdf.is_file():
+                        old_pdf.unlink()
+                except OSError:
+                    pass
+        purge_document_files(db, fresh, lines, keep_path=out)
     db.audit("PRINTED", dtype, d["doc_no"],
              f"PDF -> {out.name}" + (f" (+{n_att} attachment page(s))" if n_att else ""))
     return out

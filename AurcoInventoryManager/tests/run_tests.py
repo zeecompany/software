@@ -3018,17 +3018,24 @@ def main() -> int:
     grn = db.one("SELECT id FROM documents WHERE doc_type='GRN' ORDER BY id DESC LIMIT 1")
     S.reverse_document(db, grn["id"], "supplier recall")
     _grn_rev_pdf = D.document_pdf(db, grn["id"])
-    check("Draft Inventory" in str(_grn_rev_pdf) and _grn_rev_pdf.name.endswith("REVERSED.pdf"),
-          "reversed GRN PDFs move into the draft inventory folder and keep a reversed tag")
+    check("Reversed Inventory" in str(_grn_rev_pdf) and _grn_rev_pdf.name.endswith("REVERSED.pdf"),
+          "reversed GRN PDFs move into the reversed inventory folder and keep a reversed tag")
     check(_bal() == 100, "reversing a receipt takes the goods back out")
     S.post_issue(db, S.DocHeader(doc_type="DN", doc_date="2026-08-21",
                                  issued_to="Site"), [S.Line(item_id=rv_i, qty=30)])
     dnr = db.one("SELECT id FROM documents WHERE doc_type='DN' ORDER BY id DESC LIMIT 1")
+    _dn_final_pdf = D.document_pdf(db, dnr["id"])
     S.reverse_document(db, dnr["id"], "wrong site")
     _dn_rev_pdf = D.document_pdf(db, dnr["id"])
-    check("Draft Delivery Notes" in str(_dn_rev_pdf) and _dn_rev_pdf.name.endswith("REVERSED.pdf"),
-          "reversed DN PDFs move into the draft folder and carry a reversed suffix")
+    check("Reversed Delivery Notes" in str(_dn_rev_pdf) and _dn_rev_pdf.name.endswith("REVERSED.pdf"),
+          "reversed DN PDFs move into the reversed folder and carry a reversed suffix")
+    check(not _dn_final_pdf.exists(),
+          "the reversed DN no longer remains in the active Delivery Notes folder")
     check(_bal() == 100, "reversing an issue puts the goods back")
+    _dn_report_title, _dn_report_cols, _dn_report_rows = reports.build_report(db, "Delivery Note Report", {})
+    check(all(r[_dn_report_cols.index("Doc No")] != db.one("SELECT doc_no FROM documents WHERE id=?", (dnr["id"],))["doc_no"]
+              for r in _dn_report_rows),
+          "the Delivery Note report lists only final delivery notes, not reversed ones")
     blocked_twice = False
     try:
         S.reverse_document(db, dnr["id"], "again")
@@ -3953,10 +3960,13 @@ def main() -> int:
     except S.StockError:
         check(True, "a finalized document refuses to be edited")
 
+    _pre_rev_pdf = D.resolve_document_pdf_path(db, drow)
     S.reverse_document(db, drow["id"], "customer changed site")
     rev_pdf = D.document_pdf(db, drow["id"])
-    check("Draft Delivery Notes" in str(rev_pdf) and "REVERSED" in rev_pdf.name,
-          "reversing an edited DN moves its saved PDF into the draft area with a reversed tag")
+    check("Reversed Delivery Notes" in str(rev_pdf) and "REVERSED" in rev_pdf.name,
+          "reversing an edited DN moves its saved PDF into the reversed folder with a reversed tag")
+    check(_pre_rev_pdf and not Path(_pre_rev_pdf).exists(),
+          "the old final DN file is removed from the active Delivery Notes folder after reversal")
     check(db.scalar("SELECT balance FROM items WHERE id=?", (it2["id"],)) == bal0,
           "reversing the finalized draft restores the stock balance")
     win._edit_draft(drow["id"])
@@ -3967,6 +3977,8 @@ def main() -> int:
     drow2 = db.one("SELECT status, doc_no, pdf_path FROM documents WHERE id=?", (drow["id"],))
     check(drow2["status"] == "DRAFT" and drow2["doc_no"] == dno and not drow2["pdf_path"],
           "a reversed DN can be saved again as the same-number draft")
+    check(not rev_pdf.exists(),
+          "saving the reversed DN back as a draft removes the stale reversed file copy")
     check(db.scalar("SELECT COUNT(*) FROM documents WHERE doc_no=?", (dno,)) == 1,
           "reopening after reversal still uses the original document row")
     win._edit_draft(drow["id"])
@@ -3977,8 +3989,14 @@ def main() -> int:
     check(db.scalar("SELECT balance FROM items WHERE id=?", (it2["id"],)) == bal0 - 4,
           "re-finalizing after reversal posts the new corrected quantity")
     _final_pdf = D.document_pdf(db, drow["id"])
-    check("Draft Delivery Notes" not in str(_final_pdf) and "Delivery Notes" in str(_final_pdf),
+    check("Reversed Delivery Notes" not in str(_final_pdf) and "Delivery Notes" in str(_final_pdf),
           "after re-finalizing, the corrected DN returns to the normal folder")
+    _official_dn_files = []
+    for _folder in (config.folder("Delivery Notes"), config.folder("Draft Delivery Notes"),
+                    config.folder("Reversed Delivery Notes")):
+        _official_dn_files.extend(_folder.glob(f"*{dno}*.pdf"))
+    check(len(_official_dn_files) == 1 and _official_dn_files[0] == _final_pdf,
+          "only one official DN PDF remains after the correction cycle")
 
     po.lines.clear_lines()
     po.lines.add_items([dict(it2, issue_qty=4, pr_no="PR-XYZ")])

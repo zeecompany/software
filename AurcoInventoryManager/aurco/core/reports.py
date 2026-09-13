@@ -238,7 +238,8 @@ def build_report(db: Database, name: str, filters: dict | None = None) -> Report
                 "Item Code", "Description", "UOM", "Qty", "Unit Cost", "Total", "User"]
         sql = ("SELECT d.doc_no,d.doc_date,d.status,d.issued_to,d.project,d.reference,"
                "l.item_code,l.description,l.uom,l.qty,l.unit_cost,l.total_cost,d.created_by"
-               " FROM document_lines l JOIN documents d ON d.id=l.doc_id WHERE d.doc_type='DN'")
+               " FROM document_lines l JOIN documents d ON d.id=l.doc_id"
+               " WHERE d.doc_type='DN' AND d.status='FINAL'")
         p = []
         dc, dp = _date_clause(f, "d.doc_date")
         sql += dc
@@ -353,7 +354,8 @@ def build_report(db: Database, name: str, filters: dict | None = None) -> Report
         rows = db.query("""SELECT COALESCE(NULLIF(d.project,''),'(unassigned)') s,
                              COUNT(DISTINCT d.id) n, SUM(l.qty) q, SUM(l.total_cost) v
                            FROM documents d JOIN document_lines l ON l.doc_id=d.id
-                           WHERE d.doc_type='DN' GROUP BY s ORDER BY q DESC""")
+                           WHERE d.doc_type='DN' AND d.status='FINAL'
+                           GROUP BY s ORDER BY q DESC""")
         return title, cols, [[r["s"], r["n"], round(r["q"] or 0, 2), round(r["v"] or 0, 2)]
                              for r in rows]
     if name == "Stock Valuation":
@@ -385,7 +387,7 @@ def build_report(db: Database, name: str, filters: dict | None = None) -> Report
         sql = ("SELECT l.pr_no, d.doc_no, d.doc_date, d.project, d.issued_to, l.item_code,"
                " l.description, l.uom, l.qty, l.total_cost, l.remarks"
                " FROM document_lines l JOIN documents d ON d.id=l.doc_id"
-               " WHERE d.doc_type='DN'")
+               " WHERE d.doc_type='DN' AND d.status='FINAL'")
         p = []
         dc, dp = _date_clause(f, "d.doc_date")
         sql += dc
