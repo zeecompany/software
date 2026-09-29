@@ -28,6 +28,7 @@ from .workspace_page import WorkspacePage
 from .admin_station import AdminStationPage
 from .cable_records import CableRecordsPage
 from .tool_station import ToolStationPage
+from .surveyor_tools_page import SurveyorToolsPage
 from .general_dn import GeneralDNPage
 from .issuance_page import IssuancePage
 from .employee_ppe_page import EmployeePPEPage
@@ -70,6 +71,7 @@ NAV = [
     ("SEPARATE MODULES", None, None),
     ("Admin Station", "🏢", "Ctrl+Shift+A"),
     ("Tools, Instruments & Devices", "🔧", "Ctrl+Shift+T"),
+    ("Surveyor Tools Record", "🧭", "Ctrl+Shift+Y"),
     ("Cable Records", "🧵", "Ctrl+Shift+B"),
     ("General DN Maker", "🧾", "Ctrl+G"),
     ("Company Issuance", "🏢", "Ctrl+Shift+O"),
@@ -291,6 +293,7 @@ class MainWindow(QMainWindow):
         self.page_search = SearchPage(db)
         self.page_admin = AdminStationPage(db)
         self.page_tools = ToolStationPage(db)
+        self.page_survey = SurveyorToolsPage(db)
         self.page_cables = CableRecordsPage(db)
         self.page_gdn = GeneralDNPage(db)
         self.page_issuance = IssuancePage(db)
@@ -310,6 +313,7 @@ class MainWindow(QMainWindow):
                            ("Report Center", self.page_reports), ("Audit Trail", self.page_audit),
                            ("Admin Station", self.page_admin),
                            ("Tools, Instruments & Devices", self.page_tools),
+                           ("Surveyor Tools Record", self.page_survey),
                            ("Cable Records", self.page_cables),
                            ("General DN Maker", self.page_gdn),
                            ("Company Issuance", self.page_issuance),
@@ -329,6 +333,7 @@ class MainWindow(QMainWindow):
         self.page_material.dataChanged.connect(self.refresh_all)
         self.page_workspace.dataChanged.connect(self.refresh_all)
         self.page_ppe.dataChanged.connect(self.refresh_all)
+        self.page_survey.dataChanged.connect(self.refresh_all)
         self.page_bulk.requestDN.connect(self._bulk_to_dn)
         self.page_docs.editDraft.connect(self._edit_draft)
         for p in (self.page_items, self.page_in, self.page_out, self.page_ret, self.page_trf,
@@ -429,6 +434,9 @@ class MainWindow(QMainWindow):
             "Tools, Instruments & Devices": "Separate custody register for tools, instruments "
                             "and devices — issue, transfer, temporary loan and "
                             "return. Its own database; no stock effect.",
+            "Surveyor Tools Record": "Separate register for survey instruments and tools — "
+                                      "serial numbers, pictures, location summary sheet and "
+                                      "dashboard. Its own database; no stock effect.",
             "Cable Records": "Separate cable drum register — length left on every "
                              "drum, every cut, the cable schedule and its megger "
                              "tests. Its own database; no stock effect.",
@@ -506,6 +514,7 @@ class MainWindow(QMainWindow):
             self.page_docs.reload()
             self.page_audit.reload()
             self.page_ppe.refresh_all()
+            self.page_survey.refresh()
             d = S.dashboard_data(self.db)
             cur = self.db.get_setting("currency", "")
             self.status_lbl.setText(

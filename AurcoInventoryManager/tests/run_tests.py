@@ -62,8 +62,8 @@ def main() -> int:
     import aurco.ui.common as _c, aurco.ui.transactions as _t, aurco.ui.items as _i
     import aurco.ui.documents_page as _d, aurco.ui.bulk_check as _b
     import aurco.ui.material_page as _m, aurco.ui.signature_ui as _s
-    import aurco.ui.employee_ppe_page as _ep
-    for mod in (_c, _t, _i, _d, _b, _m, _s, _ep):
+    import aurco.ui.employee_ppe_page as _ep, aurco.ui.surveyor_tools_page as _sv
+    for mod in (_c, _t, _i, _d, _b, _m, _s, _ep, _sv):
         mod.W.confirm, mod.W.info_box = W.confirm, W.info_box
         mod.W.error_box, mod.W.toast = W.error_box, W.toast
     from aurco.core import documents as D
@@ -4175,6 +4175,69 @@ def main() -> int:
     probe.item(0, 4).setText("2")
     check(len(_seen) == 2, "editing the Quantity column posts no adjustment")
     pa.lines.clear_lines()
+
+    # ======================================= Surveyor Tools Record — module
+    section("Surveyor Tools Record — serials, pictures and summary sheet")
+    from aurco.core import surveyor_tools as SV
+    from aurco.ui.surveyor_tools_page import SurveyorToolsPage
+    import aurco.ui.surveyor_tools_page as _svp_mod
+    for _k in ("confirm", "info_box", "error_box", "toast"):
+        setattr(_svp_mod.W, _k, getattr(W, _k))
+    check("Surveyor Tools Record" in win.pages, "Surveyor Tools Record page is available")
+    svp = win.page_survey
+    svp.sdb.execute("DELETE FROM records")
+    svp.sdb.commit()
+    from PySide6.QtGui import QImage as _SVImg, QColor as _SVColor
+    _sv_photo = root / "surveyor_tool.png"
+    _sv_img = _SVImg(120, 90, _SVImg.Format_RGB32)
+    _sv_img.fill(_SVColor("#dbeafe"))
+    _sv_img.save(str(_sv_photo))
+    SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "serial_no": "AL-001",
+                             "make_model": "Leica", "location": "Warehouse",
+                             "qty": 2, "status": SV.ST_ACTIVE,
+                             "remarks": "", "picture_path": str(_sv_photo)})
+    SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "serial_no": "AL-002",
+                             "make_model": "Leica", "location": "Hajar",
+                             "qty": 1, "status": SV.ST_OUT_OF_ORDER,
+                             "remarks": "ordered for repair", "picture_path": ""})
+    SV.save_record(svp.sdb, {"instrument_desc": "Total Station", "serial_no": "TS-001",
+                             "make_model": "Trimble", "location": "Zuluf",
+                             "qty": 1, "status": SV.ST_IN_USE, "remarks": "", "picture_path": ""})
+    SV.save_record(svp.sdb, {"instrument_desc": "GPS", "serial_no": "GPS-001",
+                             "make_model": "Garmin", "location": "Yanbu",
+                             "qty": 1, "status": SV.ST_ACTIVE, "remarks": "", "picture_path": ""})
+    SV.save_record(svp.sdb, {"instrument_desc": "Reflector pole", "serial_no": "",
+                             "make_model": "", "location": "Noor",
+                             "qty": 1, "status": SV.ST_ACTIVE, "remarks": "", "picture_path": ""})
+    _auto = [r for r in SV.summary_rows(svp.sdb) if r["instrument_desc"] == "Auto Level"][0]
+    check(_auto["Warehouse"] == 2 and _auto["Hajar"] == 1 and _auto["total_qty"] == 3,
+          "the summary sheet groups instrument quantities by the sheet locations")
+    check("out of order" in _auto["remarks"].lower(),
+          "the summary remarks carry the instrument condition note forward")
+    _pic = Path(SV.list_records(svp.sdb, text="AL-001")[0]["picture_path"])
+    check(_pic.exists() and _pic.parent.name == "Photos",
+          "tool pictures are copied into the module's own Photos folder")
+    try:
+        SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "serial_no": "AL-001",
+                                 "location": "Warehouse", "qty": 1, "status": SV.ST_ACTIVE})
+        check(False, "duplicate serial numbers are blocked")
+    except ValueError:
+        check(True, "duplicate serial numbers are blocked")
+    _dash_sv = SV.dashboard_data(svp.sdb)
+    check(_dash_sv["total_qty"] == 6 and _dash_sv["out_of_order_qty"] == 1,
+          "the dashboard totals the tracked quantity and the out-of-order quantity")
+    check(any(k == "Warehouse" and v == 2 for k, v in _dash_sv["locations"]),
+          "the dashboard breaks the data down by location")
+    win.go("Surveyor Tools Record")
+    svp.refresh()
+    app.processEvents()
+    check(svp.tabs.count() == 3, "the Surveyor Tools Record page has dashboard, register and summary tabs")
+    check(svp.register.table.rowCount() == 5, "the register tab lists the saved surveyor tool rows")
+    check(svp.summary.table.rowCount() == 4, "the summary tab collapses records into one row per instrument")
+    check(svp.dash.cards["qty"].lbl_value.text() == "6", "the dashboard card shows the total quantity")
+    check(svp.register.table.currentRow() >= 0 and svp.register.lbl_pic.pixmap() is not None,
+          "selecting a register row shows its picture preview")
+    check(SV.FOLDER in _cfg.SUBFOLDERS, "the Surveyor Tools Record module folder is created with the storage root")
 
     # ============================================ Cable Records — the module
     section("Cable Records — drums, cutting log and cable schedule")
