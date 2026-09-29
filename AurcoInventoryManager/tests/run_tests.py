@@ -4202,6 +4202,26 @@ def main() -> int:
     check(emp_page.table.rowCount() >= 2, "the Employee Master page lists the saved employees")
     check("Survey" in EMP.distinct_values(db, "division"),
           "employee master keeps the requested department/division field")
+    _emp_cols, _emp_sample = EMP.template_rows()
+    check(_emp_cols[:4] == ["Employee ID", "Name", "Designation", "Iqama ID"],
+          "the employee master template includes the required employee columns")
+    _emp_head, _emp_rows = EMP.sniff(
+        "Employee ID\tName\tDesignation\tIqama ID\tDate of Joining\tNationality\tContract WorkHours\tDivision/Department\tCurrent Project\tLocation\n"
+        "EMP-102\tNasser Ali\tSurveyor\t2456677892\t2024-02-10\tIndian\t10\tSurvey\tNoor\tDammam\n")
+    _emp_map = EMP.auto_map(_emp_head)
+    _emp_preview = EMP.preview(_emp_head, _emp_rows, _emp_map)
+    _emp_ins, _emp_upd, _emp_sk = EMP.import_employees(db, _emp_preview, "pasted rows")
+    check(_emp_ins == 1 and _emp_upd == 0 and _emp_sk == 0 and
+          EMP.find_employee(db, employee_id="EMP-102")["name"] == "Nasser Ali",
+          "the employee master can import a filled template row")
+    _emp_preview2 = EMP.preview(
+        _emp_head,
+        [["EMP-102", "Nasser Ali", "Senior Surveyor", "2456677892", "2024-02-10", "Indian", "10", "Survey", "Noor", "Dammam"]],
+        _emp_map)
+    _emp_ins2, _emp_upd2, _emp_sk2 = EMP.import_employees(db, _emp_preview2, "pasted rows")
+    check(_emp_ins2 == 0 and _emp_upd2 == 1 and _emp_sk2 == 0 and
+          EMP.find_employee(db, employee_id="EMP-102")["designation"] == "Senior Surveyor",
+          "re-importing the same employee code updates the existing employee master row")
 
     # ======================================= Surveyor Tools Record — module
     section("Surveyor Tools Record — serials, pictures and summary sheet")
@@ -4270,20 +4290,34 @@ def main() -> int:
     _dlg_sv._fill_from_master("employee_id")
     check(_dlg_sv.e_issued_to.text() == "Ahmed Salem" and _dlg_sv.e_iqama.text() == "2456677889",
           "typing an employee code can fill the employee name and Iqama from the master list")
+    _sv_cols, _sv_sample = SV.template_rows()
+    check("Issued By" in _sv_cols and "Employee Code" in _sv_cols,
+          "the surveyor tools template includes issuer and employee identity columns")
+    _sv_head, _sv_rows = SV.sniff(
+        "Instrument Description\tSerial No.\tMake / Model\tLocation\tQuantity\tStatus\tIssued To / Employee Name\tEmployee Code\tIqama ID\tDesignation\tDivision/Department\tCurrent Project\tIssued By\tRemarks\n"
+        "Prism Pole\tPR-100\tSeco\tWarehouse\t1\tIn Use\tAhmed Salem\tEMP-100\t2456677889\tSurveyor\tSurvey\tHajar\tStore Officer\tImported from template\n")
+    _sv_map = SV.auto_map(_sv_head)
+    _sv_preview = SV.preview(_sv_head, _sv_rows, _sv_map)
+    _sv_ins, _sv_sk = SV.import_records(svp.sdb, _sv_preview, "pasted rows")
+    check(_sv_ins == 1 and _sv_sk == 0 and any(r.get("serial_no") == "PR-100" for r in SV.list_records(svp.sdb)),
+          "the surveyor tools module can import a filled template row")
+    _sv_ins2, _sv_sk2 = SV.import_records(svp.sdb, _sv_preview, "pasted rows")
+    check(_sv_ins2 == 0 and _sv_sk2 == 1,
+          "the surveyor tools import skips duplicate template rows")
     _dash_sv = SV.dashboard_data(svp.sdb)
-    check(_dash_sv["total_qty"] == 6 and _dash_sv["out_of_order_qty"] == 1,
+    check(_dash_sv["total_qty"] == 7 and _dash_sv["out_of_order_qty"] == 1,
           "the dashboard totals the tracked quantity and the out-of-order quantity")
-    check(any(k == "Warehouse" and v == 2 for k, v in _dash_sv["locations"]),
+    check(any(k == "Warehouse" and v == 3 for k, v in _dash_sv["locations"]),
           "the dashboard breaks the data down by location")
     win.go("Surveyor Tools Record")
     svp.refresh()
     app.processEvents()
-    check(svp.tabs.count() == 3, "the Surveyor Tools Record page has dashboard, register and summary tabs")
-    check(svp.register.table.rowCount() == 5, "the register tab lists the saved surveyor tool rows")
+    check(svp.tabs.count() == 4, "the Surveyor Tools Record page has dashboard, register, import and summary tabs")
+    check(svp.register.table.rowCount() == 6, "the register tab lists the saved and imported surveyor tool rows")
     check(any(r.get("issued_to") == "Ahmed Salem" and r.get("employee_code") == "EMP-100" for r in SV.list_records(svp.sdb)),
           "the surveyor tools register stores the employee issue details")
-    check(svp.summary.table.rowCount() == 4, "the summary tab collapses records into one row per instrument")
-    check(svp.dash.cards["qty"].lbl_value.text() == "6", "the dashboard card shows the total quantity")
+    check(svp.summary.table.rowCount() == 5, "the summary tab collapses records into one row per instrument")
+    check(svp.dash.cards["qty"].lbl_value.text() == "7", "the dashboard card shows the total quantity")
     check(svp.register.table.currentRow() >= 0 and svp.register.lbl_pic.pixmap() is not None,
           "selecting a register row shows its picture preview")
     check("Employee Code" in svp.register.table.headers() and "Iqama ID" in svp.register.table.headers(),

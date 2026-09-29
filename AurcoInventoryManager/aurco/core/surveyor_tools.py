@@ -15,12 +15,14 @@ Key behaviour
 """
 from __future__ import annotations
 
+import csv
 import datetime as _dt
+import io
 import re
 import shutil
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from . import config
 
@@ -44,6 +46,74 @@ ST_MISSING = "Missing"
 ST_DISPOSED = "Disposed"
 STATUSES = [ST_ACTIVE, ST_IN_USE, ST_OUT_OF_ORDER, ST_UNDER_REPAIR, ST_MISSING, ST_DISPOSED]
 ACTIVE_STATUSES = {ST_ACTIVE, ST_IN_USE, ST_OUT_OF_ORDER, ST_UNDER_REPAIR, ST_MISSING}
+
+FIELDS = [
+    ("instrument_desc", "Instrument Description"),
+    ("serial_no", "Serial No."),
+    ("make_model", "Make / Model"),
+    ("location", "Location"),
+    ("qty", "Quantity"),
+    ("status", "Status"),
+    ("issued_to", "Issued To / Employee Name"),
+    ("employee_code", "Employee Code"),
+    ("iqama_id", "Iqama ID"),
+    ("designation", "Designation"),
+    ("division", "Division/Department"),
+    ("current_project", "Current Project"),
+    ("issued_by", "Issued By"),
+    ("remarks", "Remarks"),
+    ("picture_path", "Picture Path"),
+]
+LABELS = dict(FIELDS)
+ALL_FIELDS = FIELDS
+
+HEADER_MAP = {
+    "instrumentdescription": "instrument_desc",
+    "description": "instrument_desc",
+    "instrument": "instrument_desc",
+    "tool": "instrument_desc",
+    "serialno": "serial_no",
+    "serialnumber": "serial_no",
+    "serial": "serial_no",
+    "makemodel": "make_model",
+    "make": "make_model",
+    "model": "make_model",
+    "location": "location",
+    "site": "location",
+    "projectlocation": "location",
+    "qty": "qty",
+    "quantity": "qty",
+    "status": "status",
+    "condition": "status",
+    "issuedtoemployeename": "issued_to",
+    "issuedto": "issued_to",
+    "employeename": "issued_to",
+    "employee": "issued_to",
+    "name": "issued_to",
+    "employeecode": "employee_code",
+    "employeeid": "employee_code",
+    "empid": "employee_code",
+    "empcode": "employee_code",
+    "code": "employee_code",
+    "iqamaid": "iqama_id",
+    "iqama": "iqama_id",
+    "designation": "designation",
+    "divisiondepartment": "division",
+    "division": "division",
+    "department": "division",
+    "currentproject": "current_project",
+    "project": "current_project",
+    "issuedby": "issued_by",
+    "issuer": "issued_by",
+    "issuername": "issued_by",
+    "remarks": "remarks",
+    "remark": "remarks",
+    "notes": "remarks",
+    "picture": "picture_path",
+    "picturepath": "picture_path",
+    "photopath": "picture_path",
+    "photo": "picture_path",
+}
 
 DDL = """
 PRAGMA journal_mode=WAL;
@@ -125,6 +195,31 @@ def to_float(v: Any) -> float:
         return float(re.sub(r"[^\d.\-]", "", t) or 0)
     except ValueError:
         return 0.0
+
+
+def norm_key(text: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
+
+
+def _status_from_text(text: Any) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    key = norm_key(raw)
+    mapping = {norm_key(v): v for v in STATUSES}
+    if key in mapping:
+        return mapping[key]
+    if "repair" in key:
+        return ST_UNDER_REPAIR
+    if "outoforder" in key or key in {"ooo", "damaged", "faulty"}:
+        return ST_OUT_OF_ORDER
+    if "missing" in key or "lost" in key:
+        return ST_MISSING
+    if "disposed" in key or "scrap" in key:
+        return ST_DISPOSED
+    if "use" in key or "issued" in key or "custody" in key:
+        return ST_IN_USE
+    return ST_ACTIVE
 
 
 class SurveyorDB:
@@ -431,6 +526,146 @@ def summary_rows(db: SurveyorDB, records: list[dict[str, Any]] | None = None) ->
             "remarks": " · ".join(remarks),
         })
     return out
+
+
+def sniff(text: str) -> tuple[list[str], list[list[str]]]:
+    raw = [ln for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n") if ln.strip()]
+    if not raw:
+        return [], []
+    if "\t" in raw[0]:
+        rows = [ln.split("\t") for ln in raw]
+    elif raw[0].count(",") >= 2:
+        rows = list(csv.reader(io.StringIO("\n".join(raw))))
+    elif raw[0].count("|") >= 2:
+        rows = [[c.strip() for c in ln.strip().strip("|").split("|")] for ln in raw]
+    else:
+        rows = [re.split(r"\s{2,}", ln.strip()) for ln in raw]
+    rows = [[str(c).strip() for c in r] for r in rows if any(str(c).strip() for c in r)]
+    if not rows:
+        return [], []
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    head = rows[0]
+    if sum(1 for c in head if norm_key(c) in HEADER_MAP) >= max(2, min(4, width)):
+        return head, rows[1:]
+    return [f"Column {i + 1}" for i in range(width)], rows
+
+
+def read_file(path: str | Path) -> tuple[list[str], list[list[Any]]]:
+    p = Path(path)
+    if p.suffix.lower() in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+        wb = load_workbook(p, data_only=True, read_only=True)
+        ws = wb.active
+        data = [[("" if c is None else c) for c in row] for row in ws.iter_rows(values_only=True)]
+        wb.close()
+        data = [r for r in data if any(str(c).strip() for c in r)]
+        if not data:
+            return [], []
+        head = [str(c).strip() for c in data[0]]
+        if sum(1 for c in head if norm_key(c) in HEADER_MAP) >= 2:
+            return head, data[1:]
+        return [f"Column {i + 1}" for i in range(len(head))], data
+    return sniff(p.read_text(encoding="utf-8", errors="ignore"))
+
+
+def auto_map(headers: Sequence[str]) -> dict[int, str]:
+    out: dict[int, str] = {}
+    used: set[str] = set()
+    for i, h in enumerate(headers):
+        field = HEADER_MAP.get(norm_key(h))
+        if field and field not in used:
+            out[i] = field
+            used.add(field)
+    return out
+
+
+def preview(headers: Sequence[str], rows: Sequence[Sequence[Any]],
+            mapping: dict[int, str], defaults: dict | None = None) -> list[dict[str, Any]]:
+    defaults = defaults or {}
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        rec = {f: "" for f, _ in ALL_FIELDS}
+        rec.update({k: v for k, v in defaults.items() if v not in (None, "")})
+        for i, field in mapping.items():
+            if i < len(row):
+                rec[field] = row[i]
+        rec["instrument_desc"] = str(rec.get("instrument_desc") or "").strip()
+        rec["serial_no"] = str(rec.get("serial_no") or "").strip()
+        rec["make_model"] = str(rec.get("make_model") or "").strip()
+        rec["location"] = str(rec.get("location") or "").strip() or LOC_WAREHOUSE
+        rec["qty"] = to_float(rec.get("qty") or 0)
+        if rec["qty"] <= 0 and rec["instrument_desc"]:
+            rec["qty"] = 1.0
+        rec["issued_to"] = str(rec.get("issued_to") or "").strip()
+        rec["employee_code"] = str(rec.get("employee_code") or "").strip()
+        rec["iqama_id"] = str(rec.get("iqama_id") or "").strip()
+        rec["designation"] = str(rec.get("designation") or "").strip()
+        rec["division"] = str(rec.get("division") or "").strip()
+        rec["current_project"] = str(rec.get("current_project") or "").strip()
+        rec["issued_by"] = str(rec.get("issued_by") or "").strip()
+        rec["remarks"] = str(rec.get("remarks") or "").strip()
+        rec["picture_path"] = str(rec.get("picture_path") or "").strip()
+        status_hint = rec.get("status")
+        if not status_hint and (rec["issued_to"] or rec["employee_code"] or rec["iqama_id"]):
+            status_hint = ST_IN_USE
+        rec["status"] = _status_from_text(status_hint or ST_ACTIVE)
+        if not rec["instrument_desc"]:
+            continue
+        if rec["qty"] <= 0:
+            continue
+        out.append(rec)
+    return out
+
+
+def _import_key(rec: dict | sqlite3.Row) -> tuple:
+    row = dict(rec)
+    serial = norm_key(row.get("serial_no"))
+    if serial:
+        return ("serial", serial)
+    return (
+        "row",
+        norm_key(row.get("instrument_desc")),
+        norm_key(row.get("make_model")),
+        norm_key(row.get("location")),
+        round(to_float(row.get("qty")), 3),
+        norm_key(row.get("status")),
+        norm_key(row.get("issued_to")),
+        norm_key(row.get("employee_code")),
+        norm_key(row.get("iqama_id")),
+    )
+
+
+def import_records(db: SurveyorDB, records: Sequence[dict[str, Any]], source: str = "",
+                   skip_duplicates: bool = True) -> tuple[int, int]:
+    existing: set[tuple] = set()
+    if skip_duplicates:
+        for row in db.query(
+                "SELECT instrument_desc, serial_no, make_model, location, qty, status, issued_to, employee_code, iqama_id FROM records"):
+            existing.add(_import_key(row))
+    inserted = skipped = 0
+    for rec in records:
+        key = _import_key(rec)
+        if skip_duplicates and key in existing:
+            skipped += 1
+            continue
+        try:
+            save_record(db, dict(rec))
+            existing.add(key)
+            inserted += 1
+        except Exception:
+            skipped += 1
+    db.audit("IMPORTED", "sheet", "", f"{inserted} inserted, {skipped} skipped from {source}")
+    return inserted, skipped
+
+
+def template_rows() -> tuple[list[str], list[list[Any]]]:
+    cols = [lbl for _, lbl in FIELDS]
+    return cols, [
+        ["Auto Level", "AL-100", "Leica", "Warehouse", 1, ST_ACTIVE, "", "", "", "", "", "", "Store Officer", "Ready stock", ""],
+        ["Total Station", "TS-205", "Trimble", "Hajar", 1, ST_IN_USE, "Ahmed Salem", "EMP-1001", "2456677889", "Surveyor", "Survey", "Hajar", "Store Officer", "Issued for field use", ""],
+        ["GPS", "GPS-310", "Garmin", "Yanbu", 1, ST_UNDER_REPAIR, "", "", "", "", "", "", "Store Officer", "Sent for repair", ""],
+    ]
 
 
 def dashboard_data(db: SurveyorDB, text: str = "", location: str = "", status: str = "") -> dict[str, Any]:

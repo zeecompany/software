@@ -1,8 +1,12 @@
 """Employee master list helpers for the whole AURCO system."""
 from __future__ import annotations
 
+import csv
 import datetime as _dt
-from typing import Any
+import io
+import re
+from pathlib import Path
+from typing import Any, Sequence
 
 from .database import Database
 
@@ -18,6 +22,42 @@ COLUMNS = [
     ("current_project", "Current Project"),
     ("location", "Location"),
 ]
+LABELS = dict(COLUMNS)
+ALL_FIELDS = COLUMNS
+
+HEADER_MAP = {
+    "employeeid": "employee_id",
+    "employeecode": "employee_id",
+    "empid": "employee_id",
+    "empcode": "employee_id",
+    "code": "employee_id",
+    "name": "name",
+    "employeename": "name",
+    "staffname": "name",
+    "designation": "designation",
+    "position": "designation",
+    "jobtitle": "designation",
+    "iqamaid": "iqama_id",
+    "iqama": "iqama_id",
+    "idnumber": "iqama_id",
+    "dateofjoining": "date_of_joining",
+    "joiningdate": "date_of_joining",
+    "doj": "date_of_joining",
+    "nationality": "nationality",
+    "country": "nationality",
+    "contractworkhours": "contract_workhours",
+    "workhours": "contract_workhours",
+    "hours": "contract_workhours",
+    "divisiondepartment": "division",
+    "division": "division",
+    "department": "division",
+    "dept": "division",
+    "currentproject": "current_project",
+    "project": "current_project",
+    "site": "current_project",
+    "location": "location",
+    "camp": "location",
+}
 
 _DATE_PATTERNS = (
     "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%d.%m.%Y",
@@ -28,6 +68,10 @@ _DATE_PATTERNS = (
 
 def _now() -> str:
     return _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def norm_key(text: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
 
 
 def to_date(v: Any) -> str:
@@ -48,6 +92,12 @@ def to_date(v: Any) -> str:
             return d.isoformat()
         except ValueError:
             continue
+    try:
+        n = float(t)
+        if 20000 < n < 60000:
+            return (_dt.date(1899, 12, 30) + _dt.timedelta(days=int(n))).isoformat()
+    except ValueError:
+        pass
     return t
 
 
@@ -178,3 +228,115 @@ def employee_ids(db: Database) -> list[str]:
 
 def iqama_ids(db: Database) -> list[str]:
     return [str(r[0]) for r in db.query("SELECT iqama_id FROM employees WHERE COALESCE(iqama_id,'')<>'' ORDER BY iqama_id")]
+
+
+def sniff(text: str) -> tuple[list[str], list[list[str]]]:
+    raw = [ln for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n") if ln.strip()]
+    if not raw:
+        return [], []
+    if "\t" in raw[0]:
+        rows = [ln.split("\t") for ln in raw]
+    elif raw[0].count(",") >= 2:
+        rows = list(csv.reader(io.StringIO("\n".join(raw))))
+    elif raw[0].count("|") >= 2:
+        rows = [[c.strip() for c in ln.strip().strip("|").split("|")] for ln in raw]
+    else:
+        rows = [re.split(r"\s{2,}", ln.strip()) for ln in raw]
+    rows = [[str(c).strip() for c in r] for r in rows if any(str(c).strip() for c in r)]
+    if not rows:
+        return [], []
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    head = rows[0]
+    if sum(1 for c in head if norm_key(c) in HEADER_MAP) >= max(2, min(4, width)):
+        return head, rows[1:]
+    return [f"Column {i + 1}" for i in range(width)], rows
+
+
+def read_file(path: str | Path) -> tuple[list[str], list[list[Any]]]:
+    p = Path(path)
+    if p.suffix.lower() in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+        wb = load_workbook(p, data_only=True, read_only=True)
+        ws = wb.active
+        data = [[("" if c is None else c) for c in row] for row in ws.iter_rows(values_only=True)]
+        wb.close()
+        data = [r for r in data if any(str(c).strip() for c in r)]
+        if not data:
+            return [], []
+        head = [str(c).strip() for c in data[0]]
+        if sum(1 for c in head if norm_key(c) in HEADER_MAP) >= 2:
+            return head, data[1:]
+        return [f"Column {i + 1}" for i in range(len(head))], data
+    return sniff(p.read_text(encoding="utf-8", errors="ignore"))
+
+
+def auto_map(headers: Sequence[str]) -> dict[int, str]:
+    out: dict[int, str] = {}
+    used: set[str] = set()
+    for i, h in enumerate(headers):
+        f = HEADER_MAP.get(norm_key(h))
+        if f and f not in used:
+            out[i] = f
+            used.add(f)
+    return out
+
+
+def preview(headers: Sequence[str], rows: Sequence[Sequence[Any]],
+            mapping: dict[int, str], defaults: dict | None = None) -> list[dict[str, Any]]:
+    defaults = defaults or {}
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        rec = {f: "" for f, _ in ALL_FIELDS}
+        rec.update({k: v for k, v in defaults.items() if v not in (None, "")})
+        for i, field in mapping.items():
+            if i < len(row):
+                rec[field] = row[i]
+        rec["employee_id"] = str(rec.get("employee_id") or "").strip()
+        rec["name"] = str(rec.get("name") or "").strip()
+        rec["designation"] = str(rec.get("designation") or "").strip()
+        rec["iqama_id"] = str(rec.get("iqama_id") or "").strip()
+        rec["date_of_joining"] = to_date(rec.get("date_of_joining") or "")
+        rec["nationality"] = str(rec.get("nationality") or "").strip()
+        rec["contract_workhours"] = str(rec.get("contract_workhours") or "").strip()
+        rec["division"] = str(rec.get("division") or "").strip()
+        rec["current_project"] = str(rec.get("current_project") or "").strip()
+        rec["location"] = str(rec.get("location") or "").strip()
+        if not rec["employee_id"] or not rec["name"]:
+            continue
+        out.append(rec)
+    return out
+
+
+def template_rows() -> tuple[list[str], list[list[Any]]]:
+    cols = [lbl for _, lbl in COLUMNS]
+    return cols, [
+        ["EMP-1001", "Ahmed Salem", "Surveyor", "2456677889", "2024-01-15", "Indian", "10", "Survey", "Hajar", "Dammam"],
+        ["EMP-1002", "Bilal Khan", "Chief Surveyor", "2456677890", "2023-10-01", "Pakistani", "9", "Survey", "Zuluf", "Jubail"],
+        ["EMP-1003", "Rashid Ali", "Storekeeper", "2456677891", "2022-07-11", "Bangladeshi", "8", "Stores", "Warehouse", "Dammam"],
+    ]
+
+
+def import_employees(db: Database, records: Sequence[dict[str, Any]], source: str = "") -> tuple[int, int, int]:
+    inserted = updated = skipped = 0
+    for rec in records:
+        row_id = None
+        if str(rec.get("employee_id") or "").strip():
+            found = db.one("SELECT id FROM employees WHERE employee_id=?", (str(rec.get("employee_id") or "").strip(),))
+            if found is not None:
+                row_id = int(found[0])
+        if row_id is None and str(rec.get("iqama_id") or "").strip():
+            found = db.one("SELECT id FROM employees WHERE iqama_id=?", (str(rec.get("iqama_id") or "").strip(),))
+            if found is not None:
+                row_id = int(found[0])
+        try:
+            if row_id is None:
+                save_employee(db, dict(rec))
+                inserted += 1
+            else:
+                save_employee(db, dict(rec), row_id)
+                updated += 1
+        except Exception:
+            skipped += 1
+    db.audit("IMPORTED", "employees", "", f"{inserted} inserted, {updated} updated, {skipped} skipped from {source}")
+    return inserted, updated, skipped

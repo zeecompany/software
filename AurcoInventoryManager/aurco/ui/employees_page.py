@@ -1,9 +1,12 @@
 """Employee master list for the whole system."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QGridLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
+                               QVBoxLayout, QWidget)
 
 from ..core import documents as D
 from ..core import employees as EMP
@@ -61,6 +64,115 @@ class EmployeeDialog(QDialog):
         }
 
 
+class EmployeeImportDialog(QDialog):
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.did_import = False
+        self.setWindowTitle("Employee Master — Import from Excel / CSV")
+        self.resize(900, 700)
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+
+        card = W.Card("Import employees through the template")
+        cols, sample = EMP.template_rows()
+        t = W.DataTable()
+        t.fill(cols, sample)
+        t.setMaximumHeight(140)
+        card.add(t)
+        note = QLabel(
+            "Download the template, fill it in Excel, then import the file here. "
+            "AURCO also recognises common headings automatically, so your existing "
+            "employee sheet can be loaded if it contains Employee ID, Name, Iqama ID, "
+            "designation, date of joining, nationality, work hours, division, project and location."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{W.MUTED};")
+        card.add(note)
+        row = QHBoxLayout()
+        row.addWidget(W.button("📂  Load Excel / CSV...", "Primary", self._file))
+        row.addWidget(W.button("⬇  Download Template", slot=self._template))
+        row.addStretch(1)
+        h = QWidget(); h.setLayout(row)
+        card.add(h)
+        v.addWidget(card)
+
+        pc = W.Card("Paste rows from Excel")
+        self.paste = QPlainTextEdit()
+        self.paste.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.paste.setMinimumHeight(220)
+        self.paste.setPlaceholderText(
+            "Employee ID\tName\tDesignation\tIqama ID\tDate of Joining\tNationality\tContract WorkHours\tDivision/Department\tCurrent Project\tLocation"
+        )
+        pc.add(self.paste, 1)
+        r2 = QHBoxLayout()
+        r2.addWidget(W.button("✔  Read && Import", "Primary", self._paste_import))
+        r2.addWidget(W.button("🧹  Clear", slot=self.paste.clear))
+        r2.addStretch(1)
+        h2 = QWidget(); h2.setLayout(r2)
+        pc.add(h2)
+        v.addWidget(pc, 1)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(self.reject)
+        bb.button(QDialogButtonBox.Close).clicked.connect(self.reject)
+        v.addWidget(bb)
+
+    def _template(self):
+        cols, sample = EMP.template_rows()
+        f = D.export_excel(self.db, "Employee Master Template", cols, sample,
+                           Path(D.config.folder("Exports")) / "Employee_Master_Template.xlsx",
+                           totals=False)
+        W.toast(self, f"Template saved: {f.name}")
+        D.open_path(f)
+
+    def _file(self):
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Select the employee sheet", "",
+            "Spreadsheets and text (*.xlsx *.xlsm *.csv *.txt);;All files (*)")
+        if not f:
+            return
+        try:
+            headers, rows = EMP.read_file(f)
+        except Exception as exc:  # noqa: BLE001
+            W.error_box(self, f"Could not read that file.\n\n{exc}")
+            return
+        self._run(headers, rows, f)
+
+    def _paste_import(self):
+        txt = self.paste.toPlainText()
+        if not txt.strip():
+            W.error_box(self, "Paste the rows into the box first.")
+            return
+        headers, rows = EMP.sniff(txt)
+        self._run(headers, rows, "pasted rows")
+
+    def _run(self, headers, rows, source):
+        if not rows:
+            W.error_box(self, "No data rows were found.")
+            return
+        mapping = EMP.auto_map(headers)
+        if not mapping:
+            W.error_box(self, "None of the columns were recognised.\n\nMake sure the heading row is included.")
+            return
+        recs = EMP.preview(headers, rows, mapping)
+        if not recs:
+            W.error_box(self, "No usable employee rows were found.")
+            return
+        known = ", ".join(sorted({EMP.LABELS.get(f, f) for f in mapping.values()}))
+        if not W.confirm(self, f"{len(recs)} employee row(s) ready to import from {Path(str(source)).name}.\n\n"
+                               f"Recognised columns:\n{known}\n\nImport now?"):
+            return
+        ins, upd, sk = EMP.import_employees(self.db, recs, str(source))
+        self.paste.clear()
+        self.did_import = True
+        W.info_box(self, f"{ins} employee(s) inserted.\n{upd} employee(s) updated."
+                         + (f"\n{sk} row(s) skipped." if sk else "")
+                         + "\n\nYou can edit any imported employee later from the Employee Master page.",
+                   "Import complete")
+        self.accept()
+
+
 class EmployeesPage(QWidget):
     dataChanged = Signal()
 
@@ -94,10 +206,12 @@ class EmployeesPage(QWidget):
                 ("Add", self.add_employee),
                 ("Edit", self.edit_employee),
                 ("Delete", self.delete_employee),
+                ("Import", self.import_employees),
+                ("Template", self.download_template),
                 ("Export", self.export_excel),
                 ("Reset", self.reset_filters),
         ), start=6):
-            gl.addWidget(W.button(txt, "Accent" if txt == "Add" else "", slot=slot), 0, i)
+            gl.addWidget(W.button(txt, "Accent" if txt in {"Add", "Import"} else "", slot=slot), 0, i)
         v.addWidget(bar)
 
         self.table = W.DataTable(["ID", "Employee ID", "Name", "Designation", "Iqama ID",
@@ -204,6 +318,22 @@ class EmployeesPage(QWidget):
         self.reload()
         self.dataChanged.emit()
         W.toast(self, "Employee deleted.")
+
+    def download_template(self):
+        cols, sample = EMP.template_rows()
+        f = D.export_excel(self.db, "Employee Master Template", cols, sample,
+                           Path(D.config.folder("Exports")) / "Employee_Master_Template.xlsx",
+                           totals=False)
+        W.toast(self, f"Template saved: {f.name}")
+        D.open_path(f)
+
+    def import_employees(self):
+        dlg = EmployeeImportDialog(self.db, self)
+        dlg.exec()
+        if dlg.did_import:
+            self.reload()
+            self.dataChanged.emit()
+            W.toast(self, "Employee sheet imported.")
 
     def export_excel(self):
         f = D.export_excel(

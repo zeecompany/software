@@ -533,6 +533,110 @@ class RegisterTab(QWidget):
         D.open_path(f)
 
 
+class SurveyorImportTab(QWidget):
+    imported = Signal()
+
+    def __init__(self, sdb: SV.SurveyorDB, db: Database, parent=None):
+        super().__init__(parent)
+        self.sdb = sdb
+        self.db = db
+        v = QVBoxLayout(self)
+        v.setContentsMargins(4, 6, 4, 6)
+        v.setSpacing(10)
+
+        card = W.Card("Import surveyor tools from Excel / CSV")
+        cols, sample = SV.template_rows()
+        t = W.DataTable()
+        t.fill(cols, sample)
+        t.setMaximumHeight(135)
+        card.add(t)
+        note = QLabel(
+            "Download the template, fill the surveyor tools rows in Excel, then import the file here. "
+            "AURCO also recognises common headings automatically — including Instrument Description, "
+            "Serial No., Make / Model, Location, Quantity, Status, Issued To, Employee Code, Iqama ID, "
+            "Issued By, Remarks and Picture Path."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{W.MUTED};")
+        card.add(note)
+        row = QHBoxLayout()
+        row.addWidget(W.button("📂  Load Excel / CSV...", "Primary", self._file))
+        row.addWidget(W.button("⬇  Download Template", slot=self._template))
+        row.addStretch(1)
+        h = QWidget(); h.setLayout(row)
+        card.add(h)
+        v.addWidget(card)
+
+        pc = W.Card("Paste rows from Excel")
+        self.paste = QPlainTextEdit()
+        self.paste.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.paste.setMinimumHeight(200)
+        self.paste.setPlaceholderText(
+            "Instrument Description	Serial No.	Make / Model	Location	Quantity	Status	Issued To / Employee Name	Employee Code	Iqama ID	Designation	Division/Department	Current Project	Issued By	Remarks	Picture Path"
+        )
+        pc.add(self.paste, 1)
+        r2 = QHBoxLayout()
+        r2.addWidget(W.button("✔  Read && Import", "Primary", self._paste_import))
+        r2.addWidget(W.button("🧹  Clear", slot=self.paste.clear))
+        r2.addStretch(1)
+        h2 = QWidget(); h2.setLayout(r2)
+        pc.add(h2)
+        v.addWidget(pc, 1)
+
+    def _template(self):
+        cols, sample = SV.template_rows()
+        f = D.export_excel(self.db, "Surveyor Tools Template", cols, sample,
+                           Path(D.config.folder(SV.FOLDER)) / "Surveyor_Tools_Template.xlsx",
+                           totals=False)
+        W.toast(self, f"Template saved: {f.name}")
+        D.open_path(f)
+
+    def _file(self):
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Select the surveyor tools sheet", "",
+            "Spreadsheets and text (*.xlsx *.xlsm *.csv *.txt);;All files (*)")
+        if not f:
+            return
+        try:
+            headers, rows = SV.read_file(f)
+        except Exception as exc:  # noqa: BLE001
+            W.error_box(self, f"Could not read that file.\n\n{exc}")
+            return
+        self._run(headers, rows, f)
+
+    def _paste_import(self):
+        txt = self.paste.toPlainText()
+        if not txt.strip():
+            W.error_box(self, "Paste the rows into the box first.")
+            return
+        headers, rows = SV.sniff(txt)
+        self._run(headers, rows, "pasted rows")
+
+    def _run(self, headers, rows, source):
+        if not rows:
+            W.error_box(self, "No data rows were found.")
+            return
+        mapping = SV.auto_map(headers)
+        if not mapping:
+            W.error_box(self, "None of the columns were recognised.\n\nMake sure the heading row is included.")
+            return
+        recs = SV.preview(headers, rows, mapping)
+        if not recs:
+            W.error_box(self, "No usable surveyor tool rows were found.")
+            return
+        known = ", ".join(sorted({SV.LABELS.get(f, f) for f in mapping.values()}))
+        if not W.confirm(self, f"{len(recs)} row(s) ready to import from {Path(str(source)).name}.\n\n"
+                               f"Recognised columns:\n{known}\n\nImport now?"):
+            return
+        ins, sk = SV.import_records(self.sdb, recs, str(source))
+        self.paste.clear()
+        self.imported.emit()
+        W.info_box(self, f"{ins} surveyor tool record(s) imported."
+                         + (f"\n{sk} row(s) skipped because they were duplicate or invalid." if sk else "")
+                         + "\n\nYou can edit any imported row later from the Register tab.",
+                   "Import complete")
+
+
 class SummaryTab(QWidget):
     def __init__(self, sdb: SV.SurveyorDB, parent=None):
         super().__init__(parent)
@@ -604,13 +708,16 @@ class SurveyorToolsPage(QWidget):
         self.tabs.setDocumentMode(True)
         self.dash = DashboardTab(self.sdb)
         self.register = RegisterTab(self.sdb, db)
+        self.importer = SurveyorImportTab(self.sdb, db)
         self.summary = SummaryTab(self.sdb)
         self.tabs.addTab(self.dash, "📊 Dashboard")
         self.tabs.addTab(self.register, "📋 Register")
+        self.tabs.addTab(self.importer, "⬆ Import Sheet")
         self.tabs.addTab(self.summary, "🧾 Summary Sheet")
         v.addWidget(self.tabs, 1)
 
         self.register.dataChanged.connect(self._after_register_change)
+        self.importer.imported.connect(self._after_register_change)
         self.refresh()
 
     def backup(self):
