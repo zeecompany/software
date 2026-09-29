@@ -32,6 +32,7 @@ from .surveyor_tools_page import SurveyorToolsPage
 from .general_dn import GeneralDNPage
 from .issuance_page import IssuancePage
 from .employee_ppe_page import EmployeePPEPage
+from .employees_page import EmployeesPage
 from .library_page import LibraryPage
 from .documents_page import AuditPage, DocumentsPage, HistoryPage, SearchPage
 from .items import ItemsPage
@@ -76,6 +77,7 @@ NAV = [
     ("General DN Maker", "🧾", "Ctrl+G"),
     ("Company Issuance", "🏢", "Ctrl+Shift+O"),
     ("Employee PPE Register", "🦺", "Ctrl+Shift+E"),
+    ("Employee Master", "👥", "Ctrl+Shift+M"),
     ("SYSTEM", None, None),
     ("Settings", "⚙", "Ctrl+,"),
     ("Calculator", "🧮", "Ctrl+Alt+C"),
@@ -298,6 +300,7 @@ class MainWindow(QMainWindow):
         self.page_gdn = GeneralDNPage(db)
         self.page_issuance = IssuancePage(db)
         self.page_ppe = EmployeePPEPage(db)
+        self.page_employees = EmployeesPage(db)
         self.page_library = LibraryPage(db)
         self.page_settings = SettingsPage(db, self.session)
         for name, page in (("Dashboard", self.page_dashboard), ("Global Search", self.page_search),
@@ -318,6 +321,7 @@ class MainWindow(QMainWindow):
                            ("General DN Maker", self.page_gdn),
                            ("Company Issuance", self.page_issuance),
                            ("Employee PPE Register", self.page_ppe),
+                           ("Employee Master", self.page_employees),
                            ("Settings", self.page_settings)):
             self.pages[name] = page
             self.stack.addWidget(page)
@@ -333,6 +337,7 @@ class MainWindow(QMainWindow):
         self.page_material.dataChanged.connect(self.refresh_all)
         self.page_workspace.dataChanged.connect(self.refresh_all)
         self.page_ppe.dataChanged.connect(self.refresh_all)
+        self.page_employees.dataChanged.connect(self.refresh_all)
         self.page_survey.dataChanged.connect(self.refresh_all)
         self.page_bulk.requestDN.connect(self._bulk_to_dn)
         self.page_docs.editDraft.connect(self._edit_draft)
@@ -447,6 +452,7 @@ class MainWindow(QMainWindow):
                                 "of issue and return",
             "Employee PPE Register": "Shoes, blankets, FRCs and coveralls issued to employees, "
                                      "with employee-code tracking and Delivery Note sync",
+            "Employee Master": "Central employee list with employee ID, Iqama, designation, department, project and location",
             "Settings": "Company, storage, alerts, numbering, users and backup",
         }
         self.title.setText(name)
@@ -514,6 +520,7 @@ class MainWindow(QMainWindow):
             self.page_docs.reload()
             self.page_audit.reload()
             self.page_ppe.refresh_all()
+            self.page_employees.reload()
             self.page_survey.refresh()
             d = S.dashboard_data(self.db)
             cur = self.db.get_setting("currency", "")

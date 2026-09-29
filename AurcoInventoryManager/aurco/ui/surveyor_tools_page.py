@@ -5,12 +5,13 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+from PySide6.QtWidgets import (QCompleter, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QPlainTextEdit, QSplitter, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from ..core import documents as D
+from ..core import employees as EMP
 from ..core import surveyor_tools as SV
 from ..core.database import Database
 from . import widgets as W
@@ -49,15 +50,16 @@ def _set_preview(label: QLabel, path: str) -> None:
 
 
 class RecordDialog(QDialog):
-    def __init__(self, record: dict | None = None, parent=None):
+    def __init__(self, main_db: Database, record: dict | None = None, parent=None):
         super().__init__(parent)
+        self.main_db = main_db
         self.record = dict(record or {})
+        self._filling_employee = False
         self.setWindowTitle("Surveyor Tools Record — " + ("Edit Record" if record else "New Record"))
-        self.resize(760, 460)
+        self.resize(860, 560)
         v = QVBoxLayout(self)
 
-        note = QLabel("Enter the survey instrument / tool details here. The picture is optional and will be "
-                      "copied into the module folder automatically.")
+        note = QLabel("Enter the survey instrument / tool details here. When a tool is issued, record the employee name together with the employee code or Iqama ID. If that employee already exists in the Employee Master, the details fill automatically.")
         note.setWordWrap(True)
         v.addWidget(note)
 
@@ -77,24 +79,44 @@ class RecordDialog(QDialog):
         self.e_qty.setRange(0.01, 999999)
         self.e_qty.setValue(float(self.record.get("qty") or 1))
         self.e_status = W.combo(SV.STATUSES, current=self.record.get("status", SV.ST_ACTIVE))
+        self.e_issued_to = QLineEdit(self.record.get("issued_to", ""))
+        self.e_employee_code = QLineEdit(self.record.get("employee_code", ""))
+        self.e_iqama = QLineEdit(self.record.get("iqama_id", ""))
+        self.e_designation = QLineEdit(self.record.get("designation", ""))
+        self.e_division = QLineEdit(self.record.get("division", ""))
+        self.e_project = QLineEdit(self.record.get("current_project", ""))
+        self.e_issued_by = QLineEdit(self.record.get("issued_by", "") or getattr(self.main_db, "current_user", ""))
         self.e_remarks = QPlainTextEdit(self.record.get("remarks", ""))
         self.e_remarks.setMaximumHeight(120)
         self.e_picture = QLineEdit(self.record.get("picture_path", ""))
         self.e_picture.setPlaceholderText("Optional photo path")
+        self._bind_employee_completers()
+        self.e_issued_to.editingFinished.connect(lambda: self._fill_from_master("name"))
+        self.e_employee_code.editingFinished.connect(lambda: self._fill_from_master("employee_id"))
+        self.e_iqama.editingFinished.connect(lambda: self._fill_from_master("iqama_id"))
+
         pic_row = QHBoxLayout()
         pic_row.addWidget(self.e_picture, 1)
         pic_row.addWidget(W.button("Browse...", slot=self._pick_picture))
         pic_holder = QWidget()
         pic_holder.setLayout(pic_row)
 
-        form.addRow("Instrument Description", self.e_desc)
-        form.addRow("Serial No.", self.e_serial)
-        form.addRow("Make / Model", self.e_make)
-        form.addRow("Location", self.e_location)
-        form.addRow("Quantity", self.e_qty)
-        form.addRow("Status", self.e_status)
-        form.addRow("Remarks", self.e_remarks)
-        form.addRow("Picture", pic_holder)
+        for lbl, wd in (("Instrument Description", self.e_desc),
+                        ("Serial No.", self.e_serial),
+                        ("Make / Model", self.e_make),
+                        ("Location", self.e_location),
+                        ("Quantity", self.e_qty),
+                        ("Status", self.e_status),
+                        ("Issued To / Employee Name", self.e_issued_to),
+                        ("Employee Code", self.e_employee_code),
+                        ("Iqama ID", self.e_iqama),
+                        ("Designation", self.e_designation),
+                        ("Division/Department", self.e_division),
+                        ("Current Project", self.e_project),
+                        ("Issued By", self.e_issued_by),
+                        ("Remarks", self.e_remarks),
+                        ("Picture", pic_holder)):
+            form.addRow(lbl, wd)
         body.addWidget(form_host, 2)
 
         side = W.Card("Picture preview")
@@ -102,8 +124,7 @@ class RecordDialog(QDialog):
         self.preview.setMinimumSize(260, 260)
         self.preview.resize(260, 260)
         side.add(self.preview, 1)
-        side.add(QLabel("Tip: use one row per serial number when possible. For items without serials, "
-                        "you can keep Serial No. blank and use Quantity."))
+        side.add(QLabel("Tip: keep one row per serial number where possible. Use the Employee Master page to maintain employee ID, Iqama ID, designation, department and project details for quick issue entry."))
         body.addWidget(side, 1)
         self._refresh_preview()
 
@@ -112,6 +133,35 @@ class RecordDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         v.addWidget(bb)
+
+    def _bind_employee_completers(self):
+        for widget, items in ((self.e_issued_to, EMP.employee_names(self.main_db)),
+                              (self.e_employee_code, EMP.employee_ids(self.main_db)),
+                              (self.e_iqama, EMP.iqama_ids(self.main_db))):
+            comp = QCompleter(items, self)
+            comp.setCaseSensitivity(Qt.CaseInsensitive)
+            comp.setFilterMode(Qt.MatchContains)
+            widget.setCompleter(comp)
+
+    def _fill_from_master(self, mode: str):
+        if self._filling_employee:
+            return
+        kwargs = {
+            "employee_id": self.e_employee_code.text().strip() if mode == "employee_id" else "",
+            "iqama_id": self.e_iqama.text().strip() if mode == "iqama_id" else "",
+            "name": self.e_issued_to.text().strip() if mode == "name" else "",
+        }
+        emp = EMP.find_employee(self.main_db, **kwargs)
+        if not emp:
+            return
+        self._filling_employee = True
+        self.e_issued_to.setText(emp.get("name", ""))
+        self.e_employee_code.setText(emp.get("employee_id", ""))
+        self.e_iqama.setText(emp.get("iqama_id", ""))
+        self.e_designation.setText(emp.get("designation", ""))
+        self.e_division.setText(emp.get("division", ""))
+        self.e_project.setText(emp.get("current_project", ""))
+        self._filling_employee = False
 
     def _pick_picture(self):
         f, _ = QFileDialog.getOpenFileName(
@@ -136,6 +186,13 @@ class RecordDialog(QDialog):
             "location": self.e_location.currentText().strip(),
             "qty": float(self.e_qty.value()),
             "status": self.e_status.currentText().strip(),
+            "issued_to": self.e_issued_to.text().strip(),
+            "employee_code": self.e_employee_code.text().strip(),
+            "iqama_id": self.e_iqama.text().strip(),
+            "designation": self.e_designation.text().strip(),
+            "division": self.e_division.text().strip(),
+            "current_project": self.e_project.text().strip(),
+            "issued_by": self.e_issued_by.text().strip(),
             "remarks": self.e_remarks.toPlainText().strip(),
             "picture_path": self.e_picture.text().strip(),
         }
@@ -153,7 +210,7 @@ class DashboardTab(QWidget):
         self.bar.setObjectName("Card")
         fl = QGridLayout(self.bar)
         fl.setContentsMargins(10, 8, 10, 8)
-        self.f_text = W.SearchBox("Filter the dashboard — description, serial, location, remarks ...")
+        self.f_text = W.SearchBox("Filter the dashboard — description, serial, employee, Iqama, location, remarks ...")
         self.f_loc = W.combo(["All Locations"] + SV.DEFAULT_LOCATIONS, editable=True)
         self.f_status = W.combo(["All Status"] + SV.STATUSES)
         for w in (self.f_text, self.f_loc, self.f_status):
@@ -239,9 +296,10 @@ class DashboardTab(QWidget):
 class RegisterTab(QWidget):
     dataChanged = Signal()
 
-    def __init__(self, sdb: SV.SurveyorDB, parent=None):
+    def __init__(self, sdb: SV.SurveyorDB, main_db: Database, parent=None):
         super().__init__(parent)
         self.sdb = sdb
+        self.main_db = main_db
         self.records: list[dict] = []
 
         v = QVBoxLayout(self)
@@ -250,7 +308,7 @@ class RegisterTab(QWidget):
         bar.setObjectName("Card")
         bl = QGridLayout(bar)
         bl.setContentsMargins(10, 8, 10, 8)
-        self.f_text = W.SearchBox("Search description, serial no., location, make/model, remarks ...")
+        self.f_text = W.SearchBox("Search description, serial no., employee code, Iqama, location, make/model, remarks ...")
         self.f_desc = W.combo(["All Instruments"], editable=False)
         self.f_loc = W.combo(["All Locations"] + SV.DEFAULT_LOCATIONS, editable=True)
         self.f_status = W.combo(["All Status"] + SV.STATUSES)
@@ -282,7 +340,8 @@ class RegisterTab(QWidget):
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
         self.table = W.DataTable(["ID", "Instrument Description", "Serial No.", "Make / Model",
-                                  "Location", "Status", "Qty", "Picture", "Remarks", "Updated"])
+                                  "Location", "Issued To", "Employee Code", "Iqama ID",
+                                  "Status", "Qty", "Issued By", "Picture", "Remarks", "Updated"])
         self.table.itemSelectionChanged.connect(self._show_current)
         lv.addWidget(self.table, 1)
         split.addWidget(left)
@@ -337,10 +396,12 @@ class RegisterTab(QWidget):
         self.records = SV.list_records(self.sdb, **self._filters())
         self.table.fill(
             ["ID", "Instrument Description", "Serial No.", "Make / Model",
-             "Location", "Status", "Qty", "Picture", "Remarks", "Updated"],
+             "Location", "Issued To", "Employee Code", "Iqama ID",
+             "Status", "Qty", "Issued By", "Picture", "Remarks", "Updated"],
             [[r["id"], r.get("instrument_desc", ""), r.get("serial_no", ""), r.get("make_model", ""),
-              r.get("location", ""), r.get("status", ""), float(r.get("qty") or 0),
-              ("Yes" if r.get("picture_path") else ""), r.get("remarks", ""),
+              r.get("location", ""), r.get("issued_to", ""), r.get("employee_code", ""),
+              r.get("iqama_id", ""), r.get("status", ""), float(r.get("qty") or 0),
+              r.get("issued_by", ""), ("Yes" if r.get("picture_path") else ""), r.get("remarks", ""),
               r.get("updated_at", "") or r.get("created_at", "")]
              for r in self.records],
         )
@@ -373,18 +434,32 @@ class RegisterTab(QWidget):
             "<b>Serial No.:</b> {1}<br>"
             "<b>Make / Model:</b> {2}<br>"
             "<b>Location:</b> {3}<br>"
-            "<b>Status:</b> {4}<br>"
-            "<b>Quantity:</b> {5}<br>"
-            "<b>Remarks:</b> {6}<br>"
-            "<b>Picture:</b> {7}<br>"
-            "<b>Updated:</b> {8}"
+            "<b>Issued To:</b> {4}<br>"
+            "<b>Employee Code:</b> {5}<br>"
+            "<b>Iqama ID:</b> {6}<br>"
+            "<b>Designation:</b> {7}<br>"
+            "<b>Division/Department:</b> {8}<br>"
+            "<b>Current Project:</b> {9}<br>"
+            "<b>Status:</b> {10}<br>"
+            "<b>Quantity:</b> {11}<br>"
+            "<b>Issued By:</b> {12}<br>"
+            "<b>Remarks:</b> {13}<br>"
+            "<b>Picture:</b> {14}<br>"
+            "<b>Updated:</b> {15}"
             .format(
                 rec.get("instrument_desc", "") or "—",
                 rec.get("serial_no", "") or "—",
                 rec.get("make_model", "") or "—",
                 rec.get("location", "") or "—",
+                rec.get("issued_to", "") or "—",
+                rec.get("employee_code", "") or "—",
+                rec.get("iqama_id", "") or "—",
+                rec.get("designation", "") or "—",
+                rec.get("division", "") or "—",
+                rec.get("current_project", "") or "—",
                 rec.get("status", "") or "—",
                 _fmt_qty(rec.get("qty", 0)),
+                rec.get("issued_by", "") or "—",
                 rec.get("remarks", "") or "—",
                 rec.get("picture_path", "") or "—",
                 rec.get("updated_at", "") or rec.get("created_at", "") or "—",
@@ -392,7 +467,7 @@ class RegisterTab(QWidget):
         )
 
     def add_record(self):
-        dlg = RecordDialog(parent=self)
+        dlg = RecordDialog(self.main_db, parent=self)
         if dlg.exec() != QDialog.Accepted:
             return
         try:
@@ -408,7 +483,7 @@ class RegisterTab(QWidget):
         rec = self._current()
         if not rec:
             return
-        dlg = RecordDialog(rec, self)
+        dlg = RecordDialog(self.main_db, rec, self)
         if dlg.exec() != QDialog.Accepted:
             return
         try:
@@ -446,10 +521,11 @@ class RegisterTab(QWidget):
         f = D.export_excel(
             self.sdb,
             "Surveyor Tools Register",
-            ["Instrument Description", "Serial No.", "Make / Model", "Location", "Status", "Qty", "Picture", "Remarks", "Updated"],
+            ["Instrument Description", "Serial No.", "Make / Model", "Location", "Issued To", "Employee Code", "Iqama ID", "Designation", "Division/Department", "Current Project", "Status", "Qty", "Issued By", "Picture", "Remarks", "Updated"],
             [[r.get("instrument_desc", ""), r.get("serial_no", ""), r.get("make_model", ""),
-              r.get("location", ""), r.get("status", ""), float(r.get("qty") or 0),
-              r.get("picture_path", ""), r.get("remarks", ""),
+              r.get("location", ""), r.get("issued_to", ""), r.get("employee_code", ""), r.get("iqama_id", ""),
+              r.get("designation", ""), r.get("division", ""), r.get("current_project", ""), r.get("status", ""), float(r.get("qty") or 0),
+              r.get("issued_by", ""), r.get("picture_path", ""), r.get("remarks", ""),
               r.get("updated_at", "") or r.get("created_at", "")]
              for r in self.records],
         )
@@ -527,7 +603,7 @@ class SurveyorToolsPage(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.dash = DashboardTab(self.sdb)
-        self.register = RegisterTab(self.sdb)
+        self.register = RegisterTab(self.sdb, db)
         self.summary = SummaryTab(self.sdb)
         self.tabs.addTab(self.dash, "📊 Dashboard")
         self.tabs.addTab(self.register, "📋 Register")

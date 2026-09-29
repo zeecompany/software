@@ -1,0 +1,21 @@
+AURCO Inventory Manager 2.28.5
+Package: software v 29.zip
+Compared against: software v 28.zip
+
+Modified files (9):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/database.py
+- AurcoInventoryManager/aurco/core/surveyor_tools.py
+- AurcoInventoryManager/aurco/ui/main_window.py
+- AurcoInventoryManager/aurco/ui/surveyor_tools_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+
+New files (3):
+- AurcoInventoryManager/aurco/core/employees.py
+- AurcoInventoryManager/aurco/ui/employees_page.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.5.txt
+
+Removed files (0):

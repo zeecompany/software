@@ -63,7 +63,8 @@ def main() -> int:
     import aurco.ui.documents_page as _d, aurco.ui.bulk_check as _b
     import aurco.ui.material_page as _m, aurco.ui.signature_ui as _s
     import aurco.ui.employee_ppe_page as _ep, aurco.ui.surveyor_tools_page as _sv
-    for mod in (_c, _t, _i, _d, _b, _m, _s, _ep, _sv):
+    import aurco.ui.employees_page as _emps
+    for mod in (_c, _t, _i, _d, _b, _m, _s, _ep, _sv, _emps):
         mod.W.confirm, mod.W.info_box = W.confirm, W.info_box
         mod.W.error_box, mod.W.toast = W.error_box, W.toast
     from aurco.core import documents as D
@@ -72,7 +73,7 @@ def main() -> int:
 
     import os
     from aurco.core import (config, database, demo, employee_ppe as EP,
-                            material as M, pdf_tools as PT, reports, services as S,
+                            employees as EMP, material as M, pdf_tools as PT, reports, services as S,
                             signatories as SG, theming)
     from aurco.ui import pdf_viewer as PV
 
@@ -4176,10 +4177,36 @@ def main() -> int:
     check(len(_seen) == 2, "editing the Quantity column posts no adjustment")
     pa.lines.clear_lines()
 
+    # ============================================== Employee master list
+    section("Employee Master — central directory")
+    from aurco.ui.employees_page import EmployeesPage
+    check("Employee Master" in win.pages, "Employee Master page is available")
+    _emp1 = EMP.save_employee(db, {
+        "employee_id": "EMP-100", "name": "Ahmed Salem", "designation": "Surveyor",
+        "iqama_id": "2456677889", "date_of_joining": "2024-01-15", "nationality": "Indian",
+        "contract_workhours": "10", "division": "Survey", "current_project": "Hajar",
+        "location": "Dammam"})
+    _emp2 = EMP.save_employee(db, {
+        "employee_id": "EMP-101", "name": "Bilal Khan", "designation": "Chief Surveyor",
+        "iqama_id": "2456677890", "date_of_joining": "2023-10-01", "nationality": "Pakistani",
+        "contract_workhours": "9", "division": "Survey", "current_project": "Zuluf",
+        "location": "Jubail"})
+    check(EMP.find_employee(db, employee_id="EMP-100")["name"] == "Ahmed Salem",
+          "employee master finds a record by employee ID")
+    check(EMP.find_employee(db, iqama_id="2456677890")["employee_id"] == "EMP-101",
+          "employee master finds a record by Iqama ID")
+    emp_page = win.page_employees
+    win.go("Employee Master")
+    emp_page.reload()
+    app.processEvents()
+    check(emp_page.table.rowCount() >= 2, "the Employee Master page lists the saved employees")
+    check("Survey" in EMP.distinct_values(db, "division"),
+          "employee master keeps the requested department/division field")
+
     # ======================================= Surveyor Tools Record — module
     section("Surveyor Tools Record — serials, pictures and summary sheet")
     from aurco.core import surveyor_tools as SV
-    from aurco.ui.surveyor_tools_page import SurveyorToolsPage
+    from aurco.ui.surveyor_tools_page import SurveyorToolsPage, RecordDialog as SVRecordDialog
     import aurco.ui.surveyor_tools_page as _svp_mod
     for _k in ("confirm", "info_box", "error_box", "toast"):
         setattr(_svp_mod.W, _k, getattr(W, _k))
@@ -4195,20 +4222,28 @@ def main() -> int:
     SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "serial_no": "AL-001",
                              "make_model": "Leica", "location": "Warehouse",
                              "qty": 2, "status": SV.ST_ACTIVE,
-                             "remarks": "", "picture_path": str(_sv_photo)})
+                             "remarks": "", "picture_path": str(_sv_photo),
+                             "issued_by": "Store Officer"})
     SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "serial_no": "AL-002",
                              "make_model": "Leica", "location": "Hajar",
                              "qty": 1, "status": SV.ST_OUT_OF_ORDER,
-                             "remarks": "ordered for repair", "picture_path": ""})
+                             "remarks": "ordered for repair", "picture_path": "",
+                             "issued_by": "Store Officer"})
     SV.save_record(svp.sdb, {"instrument_desc": "Total Station", "serial_no": "TS-001",
                              "make_model": "Trimble", "location": "Zuluf",
-                             "qty": 1, "status": SV.ST_IN_USE, "remarks": "", "picture_path": ""})
+                             "qty": 1, "status": SV.ST_IN_USE, "remarks": "", "picture_path": "",
+                             "issued_to": "Ahmed Salem", "employee_code": "EMP-100",
+                             "iqama_id": "2456677889", "designation": "Surveyor",
+                             "division": "Survey", "current_project": "Hajar",
+                             "issued_by": "Store Officer"})
     SV.save_record(svp.sdb, {"instrument_desc": "GPS", "serial_no": "GPS-001",
                              "make_model": "Garmin", "location": "Yanbu",
-                             "qty": 1, "status": SV.ST_ACTIVE, "remarks": "", "picture_path": ""})
+                             "qty": 1, "status": SV.ST_ACTIVE, "remarks": "", "picture_path": "",
+                             "issued_by": "Store Officer"})
     SV.save_record(svp.sdb, {"instrument_desc": "Reflector pole", "serial_no": "",
                              "make_model": "", "location": "Noor",
-                             "qty": 1, "status": SV.ST_ACTIVE, "remarks": "", "picture_path": ""})
+                             "qty": 1, "status": SV.ST_ACTIVE, "remarks": "", "picture_path": "",
+                             "issued_by": "Store Officer"})
     _auto = [r for r in SV.summary_rows(svp.sdb) if r["instrument_desc"] == "Auto Level"][0]
     check(_auto["Warehouse"] == 2 and _auto["Hajar"] == 1 and _auto["total_qty"] == 3,
           "the summary sheet groups instrument quantities by the sheet locations")
@@ -4223,6 +4258,18 @@ def main() -> int:
         check(False, "duplicate serial numbers are blocked")
     except ValueError:
         check(True, "duplicate serial numbers are blocked")
+    try:
+        SV.save_record(svp.sdb, {"instrument_desc": "Prism", "serial_no": "PR-001",
+                                 "location": "Zuluf", "qty": 1, "status": SV.ST_IN_USE,
+                                 "issued_to": "", "employee_code": "", "iqama_id": ""})
+        check(False, "issued surveyor tools require employee identity")
+    except ValueError:
+        check(True, "issued surveyor tools require employee identity")
+    _dlg_sv = SVRecordDialog(db)
+    _dlg_sv.e_employee_code.setText("EMP-100")
+    _dlg_sv._fill_from_master("employee_id")
+    check(_dlg_sv.e_issued_to.text() == "Ahmed Salem" and _dlg_sv.e_iqama.text() == "2456677889",
+          "typing an employee code can fill the employee name and Iqama from the master list")
     _dash_sv = SV.dashboard_data(svp.sdb)
     check(_dash_sv["total_qty"] == 6 and _dash_sv["out_of_order_qty"] == 1,
           "the dashboard totals the tracked quantity and the out-of-order quantity")
@@ -4233,10 +4280,14 @@ def main() -> int:
     app.processEvents()
     check(svp.tabs.count() == 3, "the Surveyor Tools Record page has dashboard, register and summary tabs")
     check(svp.register.table.rowCount() == 5, "the register tab lists the saved surveyor tool rows")
+    check(any(r.get("issued_to") == "Ahmed Salem" and r.get("employee_code") == "EMP-100" for r in SV.list_records(svp.sdb)),
+          "the surveyor tools register stores the employee issue details")
     check(svp.summary.table.rowCount() == 4, "the summary tab collapses records into one row per instrument")
     check(svp.dash.cards["qty"].lbl_value.text() == "6", "the dashboard card shows the total quantity")
     check(svp.register.table.currentRow() >= 0 and svp.register.lbl_pic.pixmap() is not None,
           "selecting a register row shows its picture preview")
+    check("Employee Code" in svp.register.table.headers() and "Iqama ID" in svp.register.table.headers(),
+          "the surveyor tools register shows employee code and Iqama columns")
     check(SV.FOLDER in _cfg.SUBFOLDERS, "the Surveyor Tools Record module folder is created with the storage root")
 
     # ============================================ Cable Records — the module

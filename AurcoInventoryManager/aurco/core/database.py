@@ -71,6 +71,26 @@ CREATE TABLE IF NOT EXISTS suppliers (
     email   TEXT DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS employees (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id        TEXT NOT NULL UNIQUE,
+    name               TEXT NOT NULL DEFAULT '',
+    designation        TEXT DEFAULT '',
+    iqama_id           TEXT DEFAULT '',
+    date_of_joining    TEXT DEFAULT '',
+    nationality        TEXT DEFAULT '',
+    contract_workhours TEXT DEFAULT '',
+    division           TEXT DEFAULT '',
+    current_project    TEXT DEFAULT '',
+    location           TEXT DEFAULT '',
+    created_at         TEXT DEFAULT (datetime('now','localtime')),
+    updated_at         TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS ix_emp_name     ON employees(name);
+CREATE INDEX IF NOT EXISTS ix_emp_iqama    ON employees(iqama_id);
+CREATE INDEX IF NOT EXISTS ix_emp_division ON employees(division);
+CREATE INDEX IF NOT EXISTS ix_emp_project  ON employees(current_project);
+
 CREATE TABLE IF NOT EXISTS items (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     code           TEXT UNIQUE NOT NULL,

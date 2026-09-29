@@ -27,7 +27,7 @@ from . import config
 MODULE_NAME = "Surveyor Tools Record"
 FOLDER = MODULE_NAME
 DB_NAME = "surveyor_tools.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 LOC_WAREHOUSE = "Warehouse"
 LOC_HAJAR = "Hajar"
@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS records (
     location          TEXT NOT NULL DEFAULT 'Warehouse',
     qty               REAL NOT NULL DEFAULT 1,
     status            TEXT NOT NULL DEFAULT 'Active',
+    issued_to         TEXT DEFAULT '',
+    employee_code     TEXT DEFAULT '',
+    iqama_id          TEXT DEFAULT '',
+    designation       TEXT DEFAULT '',
+    division          TEXT DEFAULT '',
+    current_project   TEXT DEFAULT '',
+    issued_by         TEXT DEFAULT '',
     remarks           TEXT DEFAULT '',
     picture_path      TEXT DEFAULT '',
     created_by        TEXT DEFAULT '',
@@ -129,7 +136,23 @@ class SurveyorDB:
         self.current_user = current_user or "admin"
         self.conn.executescript(DDL)
         self.conn.commit()
+        self._apply_schema_fixes()
         self.set_setting("schema_version", SCHEMA_VERSION)
+
+    def _apply_schema_fixes(self) -> None:
+        cols = {str(r[1]) for r in self.query("PRAGMA table_info(records)")}
+        for col, sql in (
+            ("issued_to", "ALTER TABLE records ADD COLUMN issued_to TEXT DEFAULT ''"),
+            ("employee_code", "ALTER TABLE records ADD COLUMN employee_code TEXT DEFAULT ''"),
+            ("iqama_id", "ALTER TABLE records ADD COLUMN iqama_id TEXT DEFAULT ''"),
+            ("designation", "ALTER TABLE records ADD COLUMN designation TEXT DEFAULT ''"),
+            ("division", "ALTER TABLE records ADD COLUMN division TEXT DEFAULT ''"),
+            ("current_project", "ALTER TABLE records ADD COLUMN current_project TEXT DEFAULT ''"),
+            ("issued_by", "ALTER TABLE records ADD COLUMN issued_by TEXT DEFAULT ''"),
+        ):
+            if col not in cols:
+                self.execute(sql)
+        self.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -222,8 +245,23 @@ def save_record(db: SurveyorDB, data: dict[str, Any], record_id: int | None = No
     status = str(data.get("status") or ST_ACTIVE).strip() or ST_ACTIVE
     if status not in STATUSES:
         status = ST_ACTIVE
+    issued_to = str(data.get("issued_to") or "").strip()
+    employee_code = str(data.get("employee_code") or "").strip()
+    iqama_id = str(data.get("iqama_id") or "").strip()
+    designation = str(data.get("designation") or "").strip()
+    division = str(data.get("division") or "").strip()
+    current_project = str(data.get("current_project") or "").strip()
+    issued_by = str(data.get("issued_by") or db.current_user or "").strip()
     remarks = str(data.get("remarks") or "").strip()
     picture = str(data.get("picture_path") or "").strip()
+
+    if status == ST_IN_USE:
+        if not issued_to:
+            raise ValueError("Issued items need an employee name.")
+        if not (employee_code or iqama_id):
+            raise ValueError("Enter the employee code or Iqama ID for issued items.")
+    if (employee_code or iqama_id) and not issued_to:
+        raise ValueError("Enter the employee name when you save an employee code or Iqama ID.")
 
     params: list[Any] = [serial]
     dup_sql = "SELECT id FROM records WHERE COALESCE(serial_no,'')=? AND COALESCE(serial_no,'')<>''"
@@ -244,10 +282,12 @@ def save_record(db: SurveyorDB, data: dict[str, Any], record_id: int | None = No
         if record_id is None:
             cur = db.execute(
                 """INSERT INTO records(instrument_desc,serial_no,make_model,location,qty,status,
-                     remarks,picture_path,created_by,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                (desc, serial, make_model, location, qty, status, remarks, final_picture,
-                 db.current_user, _now()),
+                     issued_to,employee_code,iqama_id,designation,division,current_project,
+                     issued_by,remarks,picture_path,created_by,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (desc, serial, make_model, location, qty, status, issued_to, employee_code,
+                 iqama_id, designation, division, current_project, issued_by, remarks,
+                 final_picture, db.current_user, _now()),
             )
             rec_id = int(cur.lastrowid)
             db.commit()
@@ -255,8 +295,12 @@ def save_record(db: SurveyorDB, data: dict[str, Any], record_id: int | None = No
             return rec_id
         db.execute(
             """UPDATE records SET instrument_desc=?, serial_no=?, make_model=?, location=?, qty=?,
-                 status=?, remarks=?, picture_path=?, updated_at=? WHERE id=?""",
-            (desc, serial, make_model, location, qty, status, remarks, final_picture, _now(), int(record_id)),
+                 status=?, issued_to=?, employee_code=?, iqama_id=?, designation=?,
+                 division=?, current_project=?, issued_by=?, remarks=?, picture_path=?,
+                 updated_at=? WHERE id=?""",
+            (desc, serial, make_model, location, qty, status, issued_to, employee_code,
+             iqama_id, designation, division, current_project, issued_by, remarks,
+             final_picture, _now(), int(record_id)),
         )
         db.commit()
         if old and old["picture_path"] and old["picture_path"] != final_picture:
@@ -292,7 +336,7 @@ def delete_record(db: SurveyorDB, record_id: int) -> None:
 
 
 def distinct_values(db: SurveyorDB, field: str) -> list[str]:
-    if field not in {"instrument_desc", "location", "status", "make_model"}:
+    if field not in {"instrument_desc", "location", "status", "make_model", "issued_to", "employee_code", "division", "current_project"}:
         return []
     rows = db.query(
         f"SELECT DISTINCT {field} FROM records WHERE COALESCE({field},'')<>'' ORDER BY {field}"
@@ -316,8 +360,9 @@ def list_records(db: SurveyorDB, text: str = "", location: str = "", status: str
     if text.strip():
         like = f"%{text.strip()}%"
         sql += (" AND (instrument_desc LIKE ? OR serial_no LIKE ? OR make_model LIKE ? OR"
-                " location LIKE ? OR status LIKE ? OR remarks LIKE ?)")
-        p += [like] * 6
+                " location LIKE ? OR status LIKE ? OR remarks LIKE ? OR issued_to LIKE ? OR"
+                " employee_code LIKE ? OR iqama_id LIKE ? OR designation LIKE ? OR division LIKE ? OR current_project LIKE ? OR issued_by LIKE ?)")
+        p += [like] * 13
     sql += " ORDER BY instrument_desc COLLATE NOCASE, id DESC"
     return [dict(r) for r in db.query(sql, p)]
 
