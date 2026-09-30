@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import datetime as _dt
+import hashlib
 import io
 import json
 import os
@@ -924,9 +925,28 @@ def document_output_folder(doc_type: str, status: str = "FINAL") -> Path:
     return config.folder(DOC_FOLDERS.get(doc_type, "Reports"))
 
 
-def document_reference_path(path: str | Path) -> Path:
+def document_reference_store() -> Path:
+    p = config.folder("Database") / "Document References"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _document_reference_key(path: str | Path) -> str:
+    p = Path(path)
+    try:
+        raw = str(p.resolve())
+    except OSError:
+        raw = str(p)
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _legacy_document_reference_path(path: str | Path) -> Path:
     p = Path(path)
     return p.with_suffix(p.suffix + DOCUMENT_REF_SUFFIX)
+
+
+def document_reference_path(path: str | Path) -> Path:
+    return document_reference_store() / f"{_document_reference_key(path)}{DOCUMENT_REF_SUFFIX}"
 
 
 def write_document_reference(path: str | Path, doc_row) -> None:
@@ -943,25 +963,52 @@ def write_document_reference(path: str | Path, doc_row) -> None:
     }
     ref = document_reference_path(p)
     ref.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    legacy = _legacy_document_reference_path(p)
+    if legacy != ref:
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
 
 
 def remove_document_reference(path: str | Path) -> None:
-    ref = document_reference_path(path)
-    try:
-        ref.unlink()
-    except OSError:
-        pass
+    for ref in (document_reference_path(path), _legacy_document_reference_path(path)):
+        try:
+            ref.unlink()
+        except OSError:
+            pass
 
 
 def read_document_reference(path: str | Path) -> dict[str, Any] | None:
     ref = document_reference_path(path)
-    if not ref.exists():
+    legacy = _legacy_document_reference_path(path)
+    if ref.exists():
+        try:
+            data = json.loads(ref.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                if legacy.exists() and legacy != ref:
+                    try:
+                        legacy.unlink()
+                    except OSError:
+                        pass
+                return data
+        except Exception:
+            pass
+    if not legacy.exists():
         return None
     try:
-        data = json.loads(ref.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
+        data = json.loads(legacy.read_text(encoding="utf-8"))
     except Exception:
         return None
+    if not isinstance(data, dict):
+        return None
+    if legacy != ref:
+        try:
+            ref.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            legacy.unlink()
+        except OSError:
+            pass
+    return data
 
 
 def _candidate_document_paths(db: Database, doc_row, lines) -> list[Path]:

@@ -947,6 +947,15 @@ def main() -> int:
     did2 = db.scalar("SELECT id FROM documents WHERE doc_no=?", (dn2,))
     pdf = D.document_pdf(db, did2)
     check(pdf.exists() and pdf.stat().st_size > 3000, "DN PDF with signatures renders")
+    check(not D._legacy_document_reference_path(pdf).exists(),
+          "official DN PDFs no longer leave a visible sidecar file in the Delivery Notes folder")
+    check(D.document_reference_path(pdf).exists() and D.document_binding_for_path(db, pdf)["doc_no"] == dn2,
+          "the hidden document reference still binds the PDF back to its Delivery Note")
+    import json as _json
+    _legacy_ref = D._legacy_document_reference_path(pdf)
+    _legacy_ref.write_text(_json.dumps({"doc_id": int(did2), "doc_no": dn2, "doc_type": "DN"}), encoding="utf-8")
+    check(D.read_document_reference(pdf)["doc_no"] == dn2 and not _legacy_ref.exists(),
+          "old visible sidecar references are migrated away automatically")
     check(D.document_reference_path(pdf).exists(),
           "official document PDFs save a sidecar reference for stable DN binding")
     check(D.document_pdf(db, did2) == pdf,
