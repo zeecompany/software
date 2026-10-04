@@ -597,12 +597,34 @@ def main() -> int:
     _title_ppe, _cols_ppe, _data_ppe = EP.build_report(_pdb, "Safety Shoes Register", {})
     check("Description" in _cols_ppe and any(_ppe_dn in str(r) for r in _data_ppe),
           "PPE report builds from synced delivery-note records")
+    _manual_rows = EP.list_records(_pdb, source_type=EP.SOURCE_MANUAL)
+    _synced_rows = EP.list_records(_pdb, source_type=EP.SOURCE_DN)
+    check(len(_manual_rows) >= 3, "manual and imported PPE records stay in their own register")
+    check(len(_synced_rows) >= 3, "DN-synced PPE rows stay in their own separate register")
+    _purge_item = S.save_item(db, {"code": "PPE-PURGE-1", "description": "Safety Shoes Purge Test",
+                                   "category": "PPE", "uom": "PAIR", "warehouse": "Main",
+                                   "location": "Rack-PPE", "opening_balance": 5})
+    _purge_dn = S.post_issue(db, S.DocHeader(doc_type="DN", issued_to="Camp Welfare",
+                                             handover_to="Purge User", handover_id="EMP-009",
+                                             project="Camp Z", warehouse="Main"),
+                             [S.Line(item_id=_purge_item, qty=1)], finalize=True)
+    _purge_doc_id = db.scalar("SELECT id FROM documents WHERE doc_no=?", (_purge_dn,))
+    EP.import_from_delivery_notes(db, _pdb, text=_purge_dn)
+    check(any(r["dn_no"] == _purge_dn for r in EP.list_records(_pdb, source_type=EP.SOURCE_DN)),
+          "a new DN sync record is imported into the DN-only PPE register")
+    S.reverse_document(db, _purge_doc_id, "ppe sync cleanup")
+    check(not any(r["dn_no"] == _purge_dn for r in EP.list_records(_pdb, source_type=EP.SOURCE_DN)),
+          "reversing a DN automatically removes its synced PPE records")
     ppe_page = win.page_ppe
     ppe_page.refresh_all()
     app.processEvents()
     check(any("Import Sheet" in ppe_page.tabs.tabText(i) for i in range(ppe_page.tabs.count())),
           "Employee PPE page includes an Excel import tab")
-    check(ppe_page.t_reg.rowCount() >= 6, "Employee PPE page lists synced, manual and imported records")
+    check(hasattr(ppe_page, "t_synced"), "Employee PPE page has a separate synced-DN register tab")
+    check(ppe_page.t_reg.rowCount() == len(_manual_rows),
+          "Employee PPE page keeps manual/imported records separate from DN-synced ones")
+    check(ppe_page.t_synced.rowCount() == len(EP.list_records(_pdb, source_type=EP.SOURCE_DN)),
+          "Employee PPE page shows synced DN records on their own table")
     check(ppe_page.t_sync.rowCount() >= 3, "Employee PPE sync preview shows detected delivery-note lines")
     check(ppe_page.importer.hist.rowCount() >= 1, "Employee PPE import history is visible on the page")
     _dash_ppe = EP.dashboard_data(_pdb)
@@ -626,6 +648,20 @@ def main() -> int:
     app.processEvents()
     check(ppe_page.dash_cards["total_records"].lbl_value.text() == before_ppe,
           "resetting the PPE dashboard restores the full view")
+    _deleted_manual = EP.delete_records_by_filter(_pdb, source_type=EP.SOURCE_MANUAL)
+    check(_deleted_manual == len(_manual_rows), "Delete All removes the full manual/imported PPE register")
+    check(len(EP.list_records(_pdb, source_type=EP.SOURCE_MANUAL)) == 0,
+          "manual/imported PPE rows are gone after Delete All")
+    check(len(EP.list_records(_pdb, source_type=EP.SOURCE_DN)) >= 3,
+          "manual Delete All does not touch the separate DN-synced register")
+    _deleted_synced = EP.delete_records_by_filter(_pdb, source_type=EP.SOURCE_DN)
+    check(_deleted_synced >= 3, "Delete All also removes the separate DN-synced PPE register")
+    check(len(EP.list_records(_pdb, source_type=EP.SOURCE_DN)) == 0,
+          "the DN-synced PPE register is empty after Delete All")
+    ppe_page.refresh_all()
+    app.processEvents()
+    check(ppe_page.t_reg.rowCount() == 0 and ppe_page.t_synced.rowCount() == 0,
+          "the PPE page refreshes both separate registers after Delete All")
 
     # ------------------------------------------------ export presentation
     section("PDF and Excel presentation")
@@ -3032,6 +3068,20 @@ def main() -> int:
     check(not _dn_final_pdf.exists(),
           "the reversed DN no longer remains in the active Delivery Notes folder")
     check(_bal() == 100, "reversing an issue puts the goods back")
+
+    drift_i = S.save_item(db, {"code": "DRV-1", "description": "Balance drift item",
+                               "uom": "No", "opening_balance": 50})
+    S.post_issue(db, S.DocHeader(doc_type="DN", doc_date="2026-08-21",
+                                 issued_to="Repair Test"),
+                 [S.Line(item_id=drift_i, qty=7)])
+    drift_doc = db.one("SELECT id FROM documents WHERE doc_type='DN' ORDER BY id DESC LIMIT 1")
+    db.execute("UPDATE items SET balance=? WHERE id=?", (999, drift_i))
+    db.commit()
+    S.reverse_document(db, drift_doc["id"], "repair drift")
+    check(db.scalar("SELECT balance FROM items WHERE id=?", (drift_i,)) == 50,
+          "reversing a DN rebuilds the item balance and restores the exact stock")
+    check(not _recon(), "the ledger reconciles again after a drifted DN is reversed")
+
     _dn_report_title, _dn_report_cols, _dn_report_rows = reports.build_report(db, "Delivery Note Report", {})
     check(all(r[_dn_report_cols.index("Doc No")] != db.one("SELECT doc_no FROM documents WHERE id=?", (dnr["id"],))["doc_no"]
               for r in _dn_report_rows),

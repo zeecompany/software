@@ -1,0 +1,25 @@
+AURCO Inventory Manager 2.28.8
+Package: software v 32.zip
+Compared against: software v 31.zip
+
+Modified files (9):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/employee_ppe.py
+- AurcoInventoryManager/aurco/core/services.py
+- AurcoInventoryManager/aurco/ui/employee_ppe_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.8.txt
+
+Main fixes
+- Delivery Note reversal now rebuilds the affected item balances from the stock ledger so the issued quantity goes back to inventory exactly.
+- Reversing a Delivery Note also clears stale PPE records that were synced from that reversed DN.
+- Employee PPE records synced from Delivery Notes are now kept separate from manual / imported PPE register records.
+- PPE Delete All support was added for both the manual/imported register and the separate DN-synced register.
+- PPE page refresh, sync preview and related advanced register behavior now keep the DN-linked data clean and separated.
+- Regression coverage was expanded for exact DN reversal stock restoration, PPE separation, stale-sync cleanup, and Delete All behavior.
+
+Validation
+- Headless regression suite: ALL 1379 CHECKS PASSED

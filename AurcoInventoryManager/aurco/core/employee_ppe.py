@@ -44,6 +44,10 @@ ST_RETURNED = "Returned"
 ST_NEEDS_INFO = "Needs Employee Info"
 STATUSES = [ST_ISSUED, ST_RETURNED, ST_NEEDS_INFO]
 
+SOURCE_MANUAL = "MANUAL"
+SOURCE_DN = "DN"
+SOURCE_TYPES = [SOURCE_MANUAL, SOURCE_DN]
+
 REPORT_LIST = [
     "Full PPE Register",
     "Safety Shoes Register",
@@ -436,7 +440,7 @@ def save_record(db: PPEIssueDB, data: dict[str, Any], record_id: int | None = No
         db.audit("EDITED", "record", str(record_id), rec.get("employee_code", ""))
         return record_id
     rec.setdefault("issue_no", db.next_issue_no())
-    rec.setdefault("source_type", "MANUAL")
+    rec.setdefault("source_type", SOURCE_MANUAL)
     rec.setdefault("created_by", db.current_user)
     rec.setdefault("issued_by", db.current_user)
     cols = [
@@ -464,26 +468,28 @@ def delete_record(db: PPEIssueDB, record_id: int) -> None:
     db.audit("DELETED", "record", str(record_id), row[0])
 
 
-def get_record(db: PPEIssueDB, record_id: int) -> dict | None:
-    r = db.one("SELECT * FROM records WHERE id=?", (record_id,))
-    return dict(r) if r else None
-
-
-def mark_returned(db: PPEIssueDB, record_id: int, return_date: str = "", remarks: str = "") -> None:
-    row = get_record(db, record_id)
-    if not row:
-        return
-    db.execute(
-        "UPDATE records SET status=?, return_date=?, remarks=?, updated_at=datetime('now','localtime') WHERE id=?",
-        (ST_RETURNED, return_date or today(), remarks or row.get("remarks", ""), record_id),
+def delete_records(db: PPEIssueDB, record_ids: Sequence[int]) -> int:
+    ids = [int(rid) for rid in record_ids if int(rid or 0)]
+    if not ids:
+        return 0
+    rows = db.query(
+        f"SELECT id, issue_no FROM records WHERE id IN ({','.join('?' * len(ids))})",
+        ids,
     )
+    if not rows:
+        return 0
+    db.execute(f"DELETE FROM records WHERE id IN ({','.join('?' * len(ids))})", ids)
     db.commit()
-    db.audit("EDITED", "record", str(record_id), f"returned {row['issue_no']}")
+    deleted = len(rows)
+    sample = ", ".join(str(r["issue_no"]) for r in rows[:5])
+    db.audit("DELETED", "records", str(deleted),
+             sample + (" ..." if deleted > 5 else ""))
+    return deleted
 
 
-def list_records(db: PPEIssueDB, text: str = "", item_group: str = "", status: str = "",
-                 source_type: str = "", date_from: str = "", date_to: str = "") -> list[dict]:
-    sql = "SELECT * FROM records WHERE 1=1"
+def _record_filters(text: str = "", item_group: str = "", status: str = "",
+                    source_type: str = "", date_from: str = "", date_to: str = "") -> tuple[str, list[Any]]:
+    sql = " WHERE 1=1"
     p: list[Any] = []
     if date_from:
         sql += " AND issue_date>=?"
@@ -507,11 +513,77 @@ def list_records(db: PPEIssueDB, text: str = "", item_group: str = "", status: s
             " OR item_code LIKE ? OR item_desc LIKE ? OR dn_no LIKE ? OR remarks LIKE ?)"
         )
         p += [like] * 8
-    sql += " ORDER BY issue_date DESC, id DESC LIMIT 5000"
-    out = [dict(r) for r in db.query(sql, p)]
+    return sql, p
+
+
+def delete_records_by_filter(db: PPEIssueDB, text: str = "", item_group: str = "", status: str = "",
+                             source_type: str = "", date_from: str = "", date_to: str = "") -> int:
+    where, params = _record_filters(text, item_group, status, source_type, date_from, date_to)
+    ids = [int(r[0]) for r in db.query("SELECT id FROM records" + where, params)]
+    return delete_records(db, ids)
+
+
+def get_record(db: PPEIssueDB, record_id: int) -> dict | None:
+    r = db.one("SELECT * FROM records WHERE id=?", (record_id,))
+    return dict(r) if r else None
+
+
+def mark_returned(db: PPEIssueDB, record_id: int, return_date: str = "", remarks: str = "") -> None:
+    row = get_record(db, record_id)
+    if not row:
+        return
+    db.execute(
+        "UPDATE records SET status=?, return_date=?, remarks=?, updated_at=datetime('now','localtime') WHERE id=?",
+        (ST_RETURNED, return_date or today(), remarks or row.get("remarks", ""), record_id),
+    )
+    db.commit()
+    db.audit("EDITED", "record", str(record_id), f"returned {row['issue_no']}")
+
+
+def list_records(db: PPEIssueDB, text: str = "", item_group: str = "", status: str = "",
+                 source_type: str = "", date_from: str = "", date_to: str = "") -> list[dict]:
+    where, params = _record_filters(text, item_group, status, source_type, date_from, date_to)
+    sql = "SELECT * FROM records" + where + " ORDER BY issue_date DESC, id DESC LIMIT 5000"
+    out = [dict(r) for r in db.query(sql, params)]
     for r in out:
         r["status"] = compute_status(r)
     return out
+
+
+def purge_stale_synced_records(main_db: Database, ppe_db: PPEIssueDB, doc_ids: Sequence[int] | None = None) -> int:
+    params: list[Any] = [SOURCE_DN]
+    sql = "SELECT id, issue_no, source_doc_id, source_line_id FROM records WHERE source_type=?"
+    doc_list = [int(doc_id) for doc_id in (doc_ids or []) if int(doc_id or 0)]
+    if doc_list:
+        sql += f" AND source_doc_id IN ({','.join('?' * len(doc_list))})"
+        params += doc_list
+    rows = [dict(r) for r in ppe_db.query(sql, params)]
+    if not rows:
+        return 0
+    wanted_doc_ids = sorted({int(r.get("source_doc_id") or 0) for r in rows if int(r.get("source_doc_id") or 0)})
+    valid: set[tuple[int, int]] = set()
+    if wanted_doc_ids:
+        q = (
+            "SELECT d.id AS doc_id, l.id AS line_id FROM documents d "
+            "JOIN document_lines l ON l.doc_id=d.id "
+            "WHERE d.doc_type='DN' AND d.status='FINAL' "
+            f"AND d.id IN ({','.join('?' * len(wanted_doc_ids))})"
+        )
+        valid = {(int(r["doc_id"]), int(r["line_id"])) for r in main_db.query(q, wanted_doc_ids)}
+    stale_ids: list[int] = []
+    stale_issues: list[str] = []
+    for row in rows:
+        pair = (int(row.get("source_doc_id") or 0), int(row.get("source_line_id") or 0))
+        if pair[0] <= 0 or pair[1] <= 0 or pair not in valid:
+            stale_ids.append(int(row["id"]))
+            stale_issues.append(str(row.get("issue_no") or row["id"]))
+    if not stale_ids:
+        return 0
+    ppe_db.execute(f"DELETE FROM records WHERE id IN ({','.join('?' * len(stale_ids))})", stale_ids)
+    ppe_db.commit()
+    ppe_db.audit("DELETED", "stale_synced_records", str(len(stale_ids)),
+                 ", ".join(stale_issues[:5]) + (" ..." if len(stale_issues) > 5 else ""))
+    return len(stale_ids)
 
 
 def dashboard_data(db: PPEIssueDB, filters: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -529,8 +601,8 @@ def dashboard_data(db: PPEIssueDB, filters: dict[str, Any] | None = None) -> dic
     group_qty = {g: 0.0 for g in GROUPS}
     status_count = {s: 0 for s in STATUSES}
     status_qty = {s: 0.0 for s in STATUSES}
-    source_count = {"MANUAL": 0, "DN": 0}
-    source_qty = {"MANUAL": 0.0, "DN": 0.0}
+    source_count = {SOURCE_MANUAL: 0, SOURCE_DN: 0}
+    source_qty = {SOURCE_MANUAL: 0.0, SOURCE_DN: 0.0}
     missing_by_group = {g: 0 for g in GROUPS}
     employees = set()
     employee_qty: dict[str, float] = {}
@@ -554,7 +626,7 @@ def dashboard_data(db: PPEIssueDB, filters: dict[str, Any] | None = None) -> dic
         if status not in status_count:
             status_count[status] = 0
             status_qty[status] = 0.0
-        source = (r.get("source_type") or "MANUAL").strip().upper() or "MANUAL"
+        source = (r.get("source_type") or SOURCE_MANUAL).strip().upper() or SOURCE_MANUAL
         if source not in source_count:
             source_count[source] = 0
             source_qty[source] = 0.0
@@ -583,7 +655,7 @@ def dashboard_data(db: PPEIssueDB, filters: dict[str, Any] | None = None) -> dic
         return_date = str(r.get("return_date") or "")[:7]
         if return_date:
             month_return[return_date] = month_return.get(return_date, 0.0) + qty
-        if source == "DN" and (r.get("dn_no") or "").strip():
+        if source == SOURCE_DN and (r.get("dn_no") or "").strip():
             active_dns.add(str(r["dn_no"]).strip())
             synced += 1
         else:
@@ -644,7 +716,7 @@ def _existing_dn_lines(db: PPEIssueDB) -> set[tuple[int, int]]:
     return {
         (int(r[0]), int(r[1]))
         for r in db.query(
-            "SELECT COALESCE(source_doc_id,0), COALESCE(source_line_id,0) FROM records WHERE source_type='DN'"
+            f"SELECT COALESCE(source_doc_id,0), COALESCE(source_line_id,0) FROM records WHERE source_type='{SOURCE_DN}'"
         )
         if int(r[0] or 0) and int(r[1] or 0)
     }
@@ -675,6 +747,7 @@ def sync_candidates(main_db: Database, ppe_db: PPEIssueDB, date_from: str = "", 
         )
         p += [like] * 8
     sql += " ORDER BY d.doc_date DESC, d.id DESC, l.id"
+    purge_stale_synced_records(main_db, ppe_db)
     existing = _existing_dn_lines(ppe_db)
     out = []
     for r in main_db.query(sql, p):
@@ -703,7 +776,7 @@ def sync_candidates(main_db: Database, ppe_db: PPEIssueDB, date_from: str = "", 
             "issued_by": r["created_by"] or main_db.current_user,
             "remarks": r["remarks"] or "",
             "imported": (int(r["doc_id"]), int(r["line_id"])) in existing,
-            "source_type": "DN",
+            "source_type": SOURCE_DN,
         }
         rec["status"] = compute_status(rec)
         out.append(rec)
@@ -735,7 +808,7 @@ def import_from_delivery_notes(main_db: Database, ppe_db: PPEIssueDB, date_from:
                 "dn_no": r["doc_no"],
                 "doc_date": r["doc_date"],
                 "pdf_path": r["pdf_path"],
-                "source_type": "DN",
+                "source_type": SOURCE_DN,
                 "source_doc_id": r["doc_id"],
                 "source_line_id": r["line_id"],
                 "status": r["status"],
@@ -842,7 +915,7 @@ def preview(headers: Sequence[str], rows: Sequence[Sequence[Any]],
             continue
         if rec["qty"] <= 0:
             continue
-        rec["source_type"] = "MANUAL"
+        rec["source_type"] = SOURCE_MANUAL
         out.append(rec)
     return out
 
@@ -882,7 +955,7 @@ def import_records(db: PPEIssueDB, records: Sequence[dict], source: str = "",
             skipped += 1
             continue
         existing.add(key)
-        save_record(db, {**dict(rec), "batch_id": batch_id, "source_type": "MANUAL"})
+        save_record(db, {**dict(rec), "batch_id": batch_id, "source_type": SOURCE_MANUAL})
         inserted += 1
     db.execute("UPDATE batches SET rows=?, skipped=? WHERE id=?", (inserted, skipped, batch_id))
     db.commit()
@@ -986,7 +1059,7 @@ def build_report(db: PPEIssueDB, name: str, f: dict | None = None) -> tuple[str,
                             for r in sel]
 
     if name == "Synced Delivery Note PPE":
-        sel = [r for r in rows if r["source_type"] == "DN"]
+        sel = [r for r in rows if r["source_type"] == SOURCE_DN]
         cols = ["Date", "DN No", "Employee Code", "Employee", "Group", "Description", "Size", "Qty", "Project"]
         return name, cols, [[r["issue_date"], r["dn_no"], r["employee_code"], r["employee_name"],
                              r["item_group"], r["item_desc"], r["size_text"], round(float(r["qty"] or 0), 2),

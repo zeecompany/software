@@ -260,6 +260,7 @@ class EmployeePPEPage(QWidget):
         self.db = db
         self.pdb = P.get_db(getattr(db, "current_user", "admin"))
         self.records: list[dict] = []
+        self.synced_records: list[dict] = []
         self.candidates: list[dict] = []
         self.last_file: Path | None = None
         self.setObjectName("Page")
@@ -268,6 +269,7 @@ class EmployeePPEPage(QWidget):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._dashboard_tab(), "📊 Dashboard")
         self.tabs.addTab(self._register_tab(), "📋 Register")
+        self.tabs.addTab(self._synced_register_tab(), "🔗 Synced DN Records")
         self.tabs.addTab(self._sync_tab(), "🔄 Sync from Delivery Notes")
         self.importer = PPEImportTab(self.pdb, db, self)
         self.tabs.addTab(self.importer, "⬆ Import Sheet")
@@ -451,6 +453,13 @@ class EmployeePPEPage(QWidget):
 
     def _register_tab(self):
         w = QWidget(); v = QVBoxLayout(w)
+        intro = QLabel(
+            "Manual PPE issues and sheet imports stay here. Delivery Note synced rows are kept on "
+            "their own separate tab so the live DN-linked register never mixes with manual edits."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"color:{W.MUTED};")
+        v.addWidget(intro)
         bar = QHBoxLayout()
         self.f_text = W.SearchBox("Search employee code, employee, item, DN, project...")
         self.f_text.textChanged.connect(self.reload_register)
@@ -458,12 +467,10 @@ class EmployeePPEPage(QWidget):
         self.f_group.currentTextChanged.connect(self.reload_register)
         self.f_status = W.combo(["All Status"] + P.STATUSES)
         self.f_status.currentTextChanged.connect(self.reload_register)
-        self.f_source = W.combo(["All Sources", "MANUAL", "DN"])
-        self.f_source.currentTextChanged.connect(self.reload_register)
         self.d_from = date_edit(); self.d_from.setDate(self.d_from.date().addYears(-1)); self.d_from.dateChanged.connect(self.reload_register)
         self.d_to = date_edit(); self.d_to.dateChanged.connect(self.reload_register)
         for wdg in (QLabel("From:"), self.d_from, QLabel("To:"), self.d_to, QLabel("Group:"), self.f_group,
-                    QLabel("Status:"), self.f_status, QLabel("Source:"), self.f_source):
+                    QLabel("Status:"), self.f_status):
             bar.addWidget(wdg)
         bar.addWidget(self.f_text, 1)
         v.addLayout(bar)
@@ -472,6 +479,7 @@ class EmployeePPEPage(QWidget):
         act.addWidget(W.button("✏  Edit Record", slot=self.edit_issue))
         act.addWidget(W.button("↩  Mark Returned", slot=self.mark_returned))
         act.addWidget(W.button("🗑  Delete Record", slot=self.delete_record))
+        act.addWidget(W.button("🧹  Delete All Visible", slot=self.delete_all_manual))
         act.addWidget(W.button("📄  Open Source PDF", slot=self.open_pdf))
         act.addWidget(W.button("🔄  Refresh", slot=self.refresh_all))
         act.addStretch(1)
@@ -481,6 +489,45 @@ class EmployeePPEPage(QWidget):
         v.addWidget(self.t_reg, 1)
         self.lbl_reg = QLabel(); self.lbl_reg.setStyleSheet(f"color:{W.MUTED};")
         v.addWidget(self.lbl_reg)
+        return w
+
+    def _synced_register_tab(self):
+        w = QWidget(); v = QVBoxLayout(w)
+        intro = QLabel(
+            "These rows came from FINAL Delivery Notes and stay separate from the manual register. "
+            "If a source DN is reversed, its synced PPE rows are cleaned up automatically."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"color:{W.MUTED};")
+        v.addWidget(intro)
+        bar = QHBoxLayout()
+        self.sf_text = W.SearchBox("Search synced DN, employee, project, item...")
+        self.sf_text.textChanged.connect(self.reload_synced_register)
+        self.sf_group = W.combo(["All Groups"] + P.GROUPS)
+        self.sf_group.currentTextChanged.connect(self.reload_synced_register)
+        self.sf_status = W.combo(["All Status"] + P.STATUSES)
+        self.sf_status.currentTextChanged.connect(self.reload_synced_register)
+        self.sd_from = date_edit(); self.sd_from.setDate(self.sd_from.date().addYears(-1)); self.sd_from.dateChanged.connect(self.reload_synced_register)
+        self.sd_to = date_edit(); self.sd_to.dateChanged.connect(self.reload_synced_register)
+        for wdg in (QLabel("From:"), self.sd_from, QLabel("To:"), self.sd_to, QLabel("Group:"), self.sf_group,
+                    QLabel("Status:"), self.sf_status):
+            bar.addWidget(wdg)
+        bar.addWidget(self.sf_text, 1)
+        v.addLayout(bar)
+        act = QHBoxLayout()
+        act.addWidget(W.button("✏  Edit Record", slot=self.edit_synced_issue))
+        act.addWidget(W.button("↩  Mark Returned", slot=self.mark_synced_returned))
+        act.addWidget(W.button("🗑  Delete Record", slot=self.delete_synced_record))
+        act.addWidget(W.button("🧹  Delete All Visible", slot=self.delete_all_synced))
+        act.addWidget(W.button("📄  Open Source PDF", slot=self.open_synced_pdf))
+        act.addWidget(W.button("🔄  Refresh", slot=self.refresh_all))
+        act.addStretch(1)
+        v.addLayout(act)
+        self.t_synced = W.DataTable()
+        self.t_synced.doubleClicked.connect(self.edit_synced_issue)
+        v.addWidget(self.t_synced, 1)
+        self.lbl_synced = QLabel(); self.lbl_synced.setStyleSheet(f"color:{W.MUTED};")
+        v.addWidget(self.lbl_synced)
         return w
 
     def _sync_tab(self):
@@ -498,7 +545,7 @@ class EmployeePPEPage(QWidget):
         self.t_sync = W.DataTable()
         self.t_sync.doubleClicked.connect(self.open_sync_pdf)
         v.addWidget(self.t_sync, 1)
-        note = QLabel("This tab reads FINAL Delivery Notes and detects PPE / welfare items by item description, code and category. Already-imported lines are skipped safely.")
+        note = QLabel("This tab reads FINAL Delivery Notes and detects PPE / welfare items by item description, code and category. Imported DN rows stay on the separate synced register tab, while manual and sheet records stay on the main register. Already-imported lines are skipped safely.")
         note.setWordWrap(True); note.setStyleSheet(f"color:{W.MUTED};")
         v.addWidget(note)
         return w
@@ -536,7 +583,9 @@ class EmployeePPEPage(QWidget):
 
     def refresh_all(self):
         self._ensure_user()
+        P.purge_stale_synced_records(self.db, self.pdb)
         self.reload_register()
+        self.reload_synced_register()
         self.preview_sync()
         self.reload_dashboard()
         self.run_report()
@@ -582,33 +631,57 @@ class EmployeePPEPage(QWidget):
                            r["source_type"], P.compute_status(r)]
                           for r in recent])
 
-    def _filters(self) -> dict[str, str]:
+    def _table_filters(self, text_box, group_box, status_box, date_from_edit, date_to_edit,
+                       source_type: str) -> dict[str, str]:
         return {
-            "text": self.f_text.text().strip(),
-            "item_group": "" if self.f_group.currentIndex() == 0 else self.f_group.currentText(),
-            "status": "" if self.f_status.currentIndex() == 0 else self.f_status.currentText(),
-            "source_type": "" if self.f_source.currentIndex() == 0 else self.f_source.currentText(),
-            "date_from": iso(self.d_from),
-            "date_to": iso(self.d_to),
+            "text": text_box.text().strip(),
+            "item_group": "" if group_box.currentIndex() == 0 else group_box.currentText(),
+            "status": "" if status_box.currentIndex() == 0 else status_box.currentText(),
+            "source_type": source_type,
+            "date_from": iso(date_from_edit),
+            "date_to": iso(date_to_edit),
         }
+
+    def _filters(self) -> dict[str, str]:
+        return self._table_filters(self.f_text, self.f_group, self.f_status,
+                                   self.d_from, self.d_to, P.SOURCE_MANUAL)
+
+    def _synced_filters(self) -> dict[str, str]:
+        return self._table_filters(self.sf_text, self.sf_group, self.sf_status,
+                                   self.sd_from, self.sd_to, P.SOURCE_DN)
+
+    def _fill_register_table(self, table, rows: list[dict]):
+        table.fill(["Issue No", "Date", "Employee Code", "Employee", "Project / Dept", "Group",
+                    "Item Code", "Description", "Size", "Qty", "UOM", "DN", "Source", "Status"],
+                   [[r["issue_no"], r["issue_date"], r["employee_code"], r["employee_name"],
+                     r["project"] or r["department"], r["item_group"], r["item_code"],
+                     r["item_desc"], r["size_text"], round(float(r["qty"] or 0), 2), r["uom"],
+                     r["dn_no"], r["source_type"], r["status"]] for r in rows])
 
     def reload_register(self):
         self._ensure_user()
         self.records = P.list_records(self.pdb, **self._filters())
-        self.t_reg.fill(["Issue No", "Date", "Employee Code", "Employee", "Project / Dept", "Group",
-                         "Item Code", "Description", "Size", "Qty", "UOM", "DN", "Source", "Status"],
-                        [[r["issue_no"], r["issue_date"], r["employee_code"], r["employee_name"],
-                          r["project"] or r["department"], r["item_group"], r["item_code"],
-                          r["item_desc"], r["size_text"], round(float(r["qty"] or 0), 2), r["uom"],
-                          r["dn_no"], r["source_type"], r["status"]] for r in self.records])
-        self.lbl_reg.setText(f"{len(self.records)} record(s)")
+        self._fill_register_table(self.t_reg, self.records)
+        self.lbl_reg.setText(f"{len(self.records)} manual / imported record(s)")
+
+    def reload_synced_register(self):
+        self._ensure_user()
+        self.synced_records = P.list_records(self.pdb, **self._synced_filters())
+        self._fill_register_table(self.t_synced, self.synced_records)
+        self.lbl_synced.setText(f"{len(self.synced_records)} DN-synced record(s)")
 
     def _sel_record(self) -> dict | None:
-        r = self.t_reg.currentRow()
-        if r < 0 or r >= len(self.records):
-            W.error_box(self, "Select a record first.")
+        return self._selected_row(self.t_reg, self.records, "Select a manual or imported register record first.")
+
+    def _sel_synced_record(self) -> dict | None:
+        return self._selected_row(self.t_synced, self.synced_records, "Select a synced DN record first.")
+
+    def _selected_row(self, table, rows: list[dict], message: str) -> dict | None:
+        r = table.currentRow()
+        if r < 0 or r >= len(rows):
+            W.error_box(self, message)
             return None
-        return self.records[r]
+        return rows[r]
 
     def new_issue(self):
         if IssueDialog(self.pdb, parent=self).exec() == QDialog.Accepted:
@@ -619,6 +692,15 @@ class EmployeePPEPage(QWidget):
         row = self._sel_record()
         if not row:
             return
+        self._edit_row(row)
+
+    def edit_synced_issue(self):
+        row = self._sel_synced_record()
+        if not row:
+            return
+        self._edit_row(row)
+
+    def _edit_row(self, row: dict):
         if IssueDialog(self.pdb, row["id"], self).exec() == QDialog.Accepted:
             self.refresh_all()
             self.dataChanged.emit()
@@ -627,6 +709,15 @@ class EmployeePPEPage(QWidget):
         row = self._sel_record()
         if not row:
             return
+        self._mark_returned_row(row)
+
+    def mark_synced_returned(self):
+        row = self._sel_synced_record()
+        if not row:
+            return
+        self._mark_returned_row(row)
+
+    def _mark_returned_row(self, row: dict):
         if not W.confirm(self, f"Mark {row['issue_no']} as returned?"):
             return
         P.mark_returned(self.pdb, row["id"])
@@ -637,16 +728,51 @@ class EmployeePPEPage(QWidget):
         row = self._sel_record()
         if not row:
             return
+        self._delete_row(row)
+
+    def delete_synced_record(self):
+        row = self._sel_synced_record()
+        if not row:
+            return
+        self._delete_row(row)
+
+    def _delete_row(self, row: dict):
         if not W.confirm(self, f"Delete PPE record {row['issue_no']}?"):
             return
         P.delete_record(self.pdb, row["id"])
         self.refresh_all()
         self.dataChanged.emit()
 
+    def delete_all_manual(self):
+        self._delete_filtered(self._filters(), len(self.records), "manual / imported")
+
+    def delete_all_synced(self):
+        self._delete_filtered(self._synced_filters(), len(self.synced_records), "DN-synced")
+
+    def _delete_filtered(self, filters: dict[str, str], visible_rows: int, label: str):
+        if visible_rows <= 0:
+            W.error_box(self, f"There are no {label} records in the current view.")
+            return
+        if not W.confirm(self, f"Delete all {visible_rows} visible {label} PPE record(s)?"):
+            return
+        deleted = P.delete_records_by_filter(self.pdb, **filters)
+        self.refresh_all()
+        self.dataChanged.emit()
+        W.toast(self, f"{deleted} {label} PPE record(s) deleted.")
+
     def open_pdf(self):
         row = self._sel_record()
         if not row:
             return
+        self._open_row_pdf(row)
+
+    def open_synced_pdf(self):
+        row = self._sel_synced_record()
+        if not row:
+            return
+        self._open_row_pdf(row)
+
+    def _open_row_pdf(self, row: dict):
         p = Path(row.get("pdf_path") or "")
         if p.exists():
             D.open_path(p)

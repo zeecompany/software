@@ -159,6 +159,16 @@ def _post(db: Database, item_id: int, txn_type: str, qty_in: float, qty_out: flo
     return new_bal
 
 
+def _rebuild_item_balance(db: Database, item_id: int) -> float:
+    """Re-sync one item's live balance from the immutable stock ledger."""
+    ledger = float(db.scalar(
+        "SELECT COALESCE(SUM(qty_in-qty_out),0) FROM stock_ledger WHERE item_id=?",
+        (item_id,), 0) or 0)
+    db.execute("UPDATE items SET balance=?, updated_at=datetime('now','localtime') WHERE id=?",
+               (ledger, item_id))
+    return ledger
+
+
 def _insert_header(db: Database, h: DocHeader, doc_no: str, status: str,
                    total_value: float) -> int:
     cur = db.execute(
@@ -391,24 +401,29 @@ def reverse_document(db: Database, doc_id: int, reason: str) -> str:
 
     h = DocHeader(doc_type=typ, doc_date=today(), warehouse=d["warehouse"])
     tag = f"Reversal of {d['doc_no']}: {reason}"
+    touched_items: set[int] = set()
     try:
         for ln in lines:
             qty = float(ln["qty"] or 0)
+            item_id = int(ln["item_id"])
             if typ == "GRN":
                 # goods came in -> take them back out
-                _post(db, ln["item_id"], "ADJUSTMENT", 0, qty, h, doc_id,
+                _post(db, item_id, "ADJUSTMENT", 0, qty, h, doc_id,
                       d["doc_no"], reason=tag)
+                touched_items.add(item_id)
             elif typ == "DN":
                 # goods went out -> put them back
-                _post(db, ln["item_id"], "ADJUSTMENT", qty, 0, h, doc_id,
+                _post(db, item_id, "ADJUSTMENT", qty, 0, h, doc_id,
                       d["doc_no"], reason=tag)
+                touched_items.add(item_id)
             elif typ == "RET":
                 if (ln["condition"] or "USABLE").upper() == "USABLE":
-                    _post(db, ln["item_id"], "ADJUSTMENT", 0, qty, h, doc_id,
+                    _post(db, item_id, "ADJUSTMENT", 0, qty, h, doc_id,
                           d["doc_no"], reason=tag)
+                    touched_items.add(item_id)
                 else:
                     db.execute("UPDATE items SET damaged_qty=MAX(0,damaged_qty-?)"
-                               " WHERE id=?", (qty, ln["item_id"]))
+                               " WHERE id=?", (qty, item_id))
             elif typ == "TRF":
                 # a transfer is out of one store and into another: undo both legs
                 # and send the item back to where it started.
@@ -417,24 +432,28 @@ def reverse_document(db: Database, doc_id: int, reason: str) -> str:
                                  to_warehouse=d["warehouse"],
                                  location=_g("to_location"),
                                  to_location=_g("location"))
-                _post(db, ln["item_id"], "TRANSFER_OUT", 0, qty, back, doc_id,
+                _post(db, item_id, "TRANSFER_OUT", 0, qty, back, doc_id,
                       d["doc_no"], location=_g("to_location"), reason=tag)
-                _post(db, ln["item_id"], "TRANSFER_IN", qty, 0, back, doc_id,
+                _post(db, item_id, "TRANSFER_IN", qty, 0, back, doc_id,
                       d["doc_no"], location=_g("location"), reason=tag)
                 db.execute("UPDATE items SET warehouse=?, location=? WHERE id=?",
-                           (d["warehouse"], _g("location"), ln["item_id"]))
+                           (d["warehouse"], _g("location"), item_id))
+                touched_items.add(item_id)
             elif typ == "ADJ":
                 # an adjustment is signed: +7 is undone by -7 and vice versa
                 if qty >= 0:
-                    _post(db, ln["item_id"], "ADJUSTMENT", 0, qty, h, doc_id,
+                    _post(db, item_id, "ADJUSTMENT", 0, qty, h, doc_id,
                           d["doc_no"], reason=tag)
                 else:
-                    _post(db, ln["item_id"], "ADJUSTMENT", -qty, 0, h, doc_id,
+                    _post(db, item_id, "ADJUSTMENT", -qty, 0, h, doc_id,
                           d["doc_no"], reason=tag)
+                touched_items.add(item_id)
             elif typ == "CNT":
                 # a count sheet holds no stock effect of its own; the adjustment
                 # it produced is the thing to reverse.
                 continue
+        for item_id in touched_items:
+            _rebuild_item_balance(db, item_id)
         db.execute("UPDATE documents SET status='REVERSED', remarks=COALESCE(remarks,'')||?"
                    " WHERE id=?", (f" [REVERSED: {reason}]", doc_id))
         _unwind_material_request(db, d["doc_no"], typ, reason)
@@ -442,6 +461,16 @@ def reverse_document(db: Database, doc_id: int, reason: str) -> str:
     except Exception:
         db.rollback()
         raise
+    if typ == "DN":
+        try:
+            from . import employee_ppe as PPE
+            pdb = PPE.get_db(getattr(db, "current_user", "admin"))
+            try:
+                PPE.purge_stale_synced_records(db, pdb, [doc_id])
+            finally:
+                pdb.close()
+        except Exception:
+            pass
     db.audit("REVERSED", typ, d["doc_no"], reason)
     return d["doc_no"]
 
