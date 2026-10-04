@@ -4306,6 +4306,28 @@ def main() -> int:
           not _legacy_folder.exists(),
           "an existing Surveyor Tools Record folder is migrated to Tools Station")
     _migrated_db.close()
+
+    _sv_locked_root = root / "SURVEYOR_TOOLS_LOCKED_RENAME"
+    shutil.rmtree(_sv_locked_root, ignore_errors=True)
+    _cfg.set_storage_root(_sv_locked_root)
+    _locked_legacy = _sv_locked_root / "Surveyor Tools Record"
+    _locked_db = SV.SurveyorDB(_locked_legacy / SV.DB_NAME, current_user="admin")
+    SV.save_record(_locked_db, {"instrument_desc": "Locked Legacy Tool", "serial_no": "LEG-LOCK-1",
+                                "location": "Warehouse", "qty": 1, "status": SV.ST_ACTIVE,
+                                "issued_by": "Store Officer"})
+    _locked_db.close()
+    _real_move = SV.shutil.move
+    try:
+        SV.shutil.move = lambda *a, **k: (_ for _ in ()).throw(PermissionError("locked sqlite sidecar"))
+        _fallback_path = SV.db_path()
+    finally:
+        SV.shutil.move = _real_move
+    _fallback_db = SV.SurveyorDB(_fallback_path, current_user="admin")
+    check(_fallback_path.parent == _locked_legacy and
+          any(r.get("serial_no") == "LEG-LOCK-1" for r in SV.list_records(_fallback_db)),
+          "if the old Tools Station DB files are locked, the app keeps using the legacy folder instead of crashing")
+    _fallback_db.close()
+
     _cfg.set_storage_root(_sv_root)
     svp = win.page_survey
     svp.sdb.execute("DELETE FROM records")

@@ -1,0 +1,21 @@
+AURCO Inventory Manager 2.28.10
+Package: software v 34.zip
+Compared against: software v 33.zip
+
+Modified files (7):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/surveyor_tools.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.10.txt
+
+Main fixes
+- Fixed the Tools Station rename migration so the app does not crash when the old SQLite sidecar files are locked by Windows.
+- If the old Surveyor Tools Record database files are in use, the app now safely keeps using the legacy folder for that run instead of failing.
+- The folder rename/migration can still complete later when the old DB files are no longer locked.
+- Added regression coverage for locked legacy Tools Station migration fallback.
+
+Validation
+- Headless regression suite: ALL 1381 CHECKS PASSED

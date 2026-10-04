@@ -168,25 +168,60 @@ def _now() -> str:
     return _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _folder_has_content(path: Path) -> bool:
+    try:
+        next(path.iterdir())
+        return True
+    except (StopIteration, FileNotFoundError, NotADirectoryError):
+        return False
+
+
+def _legacy_folder(root: Path, current: Path) -> Path | None:
+    for legacy_name in LEGACY_FOLDERS:
+        legacy = root / legacy_name
+        try:
+            same = legacy.resolve() == current.resolve()
+        except OSError:
+            same = False
+        if legacy.exists() and not same:
+            return legacy
+    return None
+
+
 def _module_folder() -> Path:
     root = config.get_storage_root() or config.default_storage_root()
     root = Path(root)
     current = root / FOLDER
-    current.mkdir(parents=True, exist_ok=True)
-    for legacy_name in LEGACY_FOLDERS:
-        legacy = root / legacy_name
-        if not legacy.exists() or legacy.resolve() == current.resolve():
-            continue
-        for child in legacy.iterdir():
-            dest = current / child.name
-            if dest.exists():
-                continue
-            shutil.move(str(child), str(dest))
-        try:
-            legacy.rmdir()
-        except OSError:
-            pass
-    return current
+    legacy = _legacy_folder(root, current)
+    if legacy is None:
+        current.mkdir(parents=True, exist_ok=True)
+        return current
+
+    current_exists = current.exists()
+    current_has_content = _folder_has_content(current)
+    current_db = current / DB_NAME
+    legacy_db = legacy / DB_NAME
+
+    # If the new folder already has real content, keep using it.
+    if current_db.exists() or current_has_content:
+        current.mkdir(parents=True, exist_ok=True)
+        return current
+
+    # Brand-new renamed install path with existing old data: move the whole
+    # folder in one step so SQLite sidecars stay together. If Windows reports
+    # the legacy DB/WAL/SHM files are in use, fall back to the legacy folder
+    # for this run instead of crashing; the rename can happen later.
+    try:
+        if current_exists and not current_has_content:
+            current.rmdir()
+        shutil.move(str(legacy), str(current))
+        return current
+    except (PermissionError, OSError):
+        legacy.mkdir(parents=True, exist_ok=True)
+        if legacy_db.exists() or _folder_has_content(legacy):
+            return legacy
+        current.mkdir(parents=True, exist_ok=True)
+        return current
 
 
 def db_path() -> Path:
