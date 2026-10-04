@@ -1,0 +1,25 @@
+AURCO Inventory Manager 2.28.9
+Package: software v 33.zip
+Compared against: software v 32.zip
+
+Modified files (11):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/protection.py
+- AurcoInventoryManager/aurco/core/surveyor_tools.py
+- AurcoInventoryManager/aurco/ui/main_window.py
+- AurcoInventoryManager/aurco/ui/surveyor_tools_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.9.txt
+- software v 33 - changed files.txt
+
+Main changes
+- Renamed Surveyor Tools Record to Tools Station.
+- Updated module labels, screen titles, export names, template names, and backup wording.
+- Kept old data safe by auto-migrating the old Surveyor Tools Record folder into the new Tools Station folder.
+- Adjusted the module wording so it now clearly covers other tools details too.
+
+Validation
+- ALL 1380 CHECKS PASSED

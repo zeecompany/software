@@ -72,7 +72,7 @@ NAV = [
     ("SEPARATE MODULES", None, None),
     ("Admin Station", "🏢", "Ctrl+Shift+A"),
     ("Tools, Instruments & Devices", "🔧", "Ctrl+Shift+T"),
-    ("Surveyor Tools Record", "🧭", "Ctrl+Shift+Y"),
+    ("Tools Station", "🧭", "Ctrl+Shift+Y"),
     ("Cable Records", "🧵", "Ctrl+Shift+B"),
     ("General DN Maker", "🧾", "Ctrl+G"),
     ("Company Issuance", "🏢", "Ctrl+Shift+O"),
@@ -316,7 +316,7 @@ class MainWindow(QMainWindow):
                            ("Report Center", self.page_reports), ("Audit Trail", self.page_audit),
                            ("Admin Station", self.page_admin),
                            ("Tools, Instruments & Devices", self.page_tools),
-                           ("Surveyor Tools Record", self.page_survey),
+                           ("Tools Station", self.page_survey),
                            ("Cable Records", self.page_cables),
                            ("General DN Maker", self.page_gdn),
                            ("Company Issuance", self.page_issuance),
@@ -439,9 +439,9 @@ class MainWindow(QMainWindow):
             "Tools, Instruments & Devices": "Separate custody register for tools, instruments "
                             "and devices — issue, transfer, temporary loan and "
                             "return. Its own database; no stock effect.",
-            "Surveyor Tools Record": "Separate register for survey instruments and tools — "
-                                      "serial numbers, pictures, location summary sheet and "
-                                      "dashboard. Its own database; no stock effect.",
+            "Tools Station": "Separate register for survey instruments and other tools — "
+                             "serial numbers, pictures, location summary sheet and "
+                             "dashboard. Its own database; no stock effect.",
             "Cable Records": "Separate cable drum register — length left on every "
                              "drum, every cut, the cable schedule and its megger "
                              "tests. Its own database; no stock effect.",

@@ -4282,14 +4282,31 @@ def main() -> int:
           EMP.find_employee(db, employee_id="EMP-102")["designation"] == "Senior Surveyor",
           "re-importing the same employee code updates the existing employee master row")
 
-    # ======================================= Surveyor Tools Record — module
-    section("Surveyor Tools Record — serials, pictures and summary sheet")
+    # ======================================= Tools Station — module
+    section("Tools Station — serials, pictures and summary sheet")
     from aurco.core import surveyor_tools as SV
     from aurco.ui.surveyor_tools_page import SurveyorToolsPage, RecordDialog as SVRecordDialog
     import aurco.ui.surveyor_tools_page as _svp_mod
     for _k in ("confirm", "info_box", "error_box", "toast"):
         setattr(_svp_mod.W, _k, getattr(W, _k))
-    check("Surveyor Tools Record" in win.pages, "Surveyor Tools Record page is available")
+    check("Tools Station" in win.pages, "Tools Station page is available")
+    _sv_root = _cfg.get_storage_root()
+    _sv_legacy_root = root / "SURVEYOR_TOOLS_RENAME"
+    shutil.rmtree(_sv_legacy_root, ignore_errors=True)
+    _cfg.set_storage_root(_sv_legacy_root)
+    _legacy_folder = _sv_legacy_root / "Surveyor Tools Record"
+    _legacy_db = SV.SurveyorDB(_legacy_folder / SV.DB_NAME, current_user="admin")
+    SV.save_record(_legacy_db, {"instrument_desc": "Legacy Auto Level", "serial_no": "LEG-001",
+                                "location": "Warehouse", "qty": 1, "status": SV.ST_ACTIVE,
+                                "issued_by": "Store Officer"})
+    _legacy_db.close()
+    _migrated_db = SV.SurveyorDB(SV.db_path(), current_user="admin")
+    check((_sv_legacy_root / SV.FOLDER / SV.DB_NAME).exists() and
+          any(r.get("serial_no") == "LEG-001" for r in SV.list_records(_migrated_db)) and
+          not _legacy_folder.exists(),
+          "an existing Surveyor Tools Record folder is migrated to Tools Station")
+    _migrated_db.close()
+    _cfg.set_storage_root(_sv_root)
     svp = win.page_survey
     svp.sdb.execute("DELETE FROM records")
     svp.sdb.commit()
@@ -4351,7 +4368,7 @@ def main() -> int:
           "typing an employee code can fill the employee name and Iqama from the master list")
     _sv_cols, _sv_sample = SV.template_rows()
     check("Issued By" in _sv_cols and "Employee Code" in _sv_cols,
-          "the surveyor tools template includes issuer and employee identity columns")
+          "the Tools Station template includes issuer and employee identity columns")
     _sv_head, _sv_rows = SV.sniff(
         "Instrument Description\tSerial No.\tMake / Model\tLocation\tQuantity\tStatus\tIssued To / Employee Name\tEmployee Code\tIqama ID\tDesignation\tDivision/Department\tCurrent Project\tIssued By\tRemarks\n"
         "Prism Pole\tPR-100\tSeco\tWarehouse\t1\tIn Use\tAhmed Salem\tEMP-100\t2456677889\tSurveyor\tSurvey\tHajar\tStore Officer\tImported from template\n")
@@ -4359,29 +4376,29 @@ def main() -> int:
     _sv_preview = SV.preview(_sv_head, _sv_rows, _sv_map)
     _sv_ins, _sv_sk = SV.import_records(svp.sdb, _sv_preview, "pasted rows")
     check(_sv_ins == 1 and _sv_sk == 0 and any(r.get("serial_no") == "PR-100" for r in SV.list_records(svp.sdb)),
-          "the surveyor tools module can import a filled template row")
+          "the Tools Station module can import a filled template row")
     _sv_ins2, _sv_sk2 = SV.import_records(svp.sdb, _sv_preview, "pasted rows")
     check(_sv_ins2 == 0 and _sv_sk2 == 1,
-          "the surveyor tools import skips duplicate template rows")
+          "the Tools Station import skips duplicate template rows")
     _dash_sv = SV.dashboard_data(svp.sdb)
     check(_dash_sv["total_qty"] == 7 and _dash_sv["out_of_order_qty"] == 1,
           "the dashboard totals the tracked quantity and the out-of-order quantity")
     check(any(k == "Warehouse" and v == 3 for k, v in _dash_sv["locations"]),
           "the dashboard breaks the data down by location")
-    win.go("Surveyor Tools Record")
+    win.go("Tools Station")
     svp.refresh()
     app.processEvents()
-    check(svp.tabs.count() == 4, "the Surveyor Tools Record page has dashboard, register, import and summary tabs")
+    check(svp.tabs.count() == 4, "the Tools Station page has dashboard, register, import and summary tabs")
     check(svp.register.table.rowCount() == 6, "the register tab lists the saved and imported surveyor tool rows")
     check(any(r.get("issued_to") == "Ahmed Salem" and r.get("employee_code") == "EMP-100" for r in SV.list_records(svp.sdb)),
-          "the surveyor tools register stores the employee issue details")
+          "the Tools Station register stores the employee issue details")
     check(svp.summary.table.rowCount() == 5, "the summary tab collapses records into one row per instrument")
     check(svp.dash.cards["qty"].lbl_value.text() == "7", "the dashboard card shows the total quantity")
     check(svp.register.table.currentRow() >= 0 and svp.register.lbl_pic.pixmap() is not None,
           "selecting a register row shows its picture preview")
     check("Employee Code" in svp.register.table.headers() and "Iqama ID" in svp.register.table.headers(),
-          "the surveyor tools register shows employee code and Iqama columns")
-    check(SV.FOLDER in _cfg.SUBFOLDERS, "the Surveyor Tools Record module folder is created with the storage root")
+          "the Tools Station register shows employee code and Iqama columns")
+    check(SV.FOLDER in _cfg.SUBFOLDERS, "the Tools Station module folder is created with the storage root")
 
     # ============================================ Cable Records — the module
     section("Cable Records — drums, cutting log and cable schedule")

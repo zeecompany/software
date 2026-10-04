@@ -49,7 +49,7 @@ PROTECTED_FOLDERS = [
     "Reversed Inventory", "Returns", "Reversed Returns", "Stock Transfers",
     "Reversed Stock Transfers", "Stock Adjustments", "Reversed Stock Adjustments",
     "Stock Counts", "Reversed Stock Counts", "Reports", "Attachments", "Exports",
-    "Backups", "Logs", "Admin Station", "Company Issuance", "Surveyor Tools Record",
+    "Backups", "Logs", "Admin Station", "Company Issuance", "Tools Station",
     "Labels",
 ]
 

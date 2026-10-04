@@ -1,4 +1,4 @@
-"""SURVEYOR TOOLS RECORD — serials, photos, summary sheet and dashboard."""
+"""TOOLS STATION — serials, photos, summary sheet and dashboard."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -55,11 +55,11 @@ class RecordDialog(QDialog):
         self.main_db = main_db
         self.record = dict(record or {})
         self._filling_employee = False
-        self.setWindowTitle("Surveyor Tools Record — " + ("Edit Record" if record else "New Record"))
+        self.setWindowTitle("Tools Station — " + ("Edit Record" if record else "New Record"))
         self.resize(860, 560)
         v = QVBoxLayout(self)
 
-        note = QLabel("Enter the survey instrument / tool details here. When a tool is issued, record the employee name together with the employee code or Iqama ID. If that employee already exists in the Employee Master, the details fill automatically.")
+        note = QLabel("Enter the tool / instrument details here. When a tool is issued, record the employee name together with the employee code or Iqama ID. If that employee already exists in the Employee Master, the details fill automatically.")
         note.setWordWrap(True)
         v.addWidget(note)
 
@@ -477,7 +477,7 @@ class RegisterTab(QWidget):
             return
         self.reload()
         self.dataChanged.emit()
-        W.toast(self, "Surveyor tool record saved.")
+        W.toast(self, "Tools Station record saved.")
 
     def edit_record(self):
         rec = self._current()
@@ -493,7 +493,7 @@ class RegisterTab(QWidget):
             return
         self.reload()
         self.dataChanged.emit()
-        W.toast(self, "Surveyor tool record updated.")
+        W.toast(self, "Tools Station record updated.")
 
     def delete_record(self):
         rec = self._current()
@@ -520,7 +520,7 @@ class RegisterTab(QWidget):
     def export_excel(self):
         f = D.export_excel(
             self.sdb,
-            "Surveyor Tools Register",
+            "Tools Station Register",
             ["Instrument Description", "Serial No.", "Make / Model", "Location", "Issued To", "Employee Code", "Iqama ID", "Designation", "Division/Department", "Current Project", "Status", "Qty", "Issued By", "Picture", "Remarks", "Updated"],
             [[r.get("instrument_desc", ""), r.get("serial_no", ""), r.get("make_model", ""),
               r.get("location", ""), r.get("issued_to", ""), r.get("employee_code", ""), r.get("iqama_id", ""),
@@ -544,14 +544,14 @@ class SurveyorImportTab(QWidget):
         v.setContentsMargins(4, 6, 4, 6)
         v.setSpacing(10)
 
-        card = W.Card("Import surveyor tools from Excel / CSV")
+        card = W.Card("Import tools and instruments from Excel / CSV")
         cols, sample = SV.template_rows()
         t = W.DataTable()
         t.fill(cols, sample)
         t.setMaximumHeight(135)
         card.add(t)
         note = QLabel(
-            "Download the template, fill the surveyor tools rows in Excel, then import the file here. "
+            "Download the template, fill the tools / instruments rows in Excel, then import the file here. "
             "AURCO also recognises common headings automatically — including Instrument Description, "
             "Serial No., Make / Model, Location, Quantity, Status, Issued To, Employee Code, Iqama ID, "
             "Issued By, Remarks and Picture Path."
@@ -585,15 +585,15 @@ class SurveyorImportTab(QWidget):
 
     def _template(self):
         cols, sample = SV.template_rows()
-        f = D.export_excel(self.db, "Surveyor Tools Template", cols, sample,
-                           Path(D.config.folder(SV.FOLDER)) / "Surveyor_Tools_Template.xlsx",
+        f = D.export_excel(self.db, "Tools Station Template", cols, sample,
+                           Path(D.config.folder(SV.FOLDER)) / "Tools_Station_Template.xlsx",
                            totals=False)
         W.toast(self, f"Template saved: {f.name}")
         D.open_path(f)
 
     def _file(self):
         f, _ = QFileDialog.getOpenFileName(
-            self, "Select the surveyor tools sheet", "",
+            self, "Select the Tools Station sheet", "",
             "Spreadsheets and text (*.xlsx *.xlsm *.csv *.txt);;All files (*)")
         if not f:
             return
@@ -622,7 +622,7 @@ class SurveyorImportTab(QWidget):
             return
         recs = SV.preview(headers, rows, mapping)
         if not recs:
-            W.error_box(self, "No usable surveyor tool rows were found.")
+            W.error_box(self, "No usable Tools Station rows were found.")
             return
         known = ", ".join(sorted({SV.LABELS.get(f, f) for f in mapping.values()}))
         if not W.confirm(self, f"{len(recs)} row(s) ready to import from {Path(str(source)).name}.\n\n"
@@ -631,7 +631,7 @@ class SurveyorImportTab(QWidget):
         ins, sk = SV.import_records(self.sdb, recs, str(source))
         self.paste.clear()
         self.imported.emit()
-        W.info_box(self, f"{ins} surveyor tool record(s) imported."
+        W.info_box(self, f"{ins} Tools Station record(s) imported."
                          + (f"\n{sk} row(s) skipped because they were duplicate or invalid." if sk else "")
                          + "\n\nYou can edit any imported row later from the Register tab.",
                    "Import complete")
@@ -646,7 +646,7 @@ class SummaryTab(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         bar = QHBoxLayout()
-        bar.addWidget(QLabel("This sheet matches the supplied surveyor tools summary layout and is built automatically from the register."))
+        bar.addWidget(QLabel("This sheet matches the supplied tools summary layout and is built automatically from the register."))
         bar.addStretch(1)
         bar.addWidget(W.button("Export", slot=self.export_excel))
         bar.addWidget(W.button("Refresh", slot=self.reload))
@@ -670,7 +670,7 @@ class SummaryTab(QWidget):
     def export_excel(self):
         f = D.export_excel(
             self.sdb,
-            "Surveyor Tools Record",
+            "Tools Station",
             ["SR#", "Instrument Description", "Warehouse", "Hajar", "Zuluf",
              "Yanbu", "Noor", "Total Quantity", "Remarks"],
             [[r["sr"], r["instrument_desc"], float(r["Warehouse"]), float(r["Hajar"]),
@@ -693,8 +693,8 @@ class SurveyorToolsPage(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(12, 10, 12, 10)
         head = QLabel(
-            "🧭  <b>Surveyor Tools Record</b> — keep serial numbers, locations, status, pictures and a "
-            "sheet-style summary for Auto Levels, Total Stations, GPS units and other survey instruments."
+            "🧭  <b>Tools Station</b> — keep serial numbers, locations, status, pictures and a "
+            "sheet-style summary for Auto Levels, Total Stations, GPS units and other survey or site tools."
         )
         head.setWordWrap(True)
         v.addWidget(head)
@@ -722,7 +722,7 @@ class SurveyorToolsPage(QWidget):
 
     def backup(self):
         p = self.sdb.backup(note="manual backup")
-        W.info_box(self, f"Surveyor Tools Record backed up to:\n\n{p}")
+        W.info_box(self, f"Tools Station backed up to:\n\n{p}")
 
     def _after_register_change(self):
         self.refresh()

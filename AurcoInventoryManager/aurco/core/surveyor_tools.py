@@ -1,4 +1,4 @@
-"""SURVEYOR TOOLS RECORD — separate register for survey instruments and tools.
+"""TOOLS STATION — separate register for survey instruments and other tools.
 
 This module follows the sheet-style summary the user supplied, but stores the
 actual records one line at a time so serial numbers, pictures and locations can
@@ -26,8 +26,9 @@ from typing import Any, Sequence
 
 from . import config
 
-MODULE_NAME = "Surveyor Tools Record"
+MODULE_NAME = "Tools Station"
 FOLDER = MODULE_NAME
+LEGACY_FOLDERS = ("Surveyor Tools Record",)
 DB_NAME = "surveyor_tools.db"
 SCHEMA_VERSION = 2
 
@@ -167,12 +168,33 @@ def _now() -> str:
     return _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _module_folder() -> Path:
+    root = config.get_storage_root() or config.default_storage_root()
+    root = Path(root)
+    current = root / FOLDER
+    current.mkdir(parents=True, exist_ok=True)
+    for legacy_name in LEGACY_FOLDERS:
+        legacy = root / legacy_name
+        if not legacy.exists() or legacy.resolve() == current.resolve():
+            continue
+        for child in legacy.iterdir():
+            dest = current / child.name
+            if dest.exists():
+                continue
+            shutil.move(str(child), str(dest))
+        try:
+            legacy.rmdir()
+        except OSError:
+            pass
+    return current
+
+
 def db_path() -> Path:
-    return config.folder(FOLDER) / DB_NAME
+    return _module_folder() / DB_NAME
 
 
 def photo_folder() -> Path:
-    p = config.folder(FOLDER) / "Photos"
+    p = _module_folder() / "Photos"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -294,7 +316,7 @@ class SurveyorDB:
 
     def backup(self, note: str = "") -> Path:
         ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = config.folder("Backups") / f"Surveyor_Tools_Record_{ts}.db"
+        out = config.folder("Backups") / f"Tools_Station_{ts}.db"
         shutil.copy2(self.path, out)
         self.audit("BACKUP", "database", out.name, note)
         return out
