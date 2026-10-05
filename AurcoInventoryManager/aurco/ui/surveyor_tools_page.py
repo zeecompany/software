@@ -683,17 +683,7 @@ class RegisterTab(QWidget):
         D.open_path(f)
 
     def export_pdf(self):
-        cols = ["Description", "Serial No.", "Make / Model", "Location", "Issued To", "Employee Code",
-                "Iqama ID", "Designation", "Division/Department", "Project / Site", "Status", "Qty",
-                "Issued By", "Remarks", "Updated"]
-        rows = [[r.get("instrument_desc", ""), r.get("serial_no", ""), r.get("make_model", ""),
-                 r.get("location", ""), r.get("issued_to", ""), r.get("employee_code", ""),
-                 r.get("iqama_id", ""), r.get("designation", ""), r.get("division", ""),
-                 r.get("current_project", ""), r.get("status", ""), float(r.get("qty") or 0),
-                 r.get("issued_by", ""), r.get("remarks", ""), r.get("updated_at", "") or r.get("created_at", "")]
-                for r in self.records]
-        f = D.report_pdf(self.sdb, "Tools Station Register", cols, rows,
-                         subtitle="Current filtered register view")
+        f = SV.export_register_pdf(self.sdb, self.records)
         self.last_file = f
         W.toast(self, f"Exported {f.name}")
         D.open_path(f)
@@ -702,17 +692,7 @@ class RegisterTab(QWidget):
         rec = self._current()
         if not rec:
             return
-        hist = SV.transfer_history(self.sdb, int(rec["id"]))
-        cols = ["Event No", "Date", "Event", "From Holder", "From Site", "From Location",
-                "To Holder", "To Site", "To Location", "Status", "Moved By", "Remarks"]
-        rows = [[h.get("event_no", ""), h.get("event_date", ""), h.get("event_type", ""),
-                 h.get("from_holder", ""), h.get("from_project", ""), h.get("from_location", ""),
-                 h.get("to_holder", ""), h.get("to_project", ""), h.get("to_location", ""),
-                 h.get("to_status", "") or h.get("from_status", ""), h.get("moved_by", ""), h.get("remarks", "")]
-                for h in hist]
-        subtitle = (f"Tool: {rec.get('instrument_desc', '') or '—'}  ·  Serial: {rec.get('serial_no', '') or '—'}  ·  "
-                    f"Current location: {rec.get('location', '') or '—'}")
-        f = D.report_pdf(self.sdb, "Tools Station Transfer History", cols, rows, subtitle=subtitle)
+        f = SV.export_history_pdf(self.sdb, int(rec["id"]))
         self.last_file = f
         W.toast(self, f"Exported {f.name}")
         D.open_path(f)

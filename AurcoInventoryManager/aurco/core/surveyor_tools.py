@@ -928,3 +928,187 @@ def dashboard_data(db: SurveyorDB, text: str = "", location: str = "", status: s
         "top_descriptions": top_desc,
         "recent": recent,
     }
+
+
+def latest_reference_no(db: SurveyorDB, record_id: int) -> str:
+    ensure_record_history(db, int(record_id))
+    row = db.one("SELECT event_no FROM transfer_history WHERE record_id=? ORDER BY id DESC LIMIT 1",
+                 (int(record_id),))
+    return str(row[0]) if row else ""
+
+
+def _picture_report_entries(db: SurveyorDB, records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for rec in records:
+        row = dict(rec)
+        pic = Path(str(row.get("picture_path") or "").strip())
+        if not pic.exists() or not pic.is_file():
+            continue
+        out.append({
+            "ref_no": latest_reference_no(db, int(row.get("id") or 0)) or f"REC-{int(row.get('id') or 0):05d}",
+            "record": row,
+            "picture_path": pic,
+        })
+    return out
+
+
+def _build_picture_appendix_pdf(db: SurveyorDB, title: str, subtitle: str,
+                                entries: Sequence[dict[str, Any]], out_path: Path) -> Path:
+    from . import documents as D
+
+    primary, accent = D._brand_colors(db)
+    page_w = D.A4[0] - 24 * D.mm
+    story: list[Any] = [
+        D.Paragraph(title, D.P_TITLE),
+        D._rule(primary, accent, page_w),
+    ]
+    if subtitle:
+        story += [D.Paragraph(subtitle, D.P_SUB)]
+    story += [D.Spacer(1, 3 * D.mm),
+              D.Paragraph("<b>Pictures appendix</b>", D.P_MD),
+              D.Paragraph("Photographs are attached at the end of the report together with the latest reference number, serial number and custody details for each tool.", D.P_SM),
+              D.Spacer(1, 3 * D.mm)]
+    first = True
+    for entry in entries:
+        rec = dict(entry["record"])
+        pic = entry["picture_path"]
+        try:
+            img = D.Image(str(pic), width=82 * D.mm, height=62 * D.mm, kind="proportional")
+        except Exception:
+            continue
+        meta = [
+            ("Reference No.", entry.get("ref_no", "") or f"REC-{int(rec.get('id') or 0):05d}"),
+            ("Description", str(rec.get("instrument_desc") or "") or "-"),
+            ("Serial No.", str(rec.get("serial_no") or "") or "-"),
+            ("Make / Model", str(rec.get("make_model") or "") or "-"),
+            ("Issued To", str(rec.get("issued_to") or "") or "Store custody"),
+            ("Employee Code", str(rec.get("employee_code") or "") or "-"),
+            ("Iqama ID", str(rec.get("iqama_id") or "") or "-"),
+            ("Project / Site", str(rec.get("current_project") or "") or "-"),
+            ("Location", str(rec.get("location") or "") or "-"),
+            ("Status", str(rec.get("status") or "") or "-"),
+            ("Qty", f"{to_float(rec.get('qty') or 0):g}"),
+            ("Picture File", pic.name),
+        ]
+        detail = D._kv_block(meta, cols=1)
+        box = D.Table([[detail, img]], colWidths=[96 * D.mm, 84 * D.mm])
+        box.setStyle(D.TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BOX", (0, 0), (-1, -1), 0.7, D.colors.HexColor("#c9d6e2")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.5, D.colors.HexColor("#dfe7ef")),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        if not first:
+            story.append(D.PageBreak())
+        first = False
+        story += [D.KeepTogether([
+            D.Paragraph(f"<b>{str(rec.get('instrument_desc') or 'Tool')}</b>", D.P_MD),
+            D.Spacer(1, 2 * D.mm),
+            box,
+        ])]
+    if first:
+        story.append(D.Paragraph("<i>No valid picture files were found for this report.</i>", D.P_MD))
+    D._doc(out_path, False, db).build(
+        story,
+        onFirstPage=D._header_footer(db, "Report", True),
+        onLaterPages=D._header_footer(db, "Report", True),
+    )
+    return out_path
+
+
+def _merge_pdf_parts(target: Path, main_pdf: Path, appendix_pdf: Path | None = None) -> Path:
+    if appendix_pdf is None or not appendix_pdf.exists():
+        shutil.move(str(main_pdf), str(target))
+        return target
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    for src in (main_pdf, appendix_pdf):
+        reader = PdfReader(str(src))
+        for page in reader.pages:
+            writer.add_page(page)
+    with open(target, "wb") as fh:
+        writer.write(fh)
+    try:
+        main_pdf.unlink()
+    except OSError:
+        pass
+    try:
+        appendix_pdf.unlink()
+    except OSError:
+        pass
+    return target
+
+
+def export_register_pdf(db: SurveyorDB, records: Sequence[dict[str, Any]], out_path: str | Path | None = None) -> Path:
+    from . import documents as D
+
+    rows = [dict(r) for r in records]
+    out = Path(out_path) if out_path else (config.folder("Reports") /
+                                           f"Tools_Station_Register_{_dt.datetime.now():%Y%m%d_%H%M%S}.pdf")
+    tmp_main = out.with_name(out.stem + "__main.pdf")
+    tmp_pic = out.with_name(out.stem + "__pictures.pdf")
+    cols = ["Description", "Serial No.", "Make / Model", "Location", "Issued To", "Employee Code",
+            "Iqama ID", "Designation", "Division/Department", "Project / Site", "Status", "Qty",
+            "Issued By", "Remarks", "Updated"]
+    data = [[r.get("instrument_desc", ""), r.get("serial_no", ""), r.get("make_model", ""),
+             r.get("location", ""), r.get("issued_to", ""), r.get("employee_code", ""),
+             r.get("iqama_id", ""), r.get("designation", ""), r.get("division", ""),
+             r.get("current_project", ""), r.get("status", ""), float(r.get("qty") or 0),
+             r.get("issued_by", ""), r.get("remarks", ""),
+             r.get("updated_at", "") or r.get("created_at", "")]
+            for r in rows]
+    D.report_pdf(db, "Tools Station Register", cols, data, out_path=tmp_main,
+                 subtitle="Current filtered register view")
+    entries = _picture_report_entries(db, rows)
+    appendix = None
+    if entries:
+        appendix = _build_picture_appendix_pdf(
+            db,
+            "Tools Station Register — Pictures Appendix",
+            f"{len(entries)} tool photo(s) attached at the end of the report",
+            entries,
+            tmp_pic,
+        )
+    final = _merge_pdf_parts(out, tmp_main, appendix)
+    db.audit("EXPORTED", "report", "Tools Station Register", f"PDF -> {final.name}")
+    return final
+
+
+def export_history_pdf(db: SurveyorDB, record_id: int, out_path: str | Path | None = None) -> Path:
+    from . import documents as D
+
+    rec = get_record(db, int(record_id))
+    if not rec:
+        raise ValueError("Record not found.")
+    hist = transfer_history(db, int(record_id))
+    out = Path(out_path) if out_path else (config.folder("Reports") /
+                                           f"Tools_Station_Transfer_History_{safe_name(str(rec.get('serial_no') or rec.get('instrument_desc') or record_id))}_{_dt.datetime.now():%Y%m%d_%H%M%S}.pdf")
+    tmp_main = out.with_name(out.stem + "__main.pdf")
+    tmp_pic = out.with_name(out.stem + "__pictures.pdf")
+    cols = ["Event No", "Date", "Event", "From Holder", "From Site", "From Location",
+            "To Holder", "To Site", "To Location", "Status", "Moved By", "Remarks"]
+    data = [[h.get("event_no", ""), h.get("event_date", ""), h.get("event_type", ""),
+             h.get("from_holder", ""), h.get("from_project", ""), h.get("from_location", ""),
+             h.get("to_holder", ""), h.get("to_project", ""), h.get("to_location", ""),
+             h.get("to_status", "") or h.get("from_status", ""), h.get("moved_by", ""), h.get("remarks", "")]
+            for h in hist]
+    subtitle = (f"Tool: {rec.get('instrument_desc', '') or '—'}  ·  Serial: {rec.get('serial_no', '') or '—'}  ·  "
+                f"Current location: {rec.get('location', '') or '—'}")
+    D.report_pdf(db, "Tools Station Transfer History", cols, data, out_path=tmp_main, subtitle=subtitle)
+    entries = _picture_report_entries(db, [rec])
+    appendix = None
+    if entries:
+        appendix = _build_picture_appendix_pdf(
+            db,
+            "Tools Station Transfer History — Picture Appendix",
+            f"Reference number, serial number and current custody details for {rec.get('instrument_desc', '') or 'the selected tool'}.",
+            entries,
+            tmp_pic,
+        )
+    final = _merge_pdf_parts(out, tmp_main, appendix)
+    db.audit("EXPORTED", "report", "Tools Station Transfer History", f"PDF -> {final.name}")
+    return final

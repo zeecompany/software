@@ -4466,14 +4466,26 @@ def main() -> int:
     check("Employee Code" in svp.register.table.headers() and "Iqama ID" in svp.register.table.headers(),
           "the Tools Station register shows employee code and Iqama columns")
     svp.register.export_pdf()
-    check(svp.register.last_file and svp.register.last_file.exists()
-          and svp.register.last_file.suffix.lower() == ".pdf",
+    _ts_reg_pdf = svp.register.last_file
+    check(_ts_reg_pdf and _ts_reg_pdf.exists() and _ts_reg_pdf.suffix.lower() == ".pdf",
           "the Tools Station register can be exported as PDF")
+    _ts_reg_text = "\n".join((p.extract_text() or "") for p in _PdfReader(str(_ts_reg_pdf)).pages)
+    check("Pictures appendix" in _ts_reg_text and "Reference No." in _ts_reg_text and "AL-001" in _ts_reg_text,
+          "the Tools Station register PDF appends tool pictures with reference and serial details")
+    for _r in range(svp.register.table.rowCount()):
+        if svp.register.table.item(_r, 2).text() == "AL-001":
+            svp.register.table.selectRow(_r)
+            app.processEvents()
+            break
     svp.register.export_history_pdf()
-    check(svp.register.last_file and svp.register.last_file.exists()
-          and svp.register.last_file.suffix.lower() == ".pdf"
-          and svp.register.last_file.stat().st_size > 1000,
+    _ts_hist_pdf = svp.register.last_file
+    check(_ts_hist_pdf and _ts_hist_pdf.exists()
+          and _ts_hist_pdf.suffix.lower() == ".pdf"
+          and _ts_hist_pdf.stat().st_size > 1000,
           "the Tools Station transfer history can be exported as PDF")
+    _ts_hist_text = "\n".join((p.extract_text() or "") for p in _PdfReader(str(_ts_hist_pdf)).pages)
+    check("Pictures appendix" in _ts_hist_text and "AL-001" in _ts_hist_text and "Reference No." in _ts_hist_text,
+          "the Tools Station history PDF appends the tool picture with reference and serial details")
     check(SV.FOLDER in _cfg.SUBFOLDERS, "the Tools Station module folder is created with the storage root")
 
     # ============================================ Cable Records — the module

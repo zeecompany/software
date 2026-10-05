@@ -1,0 +1,24 @@
+AURCO Inventory Manager 2.28.12
+Package: software v 36.zip
+Compared against: software v 35.zip
+
+Modified files (9):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/surveyor_tools.py
+- AurcoInventoryManager/aurco/ui/surveyor_tools_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.12.txt
+- software v 36 - changed files.txt
+
+Main changes
+- Tools Station PDF exports now append tool pictures at the end of the document.
+- Every appended picture entry includes the latest reference number, serial number, and current tool/custody details.
+- The transfer-history PDF for a selected tool also carries the tool picture appendix when a saved picture exists.
+- Tools Station PDF generation was moved into shared backend helpers so both PDF exports stay aligned.
+- Regression coverage was expanded to verify the appended picture content in both Tools Station PDF exports.
+
+Validation
+- Headless regression suite: ALL 1390 CHECKS PASSED
