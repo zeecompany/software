@@ -4402,10 +4402,53 @@ def main() -> int:
     _sv_ins2, _sv_sk2 = SV.import_records(svp.sdb, _sv_preview, "pasted rows")
     check(_sv_ins2 == 0 and _sv_sk2 == 1,
           "the Tools Station import skips duplicate template rows")
+    _ts_id = next(r["id"] for r in SV.list_records(svp.sdb) if r.get("serial_no") == "TS-001")
+    _ts_hist0 = SV.transfer_history(svp.sdb, _ts_id)
+    check(bool(_ts_hist0) and _ts_hist0[0]["event_type"] in (SV.EV_ISSUED, SV.EV_REGISTERED),
+          "Tools Station keeps a starting custody history row")
+    SV.transfer_record(svp.sdb, _ts_id, {
+        "event_date": "2026-08-28",
+        "issued_to": "Bilal Khan",
+        "employee_code": "EMP-101",
+        "iqama_id": "2456677890",
+        "designation": "Chief Surveyor",
+        "division": "Survey",
+        "current_project": "Noor",
+        "location": "Noor",
+        "status": SV.ST_IN_USE,
+        "moved_by": "Store Officer 2",
+        "remarks": "Transferred to another surveyor on a new site",
+    })
+    _ts_after = SV.get_record(svp.sdb, _ts_id)
+    check(_ts_after["issued_to"] == "Bilal Khan" and _ts_after["location"] == "Noor"
+          and _ts_after["current_project"] == "Noor",
+          "transferring a tool updates the current holder and site")
+    _ts_hist1 = SV.transfer_history(svp.sdb, _ts_id)
+    check(any(h["event_type"] == SV.EV_TRANSFER and h["from_holder"] == "Ahmed Salem"
+              and h["to_holder"] == "Bilal Khan" and h["from_project"] == "Hajar"
+              and h["to_project"] == "Noor" for h in _ts_hist1),
+          "the transfer history keeps where the tool was and where it moved")
+    SV.transfer_record(svp.sdb, _ts_id, {
+        "event_date": "2026-08-29",
+        "issued_to": "",
+        "employee_code": "",
+        "iqama_id": "",
+        "designation": "",
+        "division": "",
+        "current_project": "Warehouse",
+        "location": "Warehouse",
+        "status": SV.ST_ACTIVE,
+        "moved_by": "Store Officer 3",
+        "remarks": "Returned to store custody",
+    })
+    _ts_store = SV.get_record(svp.sdb, _ts_id)
+    check(_ts_store["issued_to"] == "" and _ts_store["location"] == "Warehouse"
+          and _ts_store["status"] == SV.ST_ACTIVE,
+          "a tool can be transferred back from a person to store custody")
     _dash_sv = SV.dashboard_data(svp.sdb)
     check(_dash_sv["total_qty"] == 7 and _dash_sv["out_of_order_qty"] == 1,
           "the dashboard totals the tracked quantity and the out-of-order quantity")
-    check(any(k == "Warehouse" and v == 3 for k, v in _dash_sv["locations"]),
+    check(any(k == "Warehouse" and v == 4 for k, v in _dash_sv["locations"]),
           "the dashboard breaks the data down by location")
     win.go("Tools Station")
     svp.refresh()
@@ -4418,8 +4461,19 @@ def main() -> int:
     check(svp.dash.cards["qty"].lbl_value.text() == "7", "the dashboard card shows the total quantity")
     check(svp.register.table.currentRow() >= 0 and svp.register.lbl_pic.pixmap() is not None,
           "selecting a register row shows its picture preview")
+    check(svp.register.t_history.rowCount() >= 1,
+          "the Tools Station register shows movement history for the selected tool")
     check("Employee Code" in svp.register.table.headers() and "Iqama ID" in svp.register.table.headers(),
           "the Tools Station register shows employee code and Iqama columns")
+    svp.register.export_pdf()
+    check(svp.register.last_file and svp.register.last_file.exists()
+          and svp.register.last_file.suffix.lower() == ".pdf",
+          "the Tools Station register can be exported as PDF")
+    svp.register.export_history_pdf()
+    check(svp.register.last_file and svp.register.last_file.exists()
+          and svp.register.last_file.suffix.lower() == ".pdf"
+          and svp.register.last_file.stat().st_size > 1000,
+          "the Tools Station transfer history can be exported as PDF")
     check(SV.FOLDER in _cfg.SUBFOLDERS, "the Tools Station module folder is created with the storage root")
 
     # ============================================ Cable Records — the module

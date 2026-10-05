@@ -440,8 +440,9 @@ class MainWindow(QMainWindow):
                             "and devices — issue, transfer, temporary loan and "
                             "return. Its own database; no stock effect.",
             "Tools Station": "Separate register for survey instruments and other tools — "
-                             "serial numbers, pictures, location summary sheet and "
-                             "dashboard. Its own database; no stock effect.",
+                             "serial numbers, person/site transfer history, pictures, "
+                             "location summary sheet and dashboard. Its own database; "
+                             "no stock effect.",
             "Cable Records": "Separate cable drum register — length left on every "
                              "drum, every cut, the cable schedule and its megger "
                              "tests. Its own database; no stock effect.",

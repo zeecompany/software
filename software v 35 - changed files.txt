@@ -1,0 +1,24 @@
+AURCO Inventory Manager 2.28.11
+Package: software v 35.zip
+Compared against: software v 34.zip
+
+Modified files (10):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/surveyor_tools.py
+- AurcoInventoryManager/aurco/ui/main_window.py
+- AurcoInventoryManager/aurco/ui/surveyor_tools_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.11.txt
+- software v 35 - changed files.txt
+
+Main changes
+- Added a Tools Station transfer option for moving tools between people, sites/projects, and locations.
+- Added permanent movement history so each tool shows where it was and where it moved.
+- Added PDF export for the Tools Station register and selected tool transfer history.
+- Added support for transferring a tool back to store custody.
+
+Validation
+- ALL 1388 CHECKS PASSED

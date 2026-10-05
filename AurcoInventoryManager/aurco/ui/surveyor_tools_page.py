@@ -15,6 +15,7 @@ from ..core import employees as EMP
 from ..core import surveyor_tools as SV
 from ..core.database import Database
 from . import widgets as W
+from .common import date_edit, iso
 
 _STATUS_COLORS = {
     SV.ST_ACTIVE: "#1a9c52",
@@ -198,6 +199,118 @@ class RecordDialog(QDialog):
         }
 
 
+class TransferDialog(QDialog):
+    def __init__(self, main_db: Database, record: dict[str, object], parent=None):
+        super().__init__(parent)
+        self.main_db = main_db
+        self.record = dict(record or {})
+        self._filling_employee = False
+        self.setWindowTitle("Tools Station — Transfer Tool")
+        self.resize(760, 500)
+        v = QVBoxLayout(self)
+
+        note = QLabel(
+            "Use this form whenever a tool moves to another person, site or location. "
+            "AURCO will update the current holder and keep a permanent movement history."
+        )
+        note.setWordWrap(True)
+        v.addWidget(note)
+
+        now_card = W.Card("Current custody")
+        now_card.add(QLabel(
+            f"<b>Description:</b> {self.record.get('instrument_desc', '') or '—'}<br>"
+            f"<b>Serial No.:</b> {self.record.get('serial_no', '') or '—'}<br>"
+            f"<b>Current holder:</b> {self.record.get('issued_to', '') or '—'}<br>"
+            f"<b>Current project/site:</b> {self.record.get('current_project', '') or '—'}<br>"
+            f"<b>Current location:</b> {self.record.get('location', '') or '—'}<br>"
+            f"<b>Status:</b> {self.record.get('status', '') or '—'}"
+        ))
+        v.addWidget(now_card)
+
+        form = QFormLayout()
+        self.e_date = date_edit()
+        self.e_location = W.combo(SV.DEFAULT_LOCATIONS, editable=True,
+                                  current=str(self.record.get("location", "") or SV.LOC_WAREHOUSE))
+        self.e_status = W.combo(SV.STATUSES, current=str(self.record.get("status", "") or SV.ST_ACTIVE))
+        self.e_issued_to = QLineEdit(str(self.record.get("issued_to", "") or ""))
+        self.e_employee_code = QLineEdit(str(self.record.get("employee_code", "") or ""))
+        self.e_iqama = QLineEdit(str(self.record.get("iqama_id", "") or ""))
+        self.e_designation = QLineEdit(str(self.record.get("designation", "") or ""))
+        self.e_division = QLineEdit(str(self.record.get("division", "") or ""))
+        self.e_project = QLineEdit(str(self.record.get("current_project", "") or ""))
+        self.e_moved_by = QLineEdit(getattr(main_db, "current_user", "") or str(self.record.get("issued_by", "") or ""))
+        self.e_remarks = QPlainTextEdit(str(self.record.get("remarks", "") or ""))
+        self.e_remarks.setMaximumHeight(110)
+        self._bind_employee_completers()
+        self.e_issued_to.editingFinished.connect(lambda: self._fill_from_master("name"))
+        self.e_employee_code.editingFinished.connect(lambda: self._fill_from_master("employee_id"))
+        self.e_iqama.editingFinished.connect(lambda: self._fill_from_master("iqama_id"))
+
+        for lbl, wd in (("Transfer Date", self.e_date),
+                        ("New Location", self.e_location),
+                        ("New Status", self.e_status),
+                        ("Transfer To / Employee Name", self.e_issued_to),
+                        ("Employee Code", self.e_employee_code),
+                        ("Iqama ID", self.e_iqama),
+                        ("Designation", self.e_designation),
+                        ("Division/Department", self.e_division),
+                        ("Project / Site", self.e_project),
+                        ("Transferred By", self.e_moved_by),
+                        ("Transfer Remarks", self.e_remarks)):
+            form.addRow(lbl, wd)
+        v.addLayout(form)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Save Transfer")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    def _bind_employee_completers(self):
+        for widget, items in ((self.e_issued_to, EMP.employee_names(self.main_db)),
+                              (self.e_employee_code, EMP.employee_ids(self.main_db)),
+                              (self.e_iqama, EMP.iqama_ids(self.main_db))):
+            comp = QCompleter(items, self)
+            comp.setCaseSensitivity(Qt.CaseInsensitive)
+            comp.setFilterMode(Qt.MatchContains)
+            widget.setCompleter(comp)
+
+    def _fill_from_master(self, mode: str):
+        if self._filling_employee:
+            return
+        kwargs = {
+            "employee_id": self.e_employee_code.text().strip() if mode == "employee_id" else "",
+            "iqama_id": self.e_iqama.text().strip() if mode == "iqama_id" else "",
+            "name": self.e_issued_to.text().strip() if mode == "name" else "",
+        }
+        emp = EMP.find_employee(self.main_db, **kwargs)
+        if not emp:
+            return
+        self._filling_employee = True
+        self.e_issued_to.setText(emp.get("name", ""))
+        self.e_employee_code.setText(emp.get("employee_id", ""))
+        self.e_iqama.setText(emp.get("iqama_id", ""))
+        self.e_designation.setText(emp.get("designation", ""))
+        self.e_division.setText(emp.get("division", ""))
+        self.e_project.setText(emp.get("current_project", ""))
+        self._filling_employee = False
+
+    def data(self) -> dict[str, str]:
+        return {
+            "event_date": iso(self.e_date),
+            "location": self.e_location.currentText().strip(),
+            "status": self.e_status.currentText().strip(),
+            "issued_to": self.e_issued_to.text().strip(),
+            "employee_code": self.e_employee_code.text().strip(),
+            "iqama_id": self.e_iqama.text().strip(),
+            "designation": self.e_designation.text().strip(),
+            "division": self.e_division.text().strip(),
+            "current_project": self.e_project.text().strip(),
+            "moved_by": self.e_moved_by.text().strip(),
+            "remarks": self.e_remarks.toPlainText().strip(),
+        }
+
+
 class DashboardTab(QWidget):
     def __init__(self, sdb: SV.SurveyorDB, parent=None):
         super().__init__(parent)
@@ -301,6 +414,7 @@ class RegisterTab(QWidget):
         self.sdb = sdb
         self.main_db = main_db
         self.records: list[dict] = []
+        self.last_file: Path | None = None
 
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -324,9 +438,12 @@ class RegisterTab(QWidget):
         for i, (txt, slot) in enumerate((
                 ("Add", self.add_record),
                 ("Edit", self.edit_record),
+                ("Transfer", self.transfer_record),
                 ("Delete", self.delete_record),
                 ("Open Picture", self.open_picture),
-                ("Export", self.export_excel),
+                ("Excel", self.export_excel),
+                ("PDF", self.export_pdf),
+                ("History PDF", self.export_history_pdf),
                 ("Reset", self.reset_filters),
         ), start=6):
             bl.addWidget(W.button(txt, "Accent" if txt == "Add" else "", slot=slot), 0, i)
@@ -354,8 +471,12 @@ class RegisterTab(QWidget):
         self.lbl_detail = QLabel("Select a row to see the full details.")
         self.lbl_detail.setWordWrap(True)
         self.detail.add(self.lbl_detail, 1)
+        self.detail.add(QLabel("<b>Movement history</b>"))
+        self.t_history = W.DataTable(["Date", "Event", "From Holder / Site", "To Holder / Site", "Location", "By", "Remarks"])
+        self.t_history.setMaximumHeight(220)
+        self.detail.add(self.t_history)
         split.addWidget(self.detail)
-        split.setSizes([950, 360])
+        split.setSizes([950, 420])
 
     def _filters(self) -> dict:
         desc = self.f_desc.currentText().strip()
@@ -411,6 +532,7 @@ class RegisterTab(QWidget):
         else:
             _set_preview(self.lbl_pic, "")
             self.lbl_detail.setText("No records match the current filters.")
+            self.t_history.fill(["Date", "Event", "From Holder / Site", "To Holder / Site", "Location", "By", "Remarks"], [])
 
     def _current(self) -> dict | None:
         r = self.table.currentRow()
@@ -427,8 +549,19 @@ class RegisterTab(QWidget):
         if not rec:
             _set_preview(self.lbl_pic, "")
             self.lbl_detail.setText("Select a row to see the full details.")
+            self.t_history.fill(["Date", "Event", "From Holder / Site", "To Holder / Site", "Location", "By", "Remarks"], [])
             return
         _set_preview(self.lbl_pic, rec.get("picture_path", ""))
+        hist = SV.transfer_history(self.sdb, int(rec["id"]))
+        self.t_history.fill(
+            ["Date", "Event", "From Holder / Site", "To Holder / Site", "Location", "By", "Remarks"],
+            [[h.get("event_date", ""), h.get("event_type", ""),
+              " / ".join(x for x in (str(h.get("from_holder") or "").strip(), str(h.get("from_project") or "").strip()) if x) or "—",
+              " / ".join(x for x in (str(h.get("to_holder") or "").strip(), str(h.get("to_project") or "").strip()) if x) or "—",
+              f"{h.get('from_location', '') or '—'} → {h.get('to_location', '') or '—'}",
+              h.get("moved_by", ""), h.get("remarks", "")]
+             for h in hist]
+        )
         self.lbl_detail.setText(
             "<b>Description:</b> {0}<br>"
             "<b>Serial No.:</b> {1}<br>"
@@ -495,6 +628,22 @@ class RegisterTab(QWidget):
         self.dataChanged.emit()
         W.toast(self, "Tools Station record updated.")
 
+    def transfer_record(self):
+        rec = self._current()
+        if not rec:
+            return
+        dlg = TransferDialog(self.main_db, rec, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        try:
+            SV.transfer_record(self.sdb, int(rec["id"]), dlg.data())
+        except Exception as exc:  # noqa: BLE001
+            W.error_box(self, str(exc))
+            return
+        self.reload()
+        self.dataChanged.emit()
+        W.toast(self, "Tool transfer saved.")
+
     def delete_record(self):
         rec = self._current()
         if not rec:
@@ -529,6 +678,42 @@ class RegisterTab(QWidget):
               r.get("updated_at", "") or r.get("created_at", "")]
              for r in self.records],
         )
+        self.last_file = f
+        W.toast(self, f"Exported {f.name}")
+        D.open_path(f)
+
+    def export_pdf(self):
+        cols = ["Description", "Serial No.", "Make / Model", "Location", "Issued To", "Employee Code",
+                "Iqama ID", "Designation", "Division/Department", "Project / Site", "Status", "Qty",
+                "Issued By", "Remarks", "Updated"]
+        rows = [[r.get("instrument_desc", ""), r.get("serial_no", ""), r.get("make_model", ""),
+                 r.get("location", ""), r.get("issued_to", ""), r.get("employee_code", ""),
+                 r.get("iqama_id", ""), r.get("designation", ""), r.get("division", ""),
+                 r.get("current_project", ""), r.get("status", ""), float(r.get("qty") or 0),
+                 r.get("issued_by", ""), r.get("remarks", ""), r.get("updated_at", "") or r.get("created_at", "")]
+                for r in self.records]
+        f = D.report_pdf(self.sdb, "Tools Station Register", cols, rows,
+                         subtitle="Current filtered register view")
+        self.last_file = f
+        W.toast(self, f"Exported {f.name}")
+        D.open_path(f)
+
+    def export_history_pdf(self):
+        rec = self._current()
+        if not rec:
+            return
+        hist = SV.transfer_history(self.sdb, int(rec["id"]))
+        cols = ["Event No", "Date", "Event", "From Holder", "From Site", "From Location",
+                "To Holder", "To Site", "To Location", "Status", "Moved By", "Remarks"]
+        rows = [[h.get("event_no", ""), h.get("event_date", ""), h.get("event_type", ""),
+                 h.get("from_holder", ""), h.get("from_project", ""), h.get("from_location", ""),
+                 h.get("to_holder", ""), h.get("to_project", ""), h.get("to_location", ""),
+                 h.get("to_status", "") or h.get("from_status", ""), h.get("moved_by", ""), h.get("remarks", "")]
+                for h in hist]
+        subtitle = (f"Tool: {rec.get('instrument_desc', '') or '—'}  ·  Serial: {rec.get('serial_no', '') or '—'}  ·  "
+                    f"Current location: {rec.get('location', '') or '—'}")
+        f = D.report_pdf(self.sdb, "Tools Station Transfer History", cols, rows, subtitle=subtitle)
+        self.last_file = f
         W.toast(self, f"Exported {f.name}")
         D.open_path(f)
 
@@ -693,8 +878,8 @@ class SurveyorToolsPage(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(12, 10, 12, 10)
         head = QLabel(
-            "🧭  <b>Tools Station</b> — keep serial numbers, locations, status, pictures and a "
-            "sheet-style summary for Auto Levels, Total Stations, GPS units and other survey or site tools."
+            "🧭  <b>Tools Station</b> — keep serial numbers, locations, custody transfers, status, "
+            "pictures and a sheet-style summary for Auto Levels, Total Stations, GPS units and other survey or site tools."
         )
         head.setWordWrap(True)
         v.addWidget(head)

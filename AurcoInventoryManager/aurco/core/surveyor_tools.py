@@ -8,6 +8,7 @@ Key behaviour
 =============
 - separate SQLite database under the storage root
 - one register row per tracked record / serial batch
+- transfer tools between people, projects and sites with permanent movement history
 - optional picture copied into the module's own Photos folder
 - auto summary by instrument description across the fixed locations:
   Warehouse, Hajar, Zuluf, Yanbu, Noor
@@ -30,7 +31,7 @@ MODULE_NAME = "Tools Station"
 FOLDER = MODULE_NAME
 LEGACY_FOLDERS = ("Surveyor Tools Record",)
 DB_NAME = "surveyor_tools.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 LOC_WAREHOUSE = "Warehouse"
 LOC_HAJAR = "Hajar"
@@ -47,6 +48,11 @@ ST_MISSING = "Missing"
 ST_DISPOSED = "Disposed"
 STATUSES = [ST_ACTIVE, ST_IN_USE, ST_OUT_OF_ORDER, ST_UNDER_REPAIR, ST_MISSING, ST_DISPOSED]
 ACTIVE_STATUSES = {ST_ACTIVE, ST_IN_USE, ST_OUT_OF_ORDER, ST_UNDER_REPAIR, ST_MISSING}
+
+EV_REGISTERED = "REGISTERED"
+EV_ISSUED = "ISSUED"
+EV_TRANSFER = "TRANSFER"
+EVENT_TYPES = [EV_REGISTERED, EV_ISSUED, EV_TRANSFER]
 
 FIELDS = [
     ("instrument_desc", "Instrument Description"),
@@ -161,11 +167,47 @@ CREATE TABLE IF NOT EXISTS audit (
     details    TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_sv_audit ON audit(ts);
+
+CREATE TABLE IF NOT EXISTS transfer_history (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_no           TEXT NOT NULL UNIQUE,
+    record_id          INTEGER NOT NULL,
+    event_type         TEXT NOT NULL DEFAULT 'REGISTERED',
+    event_date         TEXT NOT NULL DEFAULT '',
+    instrument_desc    TEXT DEFAULT '',
+    serial_no          TEXT DEFAULT '',
+    qty                REAL NOT NULL DEFAULT 0,
+    from_holder        TEXT DEFAULT '',
+    from_employee_code TEXT DEFAULT '',
+    from_iqama_id      TEXT DEFAULT '',
+    from_designation   TEXT DEFAULT '',
+    from_division      TEXT DEFAULT '',
+    from_project       TEXT DEFAULT '',
+    from_location      TEXT DEFAULT '',
+    from_status        TEXT DEFAULT '',
+    to_holder          TEXT DEFAULT '',
+    to_employee_code   TEXT DEFAULT '',
+    to_iqama_id        TEXT DEFAULT '',
+    to_designation     TEXT DEFAULT '',
+    to_division        TEXT DEFAULT '',
+    to_project         TEXT DEFAULT '',
+    to_location        TEXT DEFAULT '',
+    to_status          TEXT DEFAULT '',
+    moved_by           TEXT DEFAULT '',
+    remarks            TEXT DEFAULT '',
+    created_at         TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS ix_sv_hist_record ON transfer_history(record_id, id);
+CREATE INDEX IF NOT EXISTS ix_sv_hist_date   ON transfer_history(event_date);
 """
 
 
 def _now() -> str:
     return _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def today() -> str:
+    return _dt.date.today().isoformat()
 
 
 def _folder_has_content(path: Path) -> bool:
@@ -304,6 +346,8 @@ class SurveyorDB:
         ):
             if col not in cols:
                 self.execute(sql)
+        self.execute("CREATE INDEX IF NOT EXISTS ix_sv_hist_record ON transfer_history(record_id, id)")
+        self.execute("CREATE INDEX IF NOT EXISTS ix_sv_hist_date ON transfer_history(event_date)")
         self.commit()
 
     def close(self) -> None:
@@ -342,6 +386,10 @@ class SurveyorDB:
         r = self.one("SELECT value FROM settings WHERE key=?", (key,))
         return str(r[0]) if r else str(default)
 
+    def get_bool(self, key: str, default: bool = False) -> bool:
+        raw = str(self.get_setting(key, "1" if default else "0")).strip().lower()
+        return raw in {"1", "true", "yes", "y", "on"}
+
     def audit(self, action: str, entity: str = "", entity_id: str = "", details: str = "") -> None:
         self.execute(
             "INSERT INTO audit(username,action,entity,entity_id,details) VALUES(?,?,?,?,?)",
@@ -359,6 +407,79 @@ class SurveyorDB:
 
 def get_db(current_user: str = "admin") -> SurveyorDB:
     return SurveyorDB(current_user=current_user)
+
+
+def get_record(db: SurveyorDB, record_id: int) -> dict[str, Any] | None:
+    row = db.one("SELECT * FROM records WHERE id=?", (int(record_id),))
+    return dict(row) if row else None
+
+
+def next_event_no(db: SurveyorDB) -> str:
+    year = _dt.date.today().year
+    pref = f"TS-MOV-{year}-"
+    n = int(db.scalar("SELECT COUNT(*) FROM transfer_history WHERE event_no LIKE ?",
+                      (pref + "%",), 0)) + 1
+    while db.one("SELECT 1 FROM transfer_history WHERE event_no=?", (f"{pref}{n:05d}",)):
+        n += 1
+    return f"{pref}{n:05d}"
+
+
+def _history_snapshot(rec: dict[str, Any] | sqlite3.Row | None) -> dict[str, Any]:
+    row = dict(rec or {})
+    return {
+        "instrument_desc": str(row.get("instrument_desc") or "").strip(),
+        "serial_no": str(row.get("serial_no") or "").strip(),
+        "qty": to_float(row.get("qty") or 0),
+        "holder": str(row.get("issued_to") or "").strip(),
+        "employee_code": str(row.get("employee_code") or "").strip(),
+        "iqama_id": str(row.get("iqama_id") or "").strip(),
+        "designation": str(row.get("designation") or "").strip(),
+        "division": str(row.get("division") or "").strip(),
+        "project": str(row.get("current_project") or "").strip(),
+        "location": str(row.get("location") or "").strip(),
+        "status": str(row.get("status") or "").strip(),
+    }
+
+
+def _insert_history(db: SurveyorDB, record_id: int, event_type: str, event_date: str,
+                    before: dict[str, Any] | sqlite3.Row | None,
+                    after: dict[str, Any] | sqlite3.Row | None,
+                    moved_by: str = "", remarks: str = "") -> int:
+    left = _history_snapshot(before)
+    right = _history_snapshot(after)
+    cur = db.execute(
+        """INSERT INTO transfer_history(event_no,record_id,event_type,event_date,instrument_desc,serial_no,qty,
+             from_holder,from_employee_code,from_iqama_id,from_designation,from_division,from_project,from_location,from_status,
+             to_holder,to_employee_code,to_iqama_id,to_designation,to_division,to_project,to_location,to_status,
+             moved_by,remarks)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (next_event_no(db), int(record_id), str(event_type or EV_TRANSFER), str(event_date or today()),
+         right.get("instrument_desc") or left.get("instrument_desc") or "",
+         right.get("serial_no") or left.get("serial_no") or "",
+         right.get("qty") or left.get("qty") or 0,
+         left.get("holder", ""), left.get("employee_code", ""), left.get("iqama_id", ""), left.get("designation", ""),
+         left.get("division", ""), left.get("project", ""), left.get("location", ""), left.get("status", ""),
+         right.get("holder", ""), right.get("employee_code", ""), right.get("iqama_id", ""), right.get("designation", ""),
+         right.get("division", ""), right.get("project", ""), right.get("location", ""), right.get("status", ""),
+         str(moved_by or db.current_user or "").strip(), str(remarks or "").strip())
+    )
+    return int(cur.lastrowid)
+
+
+def ensure_record_history(db: SurveyorDB, record_id: int) -> int:
+    if int(db.scalar("SELECT COUNT(*) FROM transfer_history WHERE record_id=?", (int(record_id),), 0) or 0):
+        return 0
+    row = get_record(db, record_id)
+    if not row:
+        return 0
+    event_date = str(row.get("created_at") or "")[:10] or today()
+    event_type = EV_ISSUED if (row.get("issued_to") or row.get("employee_code") or row.get("iqama_id")
+                               or row.get("status") == ST_IN_USE) else EV_REGISTERED
+    hid = _insert_history(db, int(record_id), event_type, event_date, None, row,
+                          moved_by=str(row.get("issued_by") or row.get("created_by") or db.current_user),
+                          remarks=str(row.get("remarks") or ""))
+    db.commit()
+    return hid
 
 
 def _copy_photo(src: str | Path) -> str:
@@ -442,6 +563,12 @@ def save_record(db: SurveyorDB, data: dict[str, Any], record_id: int | None = No
                  final_picture, db.current_user, _now()),
             )
             rec_id = int(cur.lastrowid)
+            _insert_history(db, rec_id, EV_ISSUED if (issued_to or employee_code or iqama_id or status == ST_IN_USE) else EV_REGISTERED,
+                            today(), None, {
+                                "instrument_desc": desc, "serial_no": serial, "qty": qty, "issued_to": issued_to,
+                                "employee_code": employee_code, "iqama_id": iqama_id, "designation": designation,
+                                "division": division, "current_project": current_project, "location": location, "status": status,
+                            }, moved_by=issued_by or db.current_user, remarks=remarks)
             db.commit()
             db.audit("CREATED", "record", str(rec_id), desc)
             return rec_id
@@ -481,10 +608,54 @@ def delete_record(db: SurveyorDB, record_id: int) -> None:
         return
     picture = str(row["picture_path"] or "")
     desc = str(row["instrument_desc"] or "")
+    db.execute("DELETE FROM transfer_history WHERE record_id=?", (record_id,))
     db.execute("DELETE FROM records WHERE id=?", (record_id,))
     db.commit()
     _delete_photo_if_unused(db, picture)
     db.audit("DELETED", "record", str(record_id), desc)
+
+
+def transfer_history(db: SurveyorDB, record_id: int) -> list[dict[str, Any]]:
+    ensure_record_history(db, int(record_id))
+    rows = db.query("SELECT * FROM transfer_history WHERE record_id=? ORDER BY event_date, id", (int(record_id),))
+    return [dict(r) for r in rows]
+
+
+def transfer_record(db: SurveyorDB, record_id: int, data: dict[str, Any]) -> int:
+    current = get_record(db, record_id)
+    if not current:
+        raise ValueError("Record not found.")
+    ensure_record_history(db, int(record_id))
+    moved_by = str(data.get("moved_by") or db.current_user or "").strip()
+    event_date = str(data.get("event_date") or today()).strip() or today()
+    remarks = str(data.get("remarks") or "").strip()
+    payload = dict(current)
+    payload.update({
+        "location": str(data.get("location") or current.get("location") or LOC_WAREHOUSE).strip() or LOC_WAREHOUSE,
+        "status": str(data.get("status") or current.get("status") or ST_ACTIVE).strip() or ST_ACTIVE,
+        "issued_to": str(data.get("issued_to") or "").strip(),
+        "employee_code": str(data.get("employee_code") or "").strip(),
+        "iqama_id": str(data.get("iqama_id") or "").strip(),
+        "designation": str(data.get("designation") or "").strip(),
+        "division": str(data.get("division") or "").strip(),
+        "current_project": str(data.get("current_project") or "").strip(),
+        "issued_by": moved_by,
+        "remarks": remarks or str(current.get("remarks") or ""),
+        "picture_path": str(current.get("picture_path") or ""),
+    })
+    tracked_before = _history_snapshot(current)
+    tracked_after = _history_snapshot(payload)
+    if tracked_before == tracked_after:
+        raise ValueError("Change the person, site, location or status before saving a transfer.")
+    save_record(db, payload, int(record_id))
+    fresh = get_record(db, int(record_id)) or payload
+    hid = _insert_history(db, int(record_id), EV_TRANSFER, event_date, current, fresh,
+                          moved_by=moved_by, remarks=remarks)
+    db.commit()
+    db.audit("TRANSFERRED", "record", str(record_id),
+             f"{tracked_before.get('holder') or tracked_before.get('location') or '-'} -> "
+             f"{tracked_after.get('holder') or tracked_after.get('location') or '-'}")
+    return hid
 
 
 def distinct_values(db: SurveyorDB, field: str) -> list[str]:
