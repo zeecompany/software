@@ -1,0 +1,23 @@
+software v 43 / AURCO Inventory Manager v2.28.19
+
+Included updates
+1. Analytics
+   - New site-wise synced-folder dashboard for Excel-based tools/device/instrument visibility
+   - Site / category / type / status / date filters, search, charts, recent updates, missing items and Excel export
+
+2. Tools, Instruments & Devices
+   - New site Excel sync panel inside the module
+   - Folder settings, auto-sync interval, manual sync, sample template, file-wise history and export
+   - Supports repeated sync without duplicate reposting and keeps source-file tracking
+
+3. Item Master
+   - Bulk mark selected items as 2nd Type
+   - Bulk remove 2nd Type
+   - New Normal Items / 2nd Type Items filter
+
+4. Cleanup
+   - Removed the separate Tools Station page from navigation
+   - Removed standard storage/protection references to the old Tools Station folder
+
+Validation
+- Full regression suite passed: 1384 / 1384 checks

@@ -18,8 +18,8 @@ from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QGridLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QPlainTextEdit, QScrollArea, QSplitter,
-                               QTabWidget, QTableWidget, QTableWidgetItem,
+                               QLineEdit, QPlainTextEdit, QScrollArea, QSpinBox,
+                               QSplitter, QTabWidget, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
 from ..core import documents as D
@@ -1494,12 +1494,13 @@ class AssetsTab(QWidget):
 
 # =========================================================== sync folder tab
 class SyncFolderTab(QWidget):
-    """Index folders of signed handover PDFs and pull their data out."""
+    """Index signed handover PDFs, and manage site-wise Excel sync folders too."""
     imported = Signal()
 
-    def __init__(self, tdb: T.ToolDB, parent=None):
+    def __init__(self, tdb: T.ToolDB, db: Database, parent=None):
         super().__init__(parent)
         self.tdb = tdb
+        self.db = db
         self.files: list[dict] = []
         v = QVBoxLayout(self)
         v.setContentsMargins(4, 6, 4, 6)
@@ -1561,6 +1562,11 @@ class SyncFolderTab(QWidget):
         self.table = W.DataTable()
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         v.addWidget(self.table, 1)
+
+        self.site_excel = SiteExcelSyncPanel(self.tdb, self.db)
+        self.site_excel.imported.connect(self.imported.emit)
+        v.addWidget(self.site_excel)
+        self.reload()
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "Select the handover folder")
@@ -1785,7 +1791,7 @@ class ToolStationPage(QWidget):
         self.dash = ToolDashboard(self.tdb, db)
         self.register = RegisterTab(self.tdb, db)
         self.assets = AssetsTab(self.tdb, db)
-        self.sync = SyncFolderTab(self.tdb)
+        self.sync = SyncFolderTab(self.tdb, db)
         self.reports = ToolReportsTab(self.tdb, db)
         self.tabs.addTab(self.dash, "📊  Dashboard")
         self.tabs.addTab(self.register, "📋  Handover Register")
@@ -1865,3 +1871,431 @@ class ToolStationPage(QWidget):
 
     def _folder(self):
         D.open_path(T.module_folder())
+
+
+class SiteExcelSyncPanel(QWidget):
+    """Site-wise Excel synchronisation inside the Tools module."""
+    imported = Signal()
+
+    def __init__(self, tdb: T.ToolDB, db: Database, parent=None):
+        super().__init__(parent)
+        self.tdb = tdb
+        self.db = db
+        self.files: list[dict] = []
+        self.folders: list[dict] = []
+        self.last_file: Path | None = None
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 10, 0, 0)
+        v.setSpacing(9)
+
+        sample = W.Card("Site-wise Excel folder sync")
+        note = QLabel(
+            "Each site can maintain its own Excel sheet in a shared folder. AURCO "
+            "reads new or updated files, maps the columns intelligently, avoids "
+            "duplicate reposting, and keeps a file-wise sync history with errors."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{W.MUTED};")
+        sample.add(note)
+        cols, rows = T.site_sync_template_rows()
+        self.t_sample = W.DataTable()
+        self.t_sample.fill(cols, rows)
+        self.t_sample.setMaximumHeight(130)
+        sample.add(self.t_sample)
+        a = QHBoxLayout()
+        a.addWidget(W.button("⬇  Download Sample Excel File", slot=self._template))
+        a.addWidget(W.button("📂  Import Excel", "Primary", self._import_excel))
+        a.addWidget(W.button("📂  Bulk Import Files", slot=self._bulk_import))
+        a.addWidget(W.button("📊  Export Excel", slot=self._export_inventory))
+        a.addWidget(W.button("🔄  Manual Sync Now", "Accent", self._sync_all))
+        a.addStretch(1)
+        self.lbl_sync = QLabel()
+        self.lbl_sync.setStyleSheet(f"color:{W.MUTED};")
+        a.addWidget(self.lbl_sync)
+        aw = QWidget(); aw.setLayout(a)
+        sample.add(aw)
+        v.addWidget(sample)
+
+        cfg = W.Card("Folder Sync Settings")
+        grid = QGridLayout()
+        self.e_path = QLineEdit()
+        self.e_path.setPlaceholderText(r"e.g. \\server\shared\Site Excel Inventory")
+        self.e_label = QLineEdit()
+        self.e_label.setPlaceholderText("Folder label")
+        self.e_site = QLineEdit()
+        self.e_site.setPlaceholderText("Default site (optional)")
+        self.chk_auto = QCheckBox("Enable automatic synchronisation")
+        self.sp_interval = QSpinBox(); self.sp_interval.setRange(1, 1440); self.sp_interval.setValue(5)
+        self.sp_interval.setSuffix(" min")
+        grid.addWidget(QLabel("Folder Path"), 0, 0)
+        grid.addWidget(self.e_path, 0, 1, 1, 4)
+        grid.addWidget(W.button("Browse...", slot=self._browse_folder), 0, 5)
+        grid.addWidget(QLabel("Label"), 1, 0)
+        grid.addWidget(self.e_label, 1, 1)
+        grid.addWidget(QLabel("Assign to Site"), 1, 2)
+        grid.addWidget(self.e_site, 1, 3)
+        grid.addWidget(self.chk_auto, 1, 4)
+        grid.addWidget(self.sp_interval, 1, 5)
+        brow = QHBoxLayout()
+        brow.addWidget(W.button("💾  Save / Update Folder", slot=self._save_folder))
+        brow.addWidget(W.button("🗑  Remove Folder", slot=self._remove_folder))
+        brow.addWidget(W.button("🔄  Sync Selected Folder", slot=self._sync_selected_folder))
+        brow.addWidget(W.button("📁  Open Folder", slot=self._open_folder))
+        brow.addStretch(1)
+        self.lbl_folder_status = QLabel()
+        self.lbl_folder_status.setStyleSheet(f"color:{W.MUTED};")
+        brow.addWidget(self.lbl_folder_status)
+        bw = QWidget(); bw.setLayout(brow)
+        gw = QWidget(); gw.setLayout(grid)
+        cfg.add(gw)
+        self.t_folders = W.DataTable()
+        self.t_folders.setMaximumHeight(150)
+        self.t_folders.itemSelectionChanged.connect(self._load_folder_form)
+        cfg.add(self.t_folders)
+        cfg.add(bw)
+        v.addWidget(cfg)
+
+        files = W.Card("File-wise sync status and history")
+        fbar = QHBoxLayout()
+        self.search = W.SearchBox("Search file, site or note ...")
+        self.search.textChanged.connect(self.reload)
+        self.f_status = W.combo(["All", "New", "Synced", "Failed", "Unchanged"])
+        self.f_status.currentTextChanged.connect(self.reload)
+        fbar.addWidget(self.search, 1)
+        fbar.addWidget(self.f_status)
+        fbar.addWidget(W.button("♻  Reprocess Selected", slot=self._reprocess_selected))
+        fbar.addWidget(W.button("📎  Open File", slot=self._open_file))
+        fbar.addStretch(1)
+        self.lbl_counts = QLabel()
+        self.lbl_counts.setStyleSheet(f"color:{W.MUTED};")
+        fbar.addWidget(self.lbl_counts)
+        fw = QWidget(); fw.setLayout(fbar)
+        files.add(fw)
+        self.t_files = W.DataTable()
+        self.t_files.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.t_files.itemSelectionChanged.connect(self._reload_history)
+        files.add(self.t_files, 1)
+        self.t_history = W.DataTable()
+        self.t_history.setMaximumHeight(160)
+        files.add(self.t_history)
+        v.addWidget(files, 1)
+
+        inv = W.Card("Current synced site inventory preview")
+        self.t_inventory = W.DataTable()
+        inv.add(self.t_inventory, 1)
+        v.addWidget(inv, 1)
+        self.reload()
+
+    def _template(self):
+        cols, rows = T.site_sync_template_rows()
+        out = Path(D.config.folder(T.FOLDER)) / f"{D.safe_name(T.MODULE_NAME)}_Site_Sync_Template.xlsx"
+        self.last_file = D.export_excel(self.db, "Tools, Instruments & Devices — Site Sync Template", cols, rows, out)
+        W.toast(self, f"Template saved: {self.last_file.name}")
+        D.open_path(self.last_file)
+
+    def _browse_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "Select the site Excel folder")
+        if d:
+            self.e_path.setText(d)
+
+    def _selected_folder(self) -> dict | None:
+        r = self.t_folders.currentRow()
+        if r < 0 or self.t_folders.item(r, 0) is None:
+            return None
+        folder = self.t_folders.item(r, 1).text()
+        return next((f for f in self.folders if f["path"] == folder), None)
+
+    def _load_folder_form(self):
+        row = self._selected_folder()
+        if not row:
+            return
+        self.e_path.setText(row.get("path", ""))
+        self.e_label.setText(row.get("label", ""))
+        self.e_site.setText(row.get("site_name", ""))
+        self.chk_auto.setChecked(bool(row.get("auto_sync")))
+        self.sp_interval.setValue(int(row.get("sync_interval") or 5))
+
+    def _save_folder(self):
+        try:
+            T.save_site_sync_folder(
+                self.tdb,
+                self.e_path.text().strip(),
+                self.e_label.text().strip(),
+                self.e_site.text().strip(),
+                self.chk_auto.isChecked(),
+                self.sp_interval.value(),
+                folder_id=(self._selected_folder() or {}).get("id"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            W.error_box(self, f"Could not save the sync folder.\n\n{exc}")
+            return
+        self.reload()
+        W.toast(self, "Site Excel sync folder saved.")
+
+    def _remove_folder(self):
+        row = self._selected_folder()
+        if not row:
+            W.error_box(self, "Select a folder in the list first.")
+            return
+        if not W.confirm(self, f"Remove this sync folder?\n\n{row['path']}\n\nThe source files stay untouched."):
+            return
+        T.remove_site_sync_folder(self.tdb, int(row["id"]))
+        self.reload()
+
+    def _sync_selected_folder(self):
+        row = self._selected_folder()
+        if not row:
+            W.error_box(self, "Select a folder in the list first.")
+            return
+        res = T.sync_site_sync_folder(self.tdb, int(row["id"]), force=True)
+        self.reload()
+        self.imported.emit()
+        W.toast(self, f"{res.get('synced', 0)} file(s) synced · {res.get('failed', 0)} failed")
+
+    def _sync_all(self):
+        total_synced = total_failed = total_seen = 0
+        errs: list[str] = []
+        for row in self.folders:
+            if not row.get("online"):
+                continue
+            res = T.sync_site_sync_folder(self.tdb, int(row["id"]), force=True)
+            total_synced += int(res.get("synced") or 0)
+            total_failed += int(res.get("failed") or 0)
+            total_seen += int(res.get("seen") or 0)
+            errs += list(res.get("errors") or [])
+        self.reload()
+        self.imported.emit()
+        W.toast(self, f"{total_seen} file(s) seen · {total_synced} synced · {total_failed} failed")
+        if errs:
+            W.info_box(self, "\n".join(errs[:15]), "Sync report")
+
+    def _open_folder(self):
+        row = self._selected_folder()
+        if not row:
+            W.error_box(self, "Select a folder in the list first.")
+            return
+        D.open_path(Path(row["path"]))
+
+    def _import_excel(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select the site Excel file", "",
+                                           "Spreadsheets (*.xlsx *.xlsm *.csv *.txt)")
+        if not f:
+            return
+        try:
+            headers, rows = T.site_sync_read_table(f)
+        except Exception as exc:  # noqa: BLE001
+            W.error_box(self, f"Could not read that file.\n\n{exc}")
+            return
+        dlg = SiteSyncMappingDialog(self.tdb, self.db, headers, rows, f, self)
+        if dlg.exec() == QDialog.Accepted and dlg.synced:
+            self.reload()
+            self.imported.emit()
+
+    def _bulk_import(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Select Excel files", "",
+                                                "Spreadsheets (*.xlsx *.xlsm *.csv *.txt)")
+        if not files:
+            return
+        res = T.site_sync_import_files(self.tdb, files, force=True)
+        self.reload()
+        self.imported.emit()
+        W.info_box(self, f"{res['synced']} file(s) imported / updated.\n{res['failed']} failed.",
+                   "Bulk import")
+
+    def _selected_file_paths(self) -> list[str]:
+        paths = []
+        for i in self.t_files.selectedIndexes():
+            it = self.t_files.item(i.row(), 8)
+            if it:
+                paths.append(it.text())
+        return sorted(set(paths))
+
+    def _reprocess_selected(self):
+        paths = self._selected_file_paths()
+        if not paths:
+            W.error_box(self, "Select one or more files first.")
+            return
+        res = T.site_sync_import_files(self.tdb, paths, force=True)
+        self.reload()
+        self.imported.emit()
+        W.toast(self, f"{res['synced']} file(s) reprocessed · {res['failed']} failed")
+        if res["errors"]:
+            W.info_box(self, "\n".join(res["errors"][:12]), "Reprocess report")
+
+    def _open_file(self):
+        paths = self._selected_file_paths()
+        if not paths:
+            W.error_box(self, "Select a file first.")
+            return
+        D.open_path(Path(paths[0]))
+
+    def _export_inventory(self):
+        rows = T.search_site_inventory(self.tdb)
+        if not rows:
+            W.error_box(self, "There is no synced site inventory to export yet.")
+            return
+        cols = ["Site Name", "Item Code", "Item Name", "Category", "Type", "Brand", "Model",
+                "Serial Number", "Quantity", "Condition", "Status", "Location", "Remarks",
+                "Last Updated", "Source File"]
+        data = [[r.get("site_name", ""), r.get("item_code", ""), r.get("item_name", ""),
+                 r.get("category", ""), r.get("item_type", ""), r.get("brand", ""),
+                 r.get("model", ""), r.get("serial_no", ""), float(r.get("qty") or 0),
+                 r.get("condition", ""), r.get("status", ""), r.get("location", ""),
+                 r.get("remarks", ""), r.get("last_updated", ""), Path(str(r.get("source_file", ""))).name]
+                for r in rows]
+        self.last_file = D.export_excel(self.db, "Tools, Instruments & Devices — Site Sync Inventory", cols, data)
+        W.toast(self, f"Exported: {self.last_file.name}")
+        D.open_path(self.last_file)
+
+    def _reload_history(self):
+        ids = []
+        for i in self.t_files.selectedIndexes():
+            it = self.t_files.item(i.row(), 0)
+            if it:
+                ids.append(int(float(it.text())))
+        fid = ids[0] if ids else 0
+        rows = T.site_sync_runs(self.tdb, fid, 30)
+        self.t_history.fill(["Time", "File", "Site", "Status", "Rows", "Created", "Updated", "Failed", "Details"],
+                            [[r.get("ts", ""), Path(str(r.get("source_file", ""))).name,
+                              r.get("site_name", ""), r.get("status", ""), int(r.get("total_rows") or 0),
+                              int(r.get("created_rows") or 0), int(r.get("updated_rows") or 0),
+                              int(r.get("failed_rows") or 0), r.get("details", "")]
+                             for r in rows])
+
+    def reload(self):
+        self.folders = T.site_sync_folders(self.tdb)
+        self.t_folders.fill(["ID", "Folder", "Label", "Assigned Site", "Auto", "Interval", "State", "Files", "Last Sync", "Last Success", "Last Error"],
+                            [[int(r["id"]), r["path"], r.get("label", ""), r.get("site_name", ""),
+                              "Yes" if r.get("auto_sync") else "No", f"{int(r.get('sync_interval') or 5)} min",
+                              "Online" if r.get("online") else "OFFLINE", int(r.get("files") or 0),
+                              r.get("last_scan", ""), r.get("last_success", ""), r.get("last_error", "")]
+                             for r in self.folders])
+        if self.t_folders.columnCount() > 0:
+            self.t_folders.setColumnHidden(0, True)
+        self.lbl_folder_status.setText(f"{sum(1 for r in self.folders if r['online'])} of {len(self.folders)} folder(s) online")
+
+        self.files = T.site_sync_scan_files(self.tdb, status=self.f_status.currentText(), text=self.search.text().strip())
+        self.t_files.fill(["ID", "Folder", "File", "Detected Site", "Status", "Modified", "Last Sync", "Created", "Updated", "Full Path", "Note"],
+                          [[int(r["id"]), r.get("folder_label", ""), r.get("name", ""),
+                            r.get("detected_site") or r.get("assigned_site") or "", r.get("status", ""),
+                            r.get("modified", ""), r.get("last_sync", ""), int(r.get("rows_created") or 0),
+                            int(r.get("rows_updated") or 0), r.get("path", ""), r.get("note", "")]
+                           for r in self.files])
+        self.t_files.setColumnHidden(0, True)
+        self.t_files.setColumnHidden(9, True)
+        self.lbl_counts.setText(f"{len(self.files)} file(s)")
+        self._reload_history()
+
+        inv = T.search_site_inventory(self.tdb)[:250]
+        self.t_inventory.fill(["Site Name", "Item Code", "Item Name", "Category", "Type", "Brand", "Model",
+                               "Serial Number", "Quantity", "Condition", "Status", "Location", "Remarks",
+                               "Last Updated"],
+                              [[r.get("site_name", ""), r.get("item_code", ""), r.get("item_name", ""),
+                                r.get("category", ""), r.get("item_type", ""), r.get("brand", ""),
+                                r.get("model", ""), r.get("serial_no", ""), float(r.get("qty") or 0),
+                                r.get("condition", ""), r.get("status", ""), r.get("location", ""),
+                                r.get("remarks", ""), r.get("last_updated", "")]
+                               for r in inv])
+        dash = T.site_inventory_dashboard(self.tdb)
+        self.lbl_sync.setText(f"Last synced: {(dash.get('last_sync') or 'never')[:16]}  ·  {dash.get('row_count', 0)} row(s)")
+
+
+class SiteSyncMappingDialog(QDialog):
+    """Manual Excel import with column preview / mapping."""
+
+    def __init__(self, tdb: T.ToolDB, db: Database, headers, rows, source: str = "", parent=None):
+        super().__init__(parent)
+        self.tdb = tdb
+        self.db = db
+        self.headers = list(headers)
+        self.rows = [list(r) for r in rows]
+        self.source = source
+        self.synced = 0
+        self.setWindowTitle("Tools, Instruments & Devices — Map the uploaded Excel columns")
+        self.resize(1080, 720)
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel(
+            f"<b>{len(self.rows)} row(s)</b> found in <i>{source or 'the uploaded file'}</i>. "
+            "Recognised headings are matched automatically — review them before importing."))
+        self.map_table = QTableWidget(len(self.headers), 3)
+        self.map_table.setHorizontalHeaderLabels(["Uploaded column", "Sample value", "Store as"])
+        self.map_table.verticalHeader().setVisible(False)
+        self.map_table.horizontalHeader().setStretchLastSection(True)
+        auto = T.site_sync_auto_map(self.headers)
+        choices = ["— ignore —"] + [lbl for _, lbl in T.SITE_SYNC_FIELDS]
+        self.by_label = {lbl: f for f, lbl in T.SITE_SYNC_FIELDS}
+        self.combos: list[QComboBox] = []
+        for i, h in enumerate(self.headers):
+            self.map_table.setItem(i, 0, QTableWidgetItem(str(h)))
+            sample = next((str(r[i]) for r in self.rows[:8] if i < len(r) and str(r[i]).strip()), "")
+            self.map_table.setItem(i, 1, QTableWidgetItem(sample[:60]))
+            cb = QComboBox(); cb.addItems(choices)
+            if i in auto:
+                cb.setCurrentText(T.SITE_SYNC_LABELS[auto[i]])
+            cb.currentTextChanged.connect(self._refresh)
+            self.map_table.setCellWidget(i, 2, cb)
+            self.combos.append(cb)
+        self.map_table.setMaximumHeight(240)
+        v.addWidget(self.map_table)
+        opts = QHBoxLayout()
+        self.def_site = QLineEdit()
+        self.def_site.setPlaceholderText("Default Site Name if the column is blank")
+        self.def_updated = date_edit()
+        opts.addWidget(QLabel("Defaults:"))
+        opts.addWidget(self.def_site, 1)
+        opts.addWidget(QLabel("Date:"))
+        opts.addWidget(self.def_updated)
+        self.def_site.textChanged.connect(self._refresh)
+        self.def_updated.dateChanged.connect(self._refresh)
+        v.addLayout(opts)
+        self.preview = W.DataTable()
+        v.addWidget(self.preview, 1)
+        self.info = QLabel(); self.info.setStyleSheet(f"color:{W.MUTED};")
+        v.addWidget(self.info)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("⬆  Import File")
+        bb.accepted.connect(self._import)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+        self._refresh()
+
+    def _mapping(self) -> dict[int, str]:
+        out = {}
+        for i, cb in enumerate(self.combos):
+            lbl = cb.currentText()
+            if lbl in self.by_label:
+                out[i] = self.by_label[lbl]
+        return out
+
+    def _defaults(self) -> dict:
+        return {"site_name": self.def_site.text().strip(), "last_updated": iso(self.def_updated)}
+
+    def _refresh(self, *_):
+        self.records = T.site_sync_preview(self.headers, self.rows, self._mapping(), self._defaults())
+        cols = [lbl for _, lbl in T.SITE_SYNC_FIELDS[:-1]] + ["Last Updated"]
+        data = [[r.get("site_name", ""), r.get("item_code", ""), r.get("item_name", ""), r.get("category", ""),
+                 r.get("item_type", ""), r.get("brand", ""), r.get("model", ""), r.get("serial_no", ""),
+                 float(r.get("qty") or 0), r.get("condition", ""), r.get("status", ""), r.get("location", ""),
+                 r.get("remarks", ""), r.get("last_updated", "")]
+                for r in self.records[:300]]
+        self.preview.fill(cols, data)
+        self.info.setText(f"{len(self.records)} record(s) ready  ·  {len(self._mapping())} column(s) mapped")
+
+    def _import(self):
+        if not self.records:
+            W.error_box(self, "Nothing to import — map at least one useful column.")
+            return
+        try:
+            tmp = T.import_site_sync_preview_records(
+                self.tdb,
+                self.records,
+                self.source,
+                assigned_site=self.def_site.text().strip(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            W.error_box(self, f"The file could not be imported.\n\n{exc}")
+            return
+        self.synced = 1 if tmp.get("status") == "Synced" else 0
+        W.info_box(self, f"{tmp.get('created', 0)} row(s) created and {tmp.get('updated', 0)} updated.")
+        self.accept()

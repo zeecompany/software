@@ -696,6 +696,20 @@ def deactivate_item(db: Database, item_id: int) -> None:
     db.audit("DELETED", "item", it["code"], "marked inactive (history preserved)")
 
 
+def bulk_set_second_type(db: Database, item_ids: Sequence[int], second_type: str = "") -> int:
+    ids = [int(i) for i in item_ids if int(i)]
+    if not ids:
+        return 0
+    if second_type and second_type not in ITEM_SECOND_TYPES:
+        raise StockError(f"Invalid 2nd Type: {second_type}")
+    ph = ",".join("?" * len(ids))
+    db.execute(f"UPDATE items SET second_type=?, updated_at=datetime('now','localtime') WHERE id IN ({ph})",
+               [str(second_type or "").strip()] + ids)
+    db.commit()
+    db.audit("EDITED", "item", f"{len(ids)} item(s)", f"bulk 2nd Type -> {second_type or '(blank)'}")
+    return len(ids)
+
+
 # -------------------------------------------------------------- reservation
 # A quantity is "reserved" once the store team has prepared/marked it for an
 # open material request but the Delivery Note has not been created yet. The
@@ -747,7 +761,8 @@ def reserved_for(db: Database, item_id: int, exclude_mr_id: int | None = None) -
 
 # ------------------------------------------------------------------- search
 def search_items(db: Database, text: str = "", category: str = "", warehouse: str = "",
-                 status: str = "", active_only: bool = True, limit: int = 5000) -> list[dict]:
+                 status: str = "", second_type_filter: str = "", active_only: bool = True,
+                 limit: int = 5000) -> list[dict]:
     sql = "SELECT * FROM items WHERE 1=1"
     p: list[Any] = []
     if active_only:
@@ -764,6 +779,10 @@ def search_items(db: Database, text: str = "", category: str = "", warehouse: st
     if warehouse:
         sql += " AND warehouse=?"
         p.append(warehouse)
+    if second_type_filter == "Normal Items":
+        sql += " AND COALESCE(second_type,'')=''"
+    elif second_type_filter == "2nd Type Items":
+        sql += " AND COALESCE(second_type,'')<>''"
     sql += " ORDER BY code LIMIT ?"
     p.append(limit)
     rows = [dict(r) for r in db.query(sql, p)]

@@ -4421,278 +4421,73 @@ def main() -> int:
           EMP.find_employee(db, employee_id="EMP-102")["designation"] == "Senior Surveyor",
           "re-importing the same employee code updates the existing employee master row")
 
-    # ======================================= Tools Station — module
-    section("Tools Station — serials, pictures and summary sheet")
-    from aurco.core import surveyor_tools as SV
-    from aurco.ui.surveyor_tools_page import SurveyorToolsPage, RecordDialog as SVRecordDialog
-    import aurco.ui.surveyor_tools_page as _svp_mod
+    # ==================== Tools, Instruments & Devices + Analytics site sync
+    section("Tools, Instruments & Devices — Excel folder sync and Analytics")
+    from aurco.core import toolstation as T
+    from aurco.ui.tool_station import ToolStationPage
+    import aurco.ui.tool_station as _tsp_mod
     for _k in ("confirm", "info_box", "error_box", "toast"):
-        setattr(_svp_mod.W, _k, getattr(W, _k))
-    check("Tools Station" in win.pages, "Tools Station page is available")
+        setattr(_tsp_mod.W, _k, getattr(W, _k))
+    check("Tools, Instruments & Devices" in win.pages, "the Tools, Instruments & Devices page is available")
+    check("Tools Station" not in win.pages, "the old separate Tools Station page has been removed")
     check("Analytics" in win.pages, "the separate Analytics module is available")
-    _sv_root = _cfg.get_storage_root()
-    _sv_legacy_root = root / "SURVEYOR_TOOLS_RENAME"
-    shutil.rmtree(_sv_legacy_root, ignore_errors=True)
-    _cfg.set_storage_root(_sv_legacy_root)
-    _legacy_folder = _sv_legacy_root / "Surveyor Tools Record"
-    _legacy_db = SV.SurveyorDB(_legacy_folder / SV.DB_NAME, current_user="admin")
-    SV.save_record(_legacy_db, {"instrument_desc": "Legacy Auto Level", "serial_no": "LEG-001",
-                                "location": "Warehouse", "qty": 1, "status": SV.ST_ACTIVE,
-                                "issued_by": "Store Officer"})
-    _legacy_db.close()
-    _migrated_db = SV.SurveyorDB(SV.db_path(), current_user="admin")
-    check((_sv_legacy_root / SV.FOLDER / SV.DB_NAME).exists() and
-          any(r.get("serial_no") == "LEG-001" for r in SV.list_records(_migrated_db)) and
-          not _legacy_folder.exists(),
-          "an existing Surveyor Tools Record folder is migrated to Tools Station")
-    _migrated_db.close()
+    check("Tools Station" not in _cfg.SUBFOLDERS, "the old Tools Station storage folder is no longer part of the standard structure")
 
-    _sv_locked_root = root / "SURVEYOR_TOOLS_LOCKED_RENAME"
-    shutil.rmtree(_sv_locked_root, ignore_errors=True)
-    _cfg.set_storage_root(_sv_locked_root)
-    _locked_legacy = _sv_locked_root / "Surveyor Tools Record"
-    _locked_db = SV.SurveyorDB(_locked_legacy / SV.DB_NAME, current_user="admin")
-    SV.save_record(_locked_db, {"instrument_desc": "Locked Legacy Tool", "serial_no": "LEG-LOCK-1",
-                                "location": "Warehouse", "qty": 1, "status": SV.ST_ACTIVE,
-                                "issued_by": "Store Officer"})
-    _locked_db.close()
-    _real_move = SV.shutil.move
-    try:
-        SV.shutil.move = lambda *a, **k: (_ for _ in ()).throw(PermissionError("locked sqlite sidecar"))
-        _fallback_path = SV.db_path()
-    finally:
-        SV.shutil.move = _real_move
-    _fallback_db = SV.SurveyorDB(_fallback_path, current_user="admin")
-    check(_fallback_path.parent == _locked_legacy and
-          any(r.get("serial_no") == "LEG-LOCK-1" for r in SV.list_records(_fallback_db)),
-          "if the old Tools Station DB files are locked, the app keeps using the legacy folder instead of crashing")
-    _fallback_db.close()
+    tpage = win.page_tools
+    tdb = tpage.tdb
+    for _tbl in ("site_sync_runs", "site_inventory", "site_sync_files", "site_sync_folders"):
+        tdb.execute(f"DELETE FROM {_tbl}")
+    tdb.commit()
 
-    _sv_old_root = root / "SURVEYOR_TOOLS_OLD_SCHEMA"
-    shutil.rmtree(_sv_old_root, ignore_errors=True)
-    _cfg.set_storage_root(_sv_old_root)
-    _old_folder = _sv_old_root / SV.FOLDER
-    _old_folder.mkdir(parents=True, exist_ok=True)
-    _old_db_path = _old_folder / SV.DB_NAME
-    _old_conn = sqlite3.connect(_old_db_path)
-    _old_conn.executescript("""
-        CREATE TABLE records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            instrument_desc TEXT NOT NULL DEFAULT '',
-            serial_no TEXT DEFAULT '',
-            make_model TEXT DEFAULT '',
-            location TEXT NOT NULL DEFAULT 'Warehouse',
-            qty REAL NOT NULL DEFAULT 1,
-            status TEXT NOT NULL DEFAULT 'Active',
-            issued_to TEXT DEFAULT '',
-            employee_code TEXT DEFAULT '',
-            iqama_id TEXT DEFAULT '',
-            designation TEXT DEFAULT '',
-            division TEXT DEFAULT '',
-            current_project TEXT DEFAULT '',
-            issued_by TEXT DEFAULT '',
-            remarks TEXT DEFAULT '',
-            picture_path TEXT DEFAULT '',
-            created_by TEXT DEFAULT '',
-            created_at TEXT DEFAULT '',
-            updated_at TEXT DEFAULT ''
-        );
-        INSERT INTO records(instrument_desc, serial_no, location, qty, status, issued_by)
-        VALUES('Old Schema Tool', 'OLD-001', 'Warehouse', 1, 'Active', 'Store Officer');
-    """)
-    _old_conn.commit()
-    _old_conn.close()
-    _upgraded_old = SV.SurveyorDB(_old_db_path, current_user="admin")
-    _old_row = next(r for r in SV.list_records(_upgraded_old) if r.get("serial_no") == "OLD-001")
-    check("second_type" in _old_row and _old_row["second_type"] == "",
-          "an older Tools Station database upgrades cleanly by adding the missing second_type column")
-    _upgraded_old.close()
-
-    _cfg.set_storage_root(_sv_root)
-    svp = win.page_survey
-    svp.sdb.execute("DELETE FROM records")
-    svp.sdb.commit()
-    from PySide6.QtGui import QImage as _SVImg, QColor as _SVColor
-    _sv_photo = root / "surveyor_tool.png"
-    _sv_img = _SVImg(120, 90, _SVImg.Format_RGB32)
-    _sv_img.fill(_SVColor("#dbeafe"))
-    _sv_img.save(str(_sv_photo))
-    SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "second_type": "Instrument", "serial_no": "AL-001",
-                             "make_model": "Leica", "location": "Warehouse",
-                             "qty": 2, "status": SV.ST_ACTIVE,
-                             "remarks": "", "picture_path": str(_sv_photo),
-                             "issued_by": "Store Officer"})
-    SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "second_type": "Instrument", "serial_no": "AL-002",
-                             "make_model": "Leica", "location": "Hajar",
-                             "qty": 1, "status": SV.ST_OUT_OF_ORDER,
-                             "remarks": "ordered for repair", "picture_path": "",
-                             "issued_by": "Store Officer"})
-    SV.save_record(svp.sdb, {"instrument_desc": "Total Station", "second_type": "Instrument", "serial_no": "TS-001",
-                             "make_model": "Trimble", "location": "Zuluf",
-                             "qty": 1, "status": SV.ST_IN_USE, "remarks": "", "picture_path": "",
-                             "issued_to": "Ahmed Salem", "employee_code": "EMP-100",
-                             "iqama_id": "2456677889", "designation": "Surveyor",
-                             "division": "Survey", "current_project": "Hajar",
-                             "issued_by": "Store Officer"})
-    SV.save_record(svp.sdb, {"instrument_desc": "GPS", "second_type": "Device", "serial_no": "GPS-001",
-                             "make_model": "Garmin", "location": "Yanbu",
-                             "qty": 1, "status": SV.ST_ACTIVE, "remarks": "", "picture_path": "",
-                             "issued_by": "Store Officer"})
-    SV.save_record(svp.sdb, {"instrument_desc": "Reflector pole", "second_type": "Tool", "serial_no": "",
-                             "make_model": "", "location": "Noor",
-                             "qty": 1, "status": SV.ST_ACTIVE, "remarks": "", "picture_path": "",
-                             "issued_by": "Store Officer"})
-    SV.save_record(svp.sdb, {"instrument_desc": "Gas Tester", "second_type": "Device", "serial_no": "GT-001",
-                             "make_model": "Drager", "location": "Jafura",
-                             "qty": 8, "status": SV.ST_ACTIVE, "remarks": "Transferred to Jafura site", "picture_path": "",
-                             "current_project": "Jafura", "issued_by": "Store Officer"})
-    _auto = [r for r in SV.summary_rows(svp.sdb) if r["instrument_desc"] == "Auto Level"][0]
-    check(_auto["Warehouse"] == 2 and _auto["Hajar"] == 1 and _auto["total_qty"] == 3 and _auto["second_type"] == "Instrument",
-          "the summary sheet groups instrument quantities by the sheet locations and keeps the 2nd type")
-    check("out of order" in _auto["remarks"].lower(),
-          "the summary remarks carry the instrument condition note forward")
-    _pic = Path(SV.list_records(svp.sdb, text="AL-001")[0]["picture_path"])
-    check(_pic.exists() and _pic.parent.name == "Photos",
-          "tool pictures are copied into the module's own Photos folder")
-    try:
-        SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "serial_no": "AL-001",
-                                 "location": "Warehouse", "qty": 1, "status": SV.ST_ACTIVE})
-        check(False, "duplicate serial numbers are blocked")
-    except ValueError:
-        check(True, "duplicate serial numbers are blocked")
-    try:
-        SV.save_record(svp.sdb, {"instrument_desc": "Prism", "serial_no": "PR-001",
-                                 "location": "Zuluf", "qty": 1, "status": SV.ST_IN_USE,
-                                 "issued_to": "", "employee_code": "", "iqama_id": ""})
-        check(False, "issued surveyor tools require employee identity")
-    except ValueError:
-        check(True, "issued surveyor tools require employee identity")
-    _dlg_sv = SVRecordDialog(db)
-    _dlg_sv.e_employee_code.setText("EMP-100")
-    _dlg_sv._fill_from_master("employee_id")
-    check(_dlg_sv.e_issued_to.text() == "Ahmed Salem" and _dlg_sv.e_iqama.text() == "2456677889",
-          "typing an employee code can fill the employee name and Iqama from the master list")
-    _sv_cols, _sv_sample = SV.template_rows()
-    check("2nd Type" in _sv_cols and "Issued By" in _sv_cols and "Employee Code" in _sv_cols,
-          "the Tools Station template includes 2nd type plus issuer and employee identity columns")
-    _sv_head, _sv_rows = SV.sniff(
-        "Instrument Description\t2nd Type\tSerial No.\tMake / Model\tLocation\tQuantity\tStatus\tIssued To / Employee Name\tEmployee Code\tIqama ID\tDesignation\tDivision/Department\tCurrent Project\tIssued By\tRemarks\n"
-        "Prism Pole\tTool\tPR-100\tSeco\tWarehouse\t1\tIn Use\tAhmed Salem\tEMP-100\t2456677889\tSurveyor\tSurvey\tHajar\tStore Officer\tImported from template\n")
-    _sv_map = SV.auto_map(_sv_head)
-    _sv_preview = SV.preview(_sv_head, _sv_rows, _sv_map)
-    _sv_ins, _sv_sk = SV.import_records(svp.sdb, _sv_preview, "pasted rows")
-    check(_sv_ins == 1 and _sv_sk == 0 and any(r.get("serial_no") == "PR-100" for r in SV.list_records(svp.sdb)),
-          "the Tools Station module can import a filled template row")
-    _sv_ins2, _sv_sk2 = SV.import_records(svp.sdb, _sv_preview, "pasted rows")
-    check(_sv_ins2 == 0 and _sv_sk2 == 1,
-          "the Tools Station import skips duplicate template rows")
-    _ts_id = next(r["id"] for r in SV.list_records(svp.sdb) if r.get("serial_no") == "TS-001")
-    _ts_hist0 = SV.transfer_history(svp.sdb, _ts_id)
-    check(bool(_ts_hist0) and _ts_hist0[0]["event_type"] in (SV.EV_ISSUED, SV.EV_REGISTERED),
-          "Tools Station keeps a starting custody history row")
-    SV.transfer_record(svp.sdb, _ts_id, {
-        "event_date": "2026-08-28",
-        "issued_to": "Bilal Khan",
-        "employee_code": "EMP-101",
-        "iqama_id": "2456677890",
-        "designation": "Chief Surveyor",
-        "division": "Survey",
-        "current_project": "Noor",
-        "location": "Noor",
-        "status": SV.ST_IN_USE,
-        "moved_by": "Store Officer 2",
-        "remarks": "Transferred to another surveyor on a new site",
-    })
-    _ts_after = SV.get_record(svp.sdb, _ts_id)
-    check(_ts_after["issued_to"] == "Bilal Khan" and _ts_after["location"] == "Noor"
-          and _ts_after["current_project"] == "Noor",
-          "transferring a tool updates the current holder and site")
-    _ts_hist1 = SV.transfer_history(svp.sdb, _ts_id)
-    check(any(h["event_type"] == SV.EV_TRANSFER and h["from_holder"] == "Ahmed Salem"
-              and h["to_holder"] == "Bilal Khan" and h["from_project"] == "Hajar"
-              and h["to_project"] == "Noor" for h in _ts_hist1),
-          "the transfer history keeps where the tool was and where it moved")
-    SV.transfer_record(svp.sdb, _ts_id, {
-        "event_date": "2026-08-29",
-        "issued_to": "",
-        "employee_code": "",
-        "iqama_id": "",
-        "designation": "",
-        "division": "",
-        "current_project": "Warehouse",
-        "location": "Warehouse",
-        "status": SV.ST_ACTIVE,
-        "moved_by": "Store Officer 3",
-        "remarks": "Returned to store custody",
-    })
-    _ts_store = SV.get_record(svp.sdb, _ts_id)
-    check(_ts_store["issued_to"] == "" and _ts_store["location"] == "Warehouse"
-          and _ts_store["status"] == SV.ST_ACTIVE,
-          "a tool can be transferred back from a person to store custody")
-    _dash_sv = SV.dashboard_data(svp.sdb)
-    check(_dash_sv["total_qty"] == 15 and _dash_sv["out_of_order_qty"] == 1,
-          "the dashboard totals the tracked quantity and the out-of-order quantity")
-    _an_sv = SV.analytics_data(svp.sdb)
-    check(any(r["second_type"] == "Device" and r["instrument_desc"] == "Gas Tester"
-              and r["site"] == "Jafura" and float(r["qty"]) == 8 for r in _an_sv["rows"]),
-          "analytics groups 2nd type items by their current site")
-    check(any(k == "Warehouse" and v == 4 for k, v in _dash_sv["locations"]),
-          "the dashboard breaks the data down by location")
-    win.go("Tools Station")
-    svp.refresh()
+    _sync_dir = root / "site_sync_folder"
+    shutil.rmtree(_sync_dir, ignore_errors=True)
+    _sync_dir.mkdir(parents=True, exist_ok=True)
+    _cols, _sample = T.site_sync_template_rows()
+    _csv = _sync_dir / "jafura_inventory.csv"
+    _csv.write_text("|".join(_cols) + "\n" + "\n".join("|".join(str(c) for c in row) for row in _sample), encoding="utf-8")
+    _fid = T.save_site_sync_folder(tdb, _sync_dir, "Main Site Sync", "", True, 1)
+    _sync_res = T.sync_site_sync_folder(tdb, _fid, force=True)
+    check(_sync_res["synced"] >= 1 and _sync_res["failed"] == 0,
+          "the tools module can sync a site-wise Excel/CSV folder without errors")
+    _inv = T.search_site_inventory(tdb, site_name="Jafura", item_type="Device")
+    check(any(r["item_name"] == "Gas Tester" and float(r["qty"]) == 8 for r in _inv),
+          "the synced inventory clearly shows which site currently has which device quantity")
+    _dash_sync = T.site_inventory_dashboard(tdb)
+    check(_dash_sync["site_count"] >= 3 and _dash_sync["file_count"] >= 1,
+          "the site-sync dashboard summarises sites and synced files")
+    check(any(k == "Jafura" and float(v) >= 8 for k, v in _dash_sync["by_site"]),
+          "the site-sync dashboard includes a site-wise quantity breakdown")
+    check(any(r["status"] == "Synced" for r in T.site_sync_scan_files(tdb)),
+          "file-wise sync history is stored for synced files")
+    tpage.sync.reload()
+    tpage.sync.site_excel.reload()
     app.processEvents()
-    check(svp.tabs.count() == 5, "the Tools Station page has dashboard, register, import, summary and analytics tabs")
-    check(svp.register.table.rowCount() == 7, "the register tab lists the saved and imported surveyor tool rows")
-    check(any(r.get("issued_to") == "Ahmed Salem" and r.get("employee_code") == "EMP-100" for r in SV.list_records(svp.sdb)),
-          "the Tools Station register stores the employee issue details")
-    check(svp.summary.table.rowCount() == 6 and "2nd Type" in svp.summary.table.headers(),
-          "the summary tab collapses records into one row per instrument and shows the 2nd type")
-    check(svp.dash.cards["qty"].lbl_value.text() == "15", "the dashboard card shows the total quantity")
-    check(svp.register.table.currentRow() >= 0 and svp.register.lbl_pic.pixmap() is not None,
-          "selecting a register row shows its picture preview")
-    check(svp.register.t_history.rowCount() >= 1,
-          "the Tools Station register shows movement history for the selected tool")
-    check("2nd Type" in svp.register.table.headers() and "Employee Code" in svp.register.table.headers()
-          and "Iqama ID" in svp.register.table.headers(),
-          "the Tools Station register shows 2nd type plus employee code and Iqama columns")
-    svp.analytics.f_type2.setCurrentText("Device")
-    svp.analytics.f_site.setCurrentText("Jafura")
-    svp.analytics.reload()
-    check(svp.analytics.cards["qty"].lbl_value.text() == "8" and svp.analytics.table.rowCount() == 1,
-          "the embedded Analytics dashboard shows 8 gas testers currently at Jafura under Device")
-    svp.analytics.reset_filters()
+    check(hasattr(tpage.sync, "site_excel") and tpage.sync.site_excel.t_folders.rowCount() >= 1
+          and len(T.search_site_inventory(tdb)) >= 1,
+          "the Tools module shows the embedded site Excel sync panel with inventory preview")
+
     win.go("Analytics")
     win.page_analytics.refresh()
     app.processEvents()
-    win.page_analytics.tools_analytics.f_type2.setCurrentText("Device")
-    win.page_analytics.tools_analytics.f_site.setCurrentText("Jafura")
-    win.page_analytics.tools_analytics.reload()
-    check(win.page_analytics.tools_analytics.cards["qty"].lbl_value.text() == "8"
-          and win.page_analytics.tools_analytics.table.rowCount() == 1,
-          "the separate Analytics module still shows the Tools Station Jafura device view")
-    win.page_analytics.tools_analytics.reset_filters()
-    svp.register.export_pdf()
-    _ts_reg_pdf = svp.register.last_file
-    check(_ts_reg_pdf and _ts_reg_pdf.exists() and _ts_reg_pdf.suffix.lower() == ".pdf",
-          "the Tools Station register can be exported as PDF")
-    _ts_reg_text = "\n".join((p.extract_text() or "") for p in _PdfReader(str(_ts_reg_pdf)).pages)
-    check("Pictures appendix" in _ts_reg_text and "Reference No." in _ts_reg_text and "AL-001" in _ts_reg_text,
-          "the Tools Station register PDF appends tool pictures with reference and serial details")
-    for _r in range(svp.register.table.rowCount()):
-        if svp.register.table.item(_r, 3).text() == "AL-001":
-            svp.register.table.selectRow(_r)
-            app.processEvents()
-            break
-    svp.register.export_history_pdf()
-    _ts_hist_pdf = svp.register.last_file
-    check(_ts_hist_pdf and _ts_hist_pdf.exists()
-          and _ts_hist_pdf.suffix.lower() == ".pdf"
-          and _ts_hist_pdf.stat().st_size > 1000,
-          "the Tools Station transfer history can be exported as PDF")
-    _ts_hist_text = "\n".join((p.extract_text() or "") for p in _PdfReader(str(_ts_hist_pdf)).pages)
-    check("Pictures appendix" in _ts_hist_text and "AL-001" in _ts_hist_text and "Reference No." in _ts_hist_text,
-          "the Tools Station history PDF appends the tool picture with reference and serial details")
-    check(SV.FOLDER in _cfg.SUBFOLDERS, "the Tools Station module folder is created with the storage root")
+    win.page_analytics.site_sync.f_site.setCurrentText("Jafura")
+    win.page_analytics.site_sync.f_type.setCurrentText("Device")
+    win.page_analytics.site_sync.reload()
+    check(win.page_analytics.site_sync.cards["qty"].lbl_value.text() == "8"
+          and win.page_analytics.site_sync.table.rowCount() >= 1,
+          "the Analytics module shows the Jafura device quantity from the synced site folder")
+    win.page_analytics.site_sync.reset_filters()
+
+    _item_a = S.save_item(db, {"code": "BULK-001", "description": "Bulk Normal 1", "uom": "EA", "warehouse": "Main"})
+    _item_b = S.save_item(db, {"code": "BULK-002", "description": "Bulk Normal 2", "uom": "EA", "warehouse": "Main"})
+    check(S.bulk_set_second_type(db, [_item_a, _item_b], "Device") == 2,
+          "Item Master supports bulk marking items as a 2nd Type")
+    check(len(S.search_items(db, second_type_filter="2nd Type Items")) >= 2,
+          "Item Master data can be filtered to only 2nd Type items")
+    check(any(r["id"] == _item_a for r in S.search_items(db, second_type_filter="Normal Items")) is False,
+          "Item Master Normal Items filtering excludes items already marked as 2nd Type")
+    S.bulk_set_second_type(db, [_item_a, _item_b], "")
+    check(any(r["id"] == _item_a for r in S.search_items(db, second_type_filter="Normal Items")),
+          "bulk removal of the 2nd Type returns items to the normal-items filter")
 
     # ============================================ Cable Records — the module
     section("Cable Records — drums, cutting log and cable schedule")

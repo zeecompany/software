@@ -8,8 +8,9 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
-                               QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QProgressDialog,
-                               QPushButton, QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem,
+                               QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
+                               QProgressDialog, QPushButton, QSpinBox, QTabWidget, QTableWidget,
+                               QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
 from ..core import config, documents as D, importer, reports
@@ -405,8 +406,9 @@ class ItemsPage(QWidget):
         self.f_cat = W.combo(["All Categories"])
         self.f_wh = W.combo(["All Warehouses"])
         self.f_status = W.combo(["All Status", S.NORMAL, S.WARNING, S.CRITICAL, S.OUT])
+        self.f_type2 = W.combo(["All Items", "Normal Items", "2nd Type Items"])
         self.f_inactive = QCheckBox("Include inactive")
-        for wd in (self.f_cat, self.f_wh, self.f_status):
+        for wd in (self.f_cat, self.f_wh, self.f_status, self.f_type2):
             wd.currentTextChanged.connect(self.reload)
             bar.addWidget(wd)
         self.f_inactive.toggled.connect(self.reload)
@@ -417,6 +419,10 @@ class ItemsPage(QWidget):
         btns.addWidget(W.button("➕  New Item", "Primary", self.new_item, "Add an item", "Ctrl+N"))
         btns.addWidget(W.button("✏  Edit", slot=self.edit_item, tip="Edit selected item", shortcut="F2"))
         btns.addWidget(W.button("📜  Movement History", slot=self._history))
+        btns.addWidget(W.button("☑  Check Visible", slot=self._check_visible))
+        btns.addWidget(W.button("☐  Clear Checks", slot=self._clear_checks))
+        btns.addWidget(W.button("🏷  Mark as 2nd Type", slot=self._mark_second_type))
+        btns.addWidget(W.button("↩  Remove 2nd Type", slot=self._clear_second_type))
         btns.addWidget(W.button("🚫  Deactivate", slot=self.deactivate))
         btns.addWidget(W.button("⬆  Import from Excel", slot=self.import_excel))
         btns.addWidget(W.button("📊  Export Excel", slot=lambda: self._export("xlsx")))
@@ -459,22 +465,31 @@ class ItemsPage(QWidget):
         cat = "" if self.f_cat.currentIndex() <= 0 else self.f_cat.currentText()
         wh = "" if self.f_wh.currentIndex() <= 0 else self.f_wh.currentText()
         st = "" if self.f_status.currentIndex() <= 0 else self.f_status.currentText()
-        self.rows = S.search_items(self.db, self.search.text(), cat, wh, st,
+        type2 = "" if self.f_type2.currentIndex() <= 0 else self.f_type2.currentText()
+        self.rows = S.search_items(self.db, self.search.text(), cat, wh, st, type2,
                                    active_only=not self.f_inactive.isChecked())
         cur = self.db.get_setting("currency", "")
         data = []
         for r in self.rows:
             mn, crit = S.item_thresholds(self.db, r)
-            data.append([r["code"], r["description"], r["category"], r.get("second_type", ""), r["uom"], r["brand"],
+            data.append(["", r["code"], r["description"], r["category"], r.get("second_type", ""), r["uom"], r["brand"],
                          round(r["balance"], 2), round(r.get("reserved", 0), 2),
                          round(r.get("free", r["balance"]), 2),
                          round(mn, 2), round(r["max_level"] or 0, 2),
                          round(r["unit_cost"] or 0, 2), round(r["value"], 2),
                          r["warehouse"], r["location"], r["rack"], r["barcode"], r["status"]])
-        self.table.fill(["Item Code", "Description", "Category", "2nd Type", "UOM", "Brand", "Balance",
+        self.table.fill(["✓", "Item Code", "Description", "Category", "2nd Type", "UOM", "Brand", "Balance",
                          "Reserved", "Free to Use", "Min Level", "Max Level", "Unit Cost",
                          f"Value ({cur})", "Warehouse", "Location", "Rack/Bin", "Barcode",
-                         "Status"], data, status_col=17)
+                         "Status"], data, status_col=18)
+        self.table.setColumnWidth(0, 42)
+        for r in range(self.table.rowCount()):
+            it = self.table.item(r, 0)
+            if it is None:
+                it = QTableWidgetItem("")
+                self.table.setItem(r, 0, it)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            it.setCheckState(Qt.Unchecked)
         self._paint_reserved()
         self._update_count()
 
@@ -527,9 +542,9 @@ class ItemsPage(QWidget):
     def _update_count(self, *_):
         """Counts always describe what is actually on screen."""
         cur = self.db.get_setting("currency", "")
-        vis = {self.table.item(r, 0).text()
+        vis = {self.table.item(r, 1).text()
                for r in range(self.table.rowCount())
-               if not self.table.isRowHidden(r) and self.table.item(r, 0)}
+               if not self.table.isRowHidden(r) and self.table.item(r, 1)}
         shown = [r for r in self.rows if r["code"] in vis] if vis or self.table.has_filters() else self.rows
         total = sum(r["value"] for r in shown)
         qty = sum(r["balance"] or 0 for r in shown)
@@ -542,12 +557,65 @@ class ItemsPage(QWidget):
         txt += f" · {cur} {total:,.2f}{suffix}"
         self.count_lbl.setText(txt)
 
+    def _checked_items(self) -> list[dict]:
+        codes = []
+        for r in range(self.table.rowCount()):
+            it = self.table.item(r, 0)
+            code = self.table.item(r, 1)
+            if it and code and it.checkState() == Qt.Checked:
+                codes.append(code.text())
+        if not codes:
+            codes = sorted({self.table.item(i.row(), 1).text() for i in self.table.selectedIndexes()
+                            if self.table.item(i.row(), 1)})
+        return [r for r in self.rows if r["code"] in codes]
+
+    def _check_visible(self):
+        for r in range(self.table.rowCount()):
+            if self.table.isRowHidden(r):
+                continue
+            it = self.table.item(r, 0)
+            if it:
+                it.setCheckState(Qt.Checked)
+
+    def _clear_checks(self):
+        for r in range(self.table.rowCount()):
+            it = self.table.item(r, 0)
+            if it:
+                it.setCheckState(Qt.Unchecked)
+
+    def _mark_second_type(self):
+        rows = self._checked_items()
+        if not rows:
+            W.error_box(self, "Check or select at least one item first.")
+            return
+        value, ok = QInputDialog.getItem(self, "Select 2nd Type",
+                                         "Assign the selected items to which 2nd Type?",
+                                         S.ITEM_SECOND_TYPES, 0, False)
+        if not ok or not value:
+            return
+        S.bulk_set_second_type(self.db, [r["id"] for r in rows], value)
+        self.reload()
+        self.dataChanged.emit()
+        W.toast(self, f"{len(rows)} item(s) marked as {value}.")
+
+    def _clear_second_type(self):
+        rows = [r for r in self._checked_items() if str(r.get("second_type") or "").strip()]
+        if not rows:
+            W.error_box(self, "Check or select at least one 2nd Type item first.")
+            return
+        if not W.confirm(self, f"Remove the 2nd Type from {len(rows)} selected item(s)?"):
+            return
+        S.bulk_set_second_type(self.db, [r["id"] for r in rows], "")
+        self.reload()
+        self.dataChanged.emit()
+        W.toast(self, f"2nd Type removed from {len(rows)} item(s).")
+
     def _selected(self) -> dict | None:
         r = self.table.currentRow()
         if r < 0:
             W.error_box(self, "Select an item from the list first.")
             return None
-        code = self.table.item(r, 0).text()
+        code = self.table.item(r, 1).text()
         return next((x for x in self.rows if x["code"] == code), None)
 
     def new_item(self):
@@ -601,8 +669,8 @@ class ItemsPage(QWidget):
 
     def _scope(self) -> list[dict]:
         sel = [r for r in self.rows if r["code"] in
-               {self.table.item(i.row(), 0).text() for i in self.table.selectedIndexes()
-                if self.table.item(i.row(), 0)}]
+               {self.table.item(i.row(), 1).text() for i in self.table.selectedIndexes()
+                if self.table.item(i.row(), 1)}]
         return sel or self.rows
 
     def _barcodes(self):

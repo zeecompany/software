@@ -28,7 +28,7 @@ from .workspace_page import WorkspacePage
 from .admin_station import AdminStationPage
 from .cable_records import CableRecordsPage
 from .tool_station import ToolStationPage
-from .surveyor_tools_page import AnalyticsPage, SurveyorToolsPage
+from .surveyor_tools_page import AnalyticsPage
 from .general_dn import GeneralDNPage
 from .issuance_page import IssuancePage
 from .employee_ppe_page import EmployeePPEPage
@@ -72,7 +72,6 @@ NAV = [
     ("SEPARATE MODULES", None, None),
     ("Admin Station", "🏢", "Ctrl+Shift+A"),
     ("Tools, Instruments & Devices", "🔧", "Ctrl+Shift+T"),
-    ("Tools Station", "🧭", "Ctrl+Shift+Y"),
     ("Analytics", "📈", None),
     ("Cable Records", "🧵", "Ctrl+Shift+B"),
     ("General DN Maker", "🧾", "Ctrl+G"),
@@ -296,7 +295,6 @@ class MainWindow(QMainWindow):
         self.page_search = SearchPage(db)
         self.page_admin = AdminStationPage(db)
         self.page_tools = ToolStationPage(db)
-        self.page_survey = SurveyorToolsPage(db)
         self.page_analytics = AnalyticsPage(db)
         self.page_cables = CableRecordsPage(db)
         self.page_gdn = GeneralDNPage(db)
@@ -318,7 +316,6 @@ class MainWindow(QMainWindow):
                            ("Report Center", self.page_reports), ("Audit Trail", self.page_audit),
                            ("Admin Station", self.page_admin),
                            ("Tools, Instruments & Devices", self.page_tools),
-                           ("Tools Station", self.page_survey),
                            ("Analytics", self.page_analytics),
                            ("Cable Records", self.page_cables),
                            ("General DN Maker", self.page_gdn),
@@ -341,7 +338,6 @@ class MainWindow(QMainWindow):
         self.page_workspace.dataChanged.connect(self.refresh_all)
         self.page_ppe.dataChanged.connect(self.refresh_all)
         self.page_employees.dataChanged.connect(self.refresh_all)
-        self.page_survey.dataChanged.connect(self.refresh_all)
         self.page_bulk.requestDN.connect(self._bulk_to_dn)
         self.page_docs.editDraft.connect(self._edit_draft)
         for p in (self.page_items, self.page_in, self.page_out, self.page_ret, self.page_trf,
@@ -362,7 +358,7 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(QLabel(f" AURCO Inventory Manager v{config.APP_VERSION} | "
                                      f"Created by {config.CREATED_BY} "))
 
-        # ---- global shortcuts
+        # ---- global l shortcuts
         QShortcut(QKeySequence("F5"), self, activated=self.refresh_all)
         QShortcut(QKeySequence("Ctrl+Shift+I"), self,
                   activated=lambda: self._quick("Item Master", "new"))
@@ -439,15 +435,8 @@ class MainWindow(QMainWindow):
             "Document Library": "Synced folders of scanned delivery notes — browse, "
                                 "preview and print",
             "Calculator": "Quick calculations without leaving AURCO",
-            "Tools, Instruments & Devices": "Separate custody register for tools, instruments "
-                            "and devices — issue, transfer, temporary loan and "
-                            "return. Its own database; no stock effect.",
-            "Tools Station": "Separate register for survey instruments and other tools — "
-                             "serial numbers, 2nd type classification, person/site transfer history, pictures, "
-                             "location summary sheet and live tracking. Its own database; "
-                             "no stock effect.",
-            "Analytics": "Separate analytics module for typed materials — auto-detected from Item Master / Delivery Notes, "
-                         "plus Tools Station 2nd-type site visibility.",
+            "Tools, Instruments & Devices": "Separate custody register for tools, instruments, devices and other equipment — issue, transfer, temporary loan, return, PDF handover sync and site-wise Excel folder sync. Its own database; no stock effect.",
+            "Analytics": "Separate analytics module for typed materials and site-wise synced inventory — auto-detected from Item Master / Delivery Notes plus Excel-synced tool/device/instrument visibility.",
             "Cable Records": "Separate cable drum register — length left on every "
                              "drum, every cut, the cable schedule and its megger "
                              "tests. Its own database; no stock effect.",
@@ -527,7 +516,6 @@ class MainWindow(QMainWindow):
             self.page_audit.reload()
             self.page_ppe.refresh_all()
             self.page_employees.reload()
-            self.page_survey.refresh()
             self.page_analytics.refresh()
             d = S.dashboard_data(self.db)
             cur = self.db.get_setting("currency", "")

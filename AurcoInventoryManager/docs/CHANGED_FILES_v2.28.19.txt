@@ -1,0 +1,25 @@
+AURCO Inventory Manager v2.28.19 — changed files
+
+Feature release summary
+- Added site-wise Excel folder synchronization to Tools, Instruments & Devices
+- Added site-sync inventory dashboard under Analytics
+- Added file-wise sync history, auto-sync settings, sample template, export and manual sync tools
+- Added Item Master bulk 2nd Type mark / unmark support with Normal Items / 2nd Type Items filtering
+- Removed the separate Tools Station page from navigation and standard storage structure
+- Updated tests for the new site-sync and Analytics flow
+
+Main code files changed
+- aurco/core/toolstation.py
+- aurco/core/services.py
+- aurco/core/protection.py
+- aurco/core/config.py
+- aurco/ui/tool_station.py
+- aurco/ui/surveyor_tools_page.py
+- aurco/ui/items.py
+- aurco/ui/main_window.py
+- tests/run_tests.py
+
+Versioning files changed
+- docs/USER_GUIDE.md
+- packaging/installer.iss
+- packaging/version_info.txt

@@ -49,6 +49,7 @@ from __future__ import annotations
 import csv
 import datetime as _dt
 import io
+import json
 import os
 import re
 import shutil
@@ -63,7 +64,7 @@ FOLDER = MODULE_NAME
 LEGACY_FOLDER = "Tool Station"        # folder name used before the rename
 DB_NAME = "tool_station.db"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ------------------------------------------------------------------ vocabulary
 ISSUE = "Issue"
@@ -230,6 +231,88 @@ CREATE TABLE IF NOT EXISTS folders (
     added_at TEXT DEFAULT (datetime('now','localtime')),
     last_scan TEXT DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS site_sync_folders (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    path          TEXT UNIQUE NOT NULL,
+    label         TEXT DEFAULT '',
+    site_name     TEXT DEFAULT '',
+    active        INTEGER NOT NULL DEFAULT 1,
+    auto_sync     INTEGER NOT NULL DEFAULT 0,
+    sync_interval INTEGER NOT NULL DEFAULT 5,
+    added_at      TEXT DEFAULT (datetime('now','localtime')),
+    last_scan     TEXT DEFAULT '',
+    last_success  TEXT DEFAULT '',
+    last_error    TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS site_sync_files (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder_id     INTEGER,
+    path          TEXT UNIQUE NOT NULL,
+    name          TEXT DEFAULT '',
+    assigned_site TEXT DEFAULT '',
+    detected_site TEXT DEFAULT '',
+    size_kb       REAL DEFAULT 0,
+    modified      TEXT DEFAULT '',
+    file_hash     TEXT DEFAULT '',
+    status        TEXT DEFAULT 'New',
+    rows_total    INTEGER DEFAULT 0,
+    rows_created  INTEGER DEFAULT 0,
+    rows_updated  INTEGER DEFAULT 0,
+    rows_failed   INTEGER DEFAULT 0,
+    last_sync     TEXT DEFAULT '',
+    note          TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_tssf_folder  ON site_sync_files(folder_id);
+CREATE INDEX IF NOT EXISTS ix_tssf_status  ON site_sync_files(status);
+
+CREATE TABLE IF NOT EXISTS site_inventory (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_key   TEXT UNIQUE NOT NULL,
+    file_id      INTEGER,
+    folder_id    INTEGER,
+    source_file  TEXT DEFAULT '',
+    site_name    TEXT DEFAULT '',
+    item_code    TEXT DEFAULT '',
+    item_name    TEXT DEFAULT '',
+    category     TEXT DEFAULT '',
+    item_type    TEXT DEFAULT '',
+    brand        TEXT DEFAULT '',
+    model        TEXT DEFAULT '',
+    serial_no    TEXT DEFAULT '',
+    qty          REAL NOT NULL DEFAULT 0,
+    condition    TEXT DEFAULT '',
+    status       TEXT DEFAULT '',
+    location     TEXT DEFAULT '',
+    remarks      TEXT DEFAULT '',
+    last_updated TEXT DEFAULT '',
+    last_sync    TEXT DEFAULT '',
+    created_at   TEXT DEFAULT (datetime('now','localtime')),
+    updated_at   TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS ix_tssi_site    ON site_inventory(site_name);
+CREATE INDEX IF NOT EXISTS ix_tssi_type    ON site_inventory(item_type);
+CREATE INDEX IF NOT EXISTS ix_tssi_cat     ON site_inventory(category);
+CREATE INDEX IF NOT EXISTS ix_tssi_status  ON site_inventory(status);
+CREATE INDEX IF NOT EXISTS ix_tssi_sync    ON site_inventory(last_sync);
+
+CREATE TABLE IF NOT EXISTS site_sync_runs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT DEFAULT (datetime('now','localtime')),
+    folder_id    INTEGER,
+    file_id      INTEGER,
+    source_file  TEXT DEFAULT '',
+    site_name    TEXT DEFAULT '',
+    status       TEXT DEFAULT '',
+    total_rows   INTEGER DEFAULT 0,
+    created_rows INTEGER DEFAULT 0,
+    updated_rows INTEGER DEFAULT 0,
+    failed_rows  INTEGER DEFAULT 0,
+    details      TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_tssr_file    ON site_sync_runs(file_id, id);
+CREATE INDEX IF NOT EXISTS ix_tssr_status  ON site_sync_runs(status);
 
 CREATE TABLE IF NOT EXISTS audit (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2154,3 +2237,582 @@ def template_rows() -> tuple[list[str], list[list[Any]]]:
             [2, "12000TS01", "Instrument", "Total Station", "Leica", "3366852",
              1, "With All accessories", "A", "25/08/2026", "New"]]
     return cols, rows
+
+
+# ======================================================= site Excel sync
+SITE_SYNC_FIELDS: list[tuple[str, str]] = [
+    ("site_name", "Site Name"),
+    ("item_code", "Item Code"),
+    ("item_name", "Item Name"),
+    ("category", "Category"),
+    ("item_type", "Type"),
+    ("brand", "Brand"),
+    ("model", "Model"),
+    ("serial_no", "Serial Number"),
+    ("qty", "Quantity"),
+    ("condition", "Condition"),
+    ("status", "Status"),
+    ("location", "Location"),
+    ("remarks", "Remarks"),
+    ("last_updated", "Last Updated"),
+]
+SITE_SYNC_LABELS = dict(SITE_SYNC_FIELDS)
+SITE_SYNC_NUMERIC = {"qty"}
+SITE_SYNC_HEADER_MAP = {
+    "sitename": "site_name", "site": "site_name", "project": "site_name",
+    "projectname": "site_name", "currentproject": "site_name",
+    "itemcode": "item_code", "code": "item_code", "assetid": "item_code",
+    "assetcode": "item_code",
+    "itemname": "item_name", "item": "item_name", "description": "item_name",
+    "toolname": "item_name", "instrumentname": "item_name", "devicename": "item_name",
+    "equipment": "item_name", "equipmentitem": "item_name",
+    "category": "category", "itemcategory": "category",
+    "type": "item_type", "itemtype": "item_type", "secondtype": "item_type",
+    "2ndtype": "item_type",
+    "brand": "brand", "make": "brand",
+    "model": "model", "makemodel": "model",
+    "serialnumber": "serial_no", "serialno": "serial_no", "serial": "serial_no",
+    "sn": "serial_no",
+    "quantity": "qty", "qty": "qty",
+    "condition": "condition",
+    "status": "status",
+    "location": "location", "sitelocation": "location",
+    "remarks": "remarks", "remark": "remarks", "notes": "remarks",
+    "lastupdated": "last_updated", "updatedat": "last_updated",
+    "datetime": "last_updated", "timestamp": "last_updated",
+}
+SITE_SYNC_SUFFIXES = (".xlsx", ".xlsm", ".csv", ".txt")
+SITE_SYNC_UNAVAILABLE = {"missing", "unavailable", "outofservice", "lost",
+                         "scrap", "disposed", "damaged", "underrepair",
+                         "repair", "inactive", "notavailable"}
+
+
+def _site_sync_ts(v: Any) -> str:
+    if v in (None, ""):
+        return ""
+    if isinstance(v, _dt.datetime):
+        return v.strftime("%Y-%m-%d %H:%M")
+    if isinstance(v, _dt.date):
+        return _dt.datetime.combine(v, _dt.time()).strftime("%Y-%m-%d %H:%M")
+    t = str(v).strip()
+    if not t:
+        return ""
+    for f in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M",
+              "%d-%m-%Y %H:%M", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            dt = _dt.datetime.strptime(t, f)
+            return dt.strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+    try:
+        n = float(t)
+        if 20000 < n < 60000:
+            dt = _dt.datetime(1899, 12, 30) + _dt.timedelta(days=n)
+            return dt.strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        pass
+    return t[:16]
+
+
+def site_sync_template_rows() -> tuple[list[str], list[list[Any]]]:
+    cols = [lbl for _, lbl in SITE_SYNC_FIELDS[:-1]]
+    rows = [
+        ["Jafura", "GT-001", "Gas Tester", "Safety", "Device", "Drager", "X-AM 2500",
+         "SN-001", 8, "Good", "Available", "Jafura Yard", "Ready for use"],
+        ["Noor", "TS-002", "Total Station", "Survey", "Instrument", "Leica", "TS16",
+         "SN-002", 1, "Good", "In Use", "Survey Cabin", "Issued to survey team"],
+        ["Main Warehouse", "TL-010", "Torque Wrench", "Mechanical", "Tools", "Stanley",
+         "TW-10", "", 4, "Good", "Available", "Rack A-01", "Store custody"],
+    ]
+    return cols, rows
+
+
+def site_sync_read_table(path: str | Path) -> tuple[list[str], list[list[Any]]]:
+    p = Path(path)
+    if p.suffix.lower() in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+        wb = load_workbook(p, data_only=True, read_only=True)
+        ws = wb.active
+        data = [[("" if c is None else c) for c in row] for row in ws.iter_rows(values_only=True)]
+        wb.close()
+        data = [r for r in data if any(str(c).strip() for c in r)]
+    else:
+        text = p.read_text(encoding="utf-8", errors="ignore")
+        sample = text[:4096] or ","
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;	|")
+        except csv.Error:
+            dialect = csv.excel
+            dialect.delimiter = ","
+        rows = list(csv.reader(io.StringIO(text), dialect))
+        data = [[c for c in row] for row in rows if any(str(c).strip() for c in row)]
+    if not data:
+        return [], []
+    head = [str(c).strip() for c in data[0]]
+    if sum(1 for c in head if norm(c) in SITE_SYNC_HEADER_MAP) >= 2:
+        return head, data[1:]
+    return [f"Column {i + 1}" for i in range(len(head))], data
+
+
+def site_sync_auto_map(headers: Sequence[str]) -> dict[int, str]:
+    out: dict[int, str] = {}
+    used: set[str] = set()
+    for i, h in enumerate(headers):
+        f = SITE_SYNC_HEADER_MAP.get(norm(h))
+        if f and f not in used:
+            out[i] = f
+            used.add(f)
+    return out
+
+
+def _guess_site_from_name(path: str | Path) -> str:
+    p = Path(path)
+    parts = re.split(r"[_\-]+", p.stem)
+    if parts:
+        guess = " ".join(parts[:3]).strip()
+        if guess and len(guess) <= 40:
+            return guess.title()
+    parent = p.parent.name.strip()
+    return parent[:40] if parent else ""
+
+
+def site_sync_preview(headers: Sequence[str], rows: Sequence[Sequence[Any]],
+                      mapping: dict[int, str], defaults: dict | None = None) -> list[dict]:
+    defaults = defaults or {}
+    raw: list[dict[str, Any]] = []
+    for r in rows:
+        rec = {f: "" for f, _ in SITE_SYNC_FIELDS}
+        rec.update({k: v for k, v in defaults.items() if v not in (None, "")})
+        for i, field in mapping.items():
+            if i < len(r):
+                rec[field] = r[i]
+        rec["qty"] = to_float(rec.get("qty"), 0.0)
+        rec["site_name"] = str(rec.get("site_name") or defaults.get("site_name") or "").strip()
+        rec["item_code"] = str(rec.get("item_code") or "").strip()
+        rec["item_name"] = str(rec.get("item_name") or rec.get("item_code") or "").strip()
+        rec["category"] = str(rec.get("category") or "").strip()
+        rec["item_type"] = str(rec.get("item_type") or "").strip()
+        rec["brand"] = str(rec.get("brand") or "").strip()
+        rec["model"] = str(rec.get("model") or "").strip()
+        rec["serial_no"] = str(rec.get("serial_no") or "").strip()
+        rec["condition"] = str(rec.get("condition") or "").strip()
+        rec["status"] = str(rec.get("status") or ("Unavailable" if rec["qty"] <= 0 else "Available")).strip()
+        rec["location"] = str(rec.get("location") or "").strip()
+        rec["remarks"] = str(rec.get("remarks") or "").strip()
+        rec["last_updated"] = _site_sync_ts(rec.get("last_updated") or defaults.get("last_updated") or _now())
+        if not any(str(rec.get(k, "")).strip() for k in ("site_name", "item_code", "item_name", "serial_no")) and rec["qty"] == 0:
+            continue
+        if not rec["site_name"]:
+            rec["site_name"] = str(defaults.get("site_name") or "Store Custody").strip() or "Store Custody"
+        raw.append(rec)
+    agg: dict[tuple[str, ...], dict[str, Any]] = {}
+    for rec in raw:
+        key = (norm(rec["site_name"]), norm(rec["item_code"] or rec["item_name"]), norm(rec["serial_no"]),
+               norm(rec["location"]), norm(rec["status"]), norm(rec["condition"]))
+        if key not in agg:
+            agg[key] = dict(rec)
+        else:
+            agg[key]["qty"] = float(agg[key].get("qty") or 0) + float(rec.get("qty") or 0)
+            if str(rec.get("last_updated") or "") > str(agg[key].get("last_updated") or ""):
+                agg[key]["last_updated"] = rec.get("last_updated")
+            if rec.get("remarks") and rec["remarks"] not in str(agg[key].get("remarks") or ""):
+                agg[key]["remarks"] = (str(agg[key].get("remarks") or "").strip() + ("; " if agg[key].get("remarks") else "") + rec["remarks"]).strip()
+    return list(agg.values())
+
+
+def _site_sync_source_key(source_file: str, rec: dict[str, Any]) -> str:
+    parts = [source_file, rec.get("site_name", ""), rec.get("item_code", rec.get("item_name", "")),
+             rec.get("serial_no", ""), rec.get("location", ""), rec.get("status", "")]
+    return "|".join(norm(p) for p in parts)
+
+
+def _site_sync_state(rec: dict[str, Any]) -> str:
+    st = norm(rec.get("status"))
+    cond = norm(rec.get("condition"))
+    qty = float(rec.get("qty") or 0)
+    if qty <= 0 or st in SITE_SYNC_UNAVAILABLE or cond in SITE_SYNC_UNAVAILABLE:
+        return "Unavailable"
+    return "Available"
+
+
+def site_sync_folder_status(path: str | Path) -> tuple[bool, str]:
+    if not str(path or "").strip():
+        return False, "No folder selected."
+    p = Path(path)
+    if not p.exists():
+        return False, f"The folder does not exist or is offline:\n{p}"
+    if not p.is_dir():
+        return False, f"That path is a file, not a folder:\n{p}"
+    if not os.access(p, os.R_OK):
+        return False, f"No permission to read:\n{p}"
+    return True, ("Read and write access." if os.access(p, os.W_OK)
+                  else "Read-only — files can be imported but not changed.")
+
+
+def site_sync_folders(db: ToolDB, active_only: bool = False) -> list[dict]:
+    sql = "SELECT * FROM site_sync_folders"
+    if active_only:
+        sql += " WHERE active=1"
+    sql += " ORDER BY id"
+    out = []
+    for r in db.query(sql):
+        d = dict(r)
+        ok, note = site_sync_folder_status(d["path"])
+        d["online"] = ok
+        d["note"] = note
+        d["files"] = int(db.scalar("SELECT COUNT(*) FROM site_sync_files WHERE folder_id=?", (d["id"],), 0) or 0)
+        out.append(d)
+    return out
+
+
+def save_site_sync_folder(db: ToolDB, path: str | Path, label: str = "", site_name: str = "",
+                          auto_sync: bool = False, sync_interval: int = 5,
+                          folder_id: int | None = None) -> int:
+    p = str(Path(path))
+    ok, note = site_sync_folder_status(p)
+    if not ok:
+        raise ValueError(note)
+    data = (p, label or Path(p).name, str(site_name or "").strip(),
+            1 if auto_sync else 0, max(1, int(sync_interval or 5)))
+    if folder_id:
+        db.execute("UPDATE site_sync_folders SET path=?, label=?, site_name=?, auto_sync=?, sync_interval=?, active=1 WHERE id=?",
+                   data + (folder_id,))
+        db.commit()
+        db.audit("EDITED", "site-sync-folder", folder_id, p)
+        return int(folder_id)
+    row = db.one("SELECT id FROM site_sync_folders WHERE path=?", (p,))
+    if row:
+        db.execute("UPDATE site_sync_folders SET label=?, site_name=?, auto_sync=?, sync_interval=?, active=1 WHERE id=?",
+                   (label or Path(p).name, str(site_name or "").strip(), 1 if auto_sync else 0,
+                    max(1, int(sync_interval or 5)), row["id"]))
+        db.commit()
+        return int(row["id"])
+    cur = db.execute("INSERT INTO site_sync_folders(path,label,site_name,auto_sync,sync_interval) VALUES(?,?,?,?,?)", data)
+    db.commit()
+    db.audit("ADDED", "site-sync-folder", p, label)
+    return int(cur.lastrowid)
+
+
+def remove_site_sync_folder(db: ToolDB, folder_id: int, forget_files: bool = False) -> None:
+    if forget_files:
+        files = [dict(r) for r in db.query("SELECT id, path FROM site_sync_files WHERE folder_id=?", (folder_id,))]
+        for f in files:
+            delete_site_sync_file_records(db, int(f["id"]))
+        db.execute("DELETE FROM site_sync_files WHERE folder_id=?", (folder_id,))
+    db.execute("DELETE FROM site_sync_folders WHERE id=?", (folder_id,))
+    db.commit()
+    db.audit("REMOVED", "site-sync-folder", folder_id)
+
+
+def site_sync_scan_files(db: ToolDB, folder_id: int | None = None, status: str = "", text: str = "") -> list[dict]:
+    sql = "SELECT f.*, d.label AS folder_label FROM site_sync_files f LEFT JOIN site_sync_folders d ON d.id=f.folder_id WHERE 1=1"
+    p: list[Any] = []
+    if folder_id:
+        sql += " AND f.folder_id=?"
+        p.append(folder_id)
+    if status and status != "All":
+        sql += " AND f.status=?"
+        p.append(status)
+    if text:
+        like = f"%{text.strip()}%"
+        sql += " AND (f.name LIKE ? OR f.detected_site LIKE ? OR f.assigned_site LIKE ? OR f.note LIKE ?)"
+        p += [like] * 4
+    sql += " ORDER BY f.modified DESC, f.id DESC"
+    return [dict(r) for r in db.query(sql, p)]
+
+
+def site_sync_runs(db: ToolDB, file_id: int = 0, limit: int = 200) -> list[dict]:
+    sql = "SELECT * FROM site_sync_runs"
+    p: list[Any] = []
+    if file_id:
+        sql += " WHERE file_id=?"
+        p.append(file_id)
+    sql += " ORDER BY id DESC LIMIT ?"
+    p.append(limit)
+    return [dict(r) for r in db.query(sql, p)]
+
+
+def delete_site_sync_file_records(db: ToolDB, file_id: int) -> None:
+    db.execute("DELETE FROM site_inventory WHERE file_id=?", (file_id,))
+    db.commit()
+
+
+def import_site_sync_records(db: ToolDB, records: Sequence[dict], source_file: str, file_id: int,
+                             folder_id: int | None = None) -> dict[str, int]:
+    existing = {r["source_key"]: dict(r) for r in db.query("SELECT * FROM site_inventory WHERE file_id=?", (file_id,))}
+    seen: set[str] = set()
+    created = updated = failed = 0
+    now = _now()
+    for rec in records:
+        try:
+            key = _site_sync_source_key(source_file, rec)
+            seen.add(key)
+            payload = {
+                "source_key": key, "file_id": file_id, "folder_id": folder_id or 0,
+                "source_file": source_file, "site_name": str(rec.get("site_name") or ""),
+                "item_code": str(rec.get("item_code") or ""), "item_name": str(rec.get("item_name") or ""),
+                "category": str(rec.get("category") or ""), "item_type": str(rec.get("item_type") or ""),
+                "brand": str(rec.get("brand") or ""), "model": str(rec.get("model") or ""),
+                "serial_no": str(rec.get("serial_no") or ""), "qty": float(rec.get("qty") or 0),
+                "condition": str(rec.get("condition") or ""),
+                "status": str(rec.get("status") or _site_sync_state(rec)),
+                "location": str(rec.get("location") or ""), "remarks": str(rec.get("remarks") or ""),
+                "last_updated": str(rec.get("last_updated") or now), "last_sync": now,
+            }
+            if key in existing:
+                sets = ", ".join(f"{k}=?" for k in payload if k != "source_key")
+                db.execute(f"UPDATE site_inventory SET {sets}, updated_at=? WHERE source_key=?",
+                           [payload[k] for k in payload if k != "source_key"] + [now, key])
+                updated += 1
+            else:
+                cols = ", ".join(list(payload) + ["created_at", "updated_at"])
+                qs = ", ".join("?" * (len(payload) + 2))
+                db.execute(f"INSERT INTO site_inventory({cols}) VALUES({qs})",
+                           list(payload.values()) + [now, now])
+                created += 1
+        except Exception:
+            failed += 1
+    stale = [k for k in existing if k not in seen]
+    if stale:
+        db.execute(f"DELETE FROM site_inventory WHERE source_key IN ({','.join('?' * len(stale))})", stale)
+    db.commit()
+    return {"created": created, "updated": updated, "failed": failed, "total": len(records)}
+
+
+def import_site_sync_preview_records(db: ToolDB, records: Sequence[dict], source_file: str,
+                                   assigned_site: str = "", folder_id: int | None = None) -> dict[str, Any]:
+    p = Path(source_file) if str(source_file or "").strip() else Path(f"manual-site-sync-{_dt.datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx")
+    exists = p.exists() and p.is_file()
+    digest = file_hash(p) if exists else ""
+    modified = _dt.datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M") if exists else _now()[:16]
+    detected_site = str(assigned_site or (records[0].get("site_name") if records else "") or _guess_site_from_name(p)).strip()
+    row = db.one("SELECT * FROM site_sync_files WHERE path=?", (str(p),))
+    if row:
+        file_id = int(row["id"])
+        db.execute("UPDATE site_sync_files SET folder_id=?, name=?, assigned_site=?, detected_site=?, size_kb=?, modified=?, file_hash=? WHERE id=?",
+                   (folder_id, p.name, assigned_site, detected_site, round((p.stat().st_size if exists else 0) / 1024.0, 1), modified, digest, file_id))
+    else:
+        cur = db.execute("INSERT INTO site_sync_files(folder_id,path,name,assigned_site,detected_site,size_kb,modified,file_hash,status) VALUES(?,?,?,?,?,?,?,?,?)",
+                         (folder_id, str(p), p.name, assigned_site, detected_site, round((p.stat().st_size if exists else 0) / 1024.0, 1), modified, digest, "New"))
+        file_id = int(cur.lastrowid)
+    db.commit()
+    if not records:
+        raise ValueError("no usable records after mapping")
+    imp = import_site_sync_records(db, records, str(p), file_id, folder_id)
+    site_name = records[0].get("site_name", detected_site) if records else detected_site
+    db.execute("UPDATE site_sync_files SET status=?, rows_total=?, rows_created=?, rows_updated=?, rows_failed=?, last_sync=?, note=?, detected_site=? WHERE id=?",
+               ("Synced", imp["total"], imp["created"], imp["updated"], imp["failed"], _now(), "manual preview import", site_name, file_id))
+    db.execute("INSERT INTO site_sync_runs(folder_id,file_id,source_file,site_name,status,total_rows,created_rows,updated_rows,failed_rows,details) VALUES(?,?,?,?,?,?,?,?,?,?)",
+               (folder_id, file_id, str(p), site_name, "Synced", imp["total"], imp["created"], imp["updated"], imp["failed"], "manual preview import"))
+    if folder_id:
+        db.execute("UPDATE site_sync_folders SET last_scan=?, last_success=?, last_error='' WHERE id=?", (_now(), _now(), folder_id))
+    db.commit()
+    db.audit("SYNCED", "site-sync-file", str(p), f"manual preview import: {imp['created']} created, {imp['updated']} updated")
+    return {"file_id": file_id, "status": "Synced", **imp}
+
+
+def sync_site_sync_file(db: ToolDB, path: str | Path, folder_id: int | None = None,
+                        assigned_site: str = "", force: bool = False) -> dict[str, Any]:
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        raise FileNotFoundError(p)
+    if p.suffix.lower() not in SITE_SYNC_SUFFIXES or p.name.startswith("~$"):
+        raise ValueError(f"Unsupported file: {p.name}")
+    st = p.stat()
+    digest = file_hash(p)
+    modified = _dt.datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+    detected_site = str(assigned_site or _guess_site_from_name(p)).strip()
+    row = db.one("SELECT * FROM site_sync_files WHERE path=?", (str(p),))
+    if row:
+        file_id = int(row["id"])
+        if (not force) and row["file_hash"] == digest and row["status"] == "Synced":
+            return {"file_id": file_id, "status": "Unchanged", "created": 0, "updated": 0, "failed": 0, "total": int(row["rows_total"] or 0)}
+        db.execute("UPDATE site_sync_files SET folder_id=?, name=?, assigned_site=?, detected_site=?, size_kb=?, modified=?, file_hash=? WHERE id=?",
+                   (folder_id, p.name, assigned_site, detected_site, round(st.st_size / 1024.0, 1), modified, digest, file_id))
+    else:
+        cur = db.execute("INSERT INTO site_sync_files(folder_id,path,name,assigned_site,detected_site,size_kb,modified,file_hash,status) VALUES(?,?,?,?,?,?,?,?,?)",
+                         (folder_id, str(p), p.name, assigned_site, detected_site, round(st.st_size / 1024.0, 1), modified, digest, "New"))
+        file_id = int(cur.lastrowid)
+    db.commit()
+    try:
+        headers, rows = site_sync_read_table(p)
+        if not rows:
+            raise ValueError("no data rows found")
+        mapping = site_sync_auto_map(headers)
+        if not mapping:
+            raise ValueError("no recognisable columns")
+        defaults = {"site_name": detected_site or assigned_site or _guess_site_from_name(p),
+                    "last_updated": modified}
+        recs = site_sync_preview(headers, rows, mapping, defaults)
+        if not recs:
+            raise ValueError("no usable records after mapping")
+        imp = import_site_sync_records(db, recs, str(p), file_id, folder_id)
+        site_name = recs[0].get("site_name", detected_site) if recs else detected_site
+        db.execute("UPDATE site_sync_files SET status=?, rows_total=?, rows_created=?, rows_updated=?, rows_failed=?, last_sync=?, note=?, detected_site=? WHERE id=?",
+                   ("Synced", imp["total"], imp["created"], imp["updated"], imp["failed"], _now(), json.dumps(mapping), site_name, file_id))
+        db.execute("INSERT INTO site_sync_runs(folder_id,file_id,source_file,site_name,status,total_rows,created_rows,updated_rows,failed_rows,details) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   (folder_id, file_id, str(p), site_name, "Synced", imp["total"], imp["created"], imp["updated"], imp["failed"], f"mapped {len(mapping)} column(s)"))
+        if folder_id:
+            db.execute("UPDATE site_sync_folders SET last_scan=?, last_success=?, last_error='' WHERE id=?", (_now(), _now(), folder_id))
+        db.commit()
+        db.audit("SYNCED", "site-sync-file", str(p), f"{imp['created']} created, {imp['updated']} updated")
+        return {"file_id": file_id, "status": "Synced", **imp}
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)[:500]
+        db.execute("UPDATE site_sync_files SET status=?, rows_failed=1, last_sync=?, note=?, detected_site=? WHERE id=?",
+                   ("Failed", _now(), msg, detected_site, file_id))
+        db.execute("INSERT INTO site_sync_runs(folder_id,file_id,source_file,site_name,status,failed_rows,details) VALUES(?,?,?,?,?,?,?)",
+                   (folder_id, file_id, str(p), detected_site, "Failed", 1, msg))
+        if folder_id:
+            db.execute("UPDATE site_sync_folders SET last_scan=?, last_error=? WHERE id=?", (_now(), msg, folder_id))
+        db.commit()
+        db.audit("FAILED", "site-sync-file", str(p), msg)
+        return {"file_id": file_id, "status": "Failed", "created": 0, "updated": 0, "failed": 1, "total": 0, "error": msg}
+
+
+def sync_site_sync_folder(db: ToolDB, folder_id: int, force: bool = False) -> dict[str, Any]:
+    row = db.one("SELECT * FROM site_sync_folders WHERE id=?", (folder_id,))
+    if row is None:
+        raise ValueError("Folder not found.")
+    ok, note = site_sync_folder_status(row["path"])
+    if not ok:
+        db.execute("UPDATE site_sync_folders SET last_scan=?, last_error=? WHERE id=?", (_now(), note, folder_id))
+        db.commit()
+        return {"ok": False, "message": note, "seen": 0, "synced": 0, "failed": 0, "errors": [note]}
+    res = {"ok": True, "message": note, "seen": 0, "synced": 0, "failed": 0, "errors": []}
+    for f in sorted(Path(row["path"]).rglob("*")):
+        if not f.is_file() or f.suffix.lower() not in SITE_SYNC_SUFFIXES or f.name.startswith("~$") or f.name.startswith("."):
+            continue
+        res["seen"] += 1
+        out = sync_site_sync_file(db, f, folder_id=folder_id, assigned_site=str(row["site_name"] or ""), force=force)
+        if out.get("status") == "Failed":
+            res["failed"] += 1
+            if out.get("error"):
+                res["errors"].append(f"{f.name}: {out['error']}")
+        elif out.get("status") != "Unchanged":
+            res["synced"] += 1
+    db.execute("UPDATE site_sync_folders SET last_scan=? WHERE id=?", (_now(), folder_id))
+    db.commit()
+    return res
+
+
+def sync_due_site_folders(db: ToolDB) -> dict[str, Any]:
+    total = {"folders": 0, "synced": 0, "failed": 0, "seen": 0, "errors": []}
+    now = _dt.datetime.now()
+    for f in site_sync_folders(db, active_only=True):
+        if not int(f.get("auto_sync") or 0):
+            continue
+        due = True
+        last = str(f.get("last_scan") or "").strip()
+        if last:
+            try:
+                dt = _dt.datetime.strptime(last[:19], "%Y-%m-%d %H:%M:%S")
+                due = (now - dt).total_seconds() >= max(60, int(f.get("sync_interval") or 5) * 60)
+            except ValueError:
+                due = True
+        if not due:
+            continue
+        r = sync_site_sync_folder(db, int(f["id"]))
+        total["folders"] += 1
+        total["synced"] += int(r.get("synced") or 0)
+        total["failed"] += int(r.get("failed") or 0)
+        total["seen"] += int(r.get("seen") or 0)
+        total["errors"] += list(r.get("errors") or [])
+    return total
+
+
+def distinct_site_inventory(db: ToolDB, column: str) -> list[str]:
+    safe = {"site_name", "category", "item_type", "status", "location", "brand"}
+    if column not in safe:
+        return []
+    return [str(r[0]) for r in db.query(f"SELECT DISTINCT {column} FROM site_inventory WHERE COALESCE({column},'')<>'' ORDER BY {column}")]
+
+
+def search_site_inventory(db: ToolDB, text: str = "", site_name: str = "", category: str = "",
+                          item_type: str = "", status: str = "", date_from: str = "",
+                          date_to: str = "") -> list[dict]:
+    sql = "SELECT * FROM site_inventory WHERE 1=1"
+    p: list[Any] = []
+    if site_name:
+        sql += " AND site_name=?"
+        p.append(site_name)
+    if category:
+        sql += " AND category=?"
+        p.append(category)
+    if item_type:
+        sql += " AND item_type=?"
+        p.append(item_type)
+    if status:
+        sql += " AND status=?"
+        p.append(status)
+    if date_from:
+        sql += " AND substr(COALESCE(last_updated,last_sync,''),1,10) >= ?"
+        p.append(date_from[:10])
+    if date_to:
+        sql += " AND substr(COALESCE(last_updated,last_sync,''),1,10) <= ?"
+        p.append(date_to[:10])
+    if text:
+        like = f"%{text.strip()}%"
+        sql += (" AND (site_name LIKE ? OR item_code LIKE ? OR item_name LIKE ? OR category LIKE ? OR item_type LIKE ?"
+                " OR brand LIKE ? OR model LIKE ? OR serial_no LIKE ? OR status LIKE ? OR location LIKE ? OR remarks LIKE ?)")
+        p += [like] * 11
+    sql += " ORDER BY site_name, item_type, item_name, item_code"
+    rows = [dict(r) for r in db.query(sql, p)]
+    for r in rows:
+        r["availability"] = _site_sync_state(r)
+    return rows
+
+
+def site_inventory_dashboard(db: ToolDB, f: dict | None = None) -> dict[str, Any]:
+    f = f or {}
+    rows = search_site_inventory(db, **f)
+    total_qty = sum(float(r.get("qty") or 0) for r in rows)
+    sites = {r.get("site_name") or "" for r in rows if r.get("site_name")}
+    types = {r.get("item_type") or "" for r in rows if r.get("item_type")}
+    cats = {r.get("category") or "" for r in rows if r.get("category")}
+    recent = sorted(rows, key=lambda r: str(r.get("last_updated") or r.get("last_sync") or ""), reverse=True)[:30]
+    missing = [r for r in rows if r["availability"] == "Unavailable"]
+    by_site: dict[str, float] = {}
+    by_type: dict[str, float] = {}
+    by_cat: dict[str, float] = {}
+    by_item: dict[str, float] = {}
+    for r in rows:
+        q = float(r.get("qty") or 0)
+        by_site[r.get("site_name") or "(blank)"] = by_site.get(r.get("site_name") or "(blank)", 0.0) + q
+        by_type[r.get("item_type") or "(blank)"] = by_type.get(r.get("item_type") or "(blank)", 0.0) + q
+        by_cat[r.get("category") or "(blank)"] = by_cat.get(r.get("category") or "(blank)", 0.0) + q
+        key = f"{r.get('item_name') or r.get('item_code') or '(blank)'} @ {r.get('site_name') or '(blank)'}"
+        by_item[key] = by_item.get(key, 0.0) + q
+    last_sync = db.scalar("SELECT MAX(last_sync) FROM site_sync_files", default="") or ""
+    file_count = int(db.scalar("SELECT COUNT(*) FROM site_sync_files", default=0) or 0)
+    failed_files = int(db.scalar("SELECT COUNT(*) FROM site_sync_files WHERE status='Failed'", default=0) or 0)
+    return {
+        "rows": rows,
+        "row_count": len(rows),
+        "total_qty": total_qty,
+        "site_count": len(sites),
+        "type_count": len(types),
+        "category_count": len(cats),
+        "file_count": file_count,
+        "failed_files": failed_files,
+        "last_sync": last_sync,
+        "recent": recent,
+        "missing": missing[:50],
+        "by_site": sorted(by_site.items(), key=lambda kv: (-kv[1], kv[0].lower())),
+        "by_type": sorted(by_type.items(), key=lambda kv: (-kv[1], kv[0].lower())),
+        "by_category": sorted(by_cat.items(), key=lambda kv: (-kv[1], kv[0].lower())),
+        "top_items": sorted(by_item.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:12],
+    }
+
+
+def site_sync_import_files(db: ToolDB, paths: Sequence[str], assigned_site: str = "", force: bool = True) -> dict[str, Any]:
+    res = {"synced": 0, "failed": 0, "errors": []}
+    for p in paths:
+        out = sync_site_sync_file(db, p, assigned_site=assigned_site, force=force)
+        if out.get("status") == "Failed":
+            res["failed"] += 1
+            if out.get("error"):
+                res["errors"].append(f"{Path(p).name}: {out['error']}")
+        elif out.get("status") != "Unchanged":
+            res["synced"] += 1
+    return res
