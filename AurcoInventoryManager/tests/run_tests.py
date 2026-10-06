@@ -3710,6 +3710,11 @@ def main() -> int:
     check(_typed_row["pr_nos"] == "PR-TYPED-01" and _typed_row["dn_refs"] == "JAF-DN-REF-01"
           and _typed_row["dn_nos"] == _dn_typed,
           "typed item analytics carries the DN PR number, DN number and DN reference")
+    _typed_wh = S.typed_item_analytics(db, second_type="Device", site="Main")
+    _typed_wh_row = next(r for r in _typed_wh["rows"] if r["item_code"] == gt_code)
+    check(abs(float(_typed_wh_row["qty"]) - 4.0) < 1e-9 and _typed_wh_row["issued_to"] == "Store Custody"
+          and _typed_wh_row["location"] == "A-01",
+          "typed item analytics also shows remaining typed inventory under warehouse / store custody")
     win.go("Analytics")
     win.page_analytics.refresh()
     app.processEvents()
@@ -3723,6 +3728,16 @@ def main() -> int:
           and _ia_tbl.item(_ia_row, _ia_hdrs.index("PR / MR Nos")).text() == "PR-TYPED-01"
           and _ia_tbl.item(_ia_row, _ia_hdrs.index("DN References")).text() == "JAF-DN-REF-01",
           "the Analytics module shows the current qty plus PR number and DN reference for typed DN data")
+    win.page_analytics.item_analytics.f_site.setCurrentText("Main")
+    win.page_analytics.item_analytics.reload()
+    _ia_row_main = next(r for r in range(_ia_tbl.rowCount()) if _ia_tbl.item(r, 1).text() == gt_code)
+    check("Main" in [win.page_analytics.item_analytics.f_site.itemText(i)
+                      for i in range(win.page_analytics.item_analytics.f_site.count())]
+          and win.page_analytics.item_analytics.cards["qty"].lbl_value.text() == "4"
+          and _ia_tbl.item(_ia_row_main, _ia_hdrs.index("Issued To")).text() == "Store Custody",
+          "the Analytics module also shows typed inventory still under warehouse / store custody")
+    win.page_analytics.item_analytics.f_site.setCurrentText("Jafura")
+    win.page_analytics.item_analytics.reload()
     win.page_analytics.item_analytics.export_excel()
     _ia_xl = win.page_analytics.item_analytics.last_file
     _ia_ws = _lw(_ia_xl).active

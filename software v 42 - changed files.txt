@@ -1,0 +1,25 @@
+AURCO Inventory Manager 2.28.18
+Package: software v 42.zip
+Compared against: software v 41.zip
+
+Modified files (10):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/services.py
+- AurcoInventoryManager/aurco/ui/surveyor_tools_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.18.txt
+- software v 42 - changed files.txt
+- software v 42.zip
+
+Main changes
+- The Analytics module now also shows typed items still in the warehouse / store custody, even if they were never sent on a Delivery Note.
+- Remaining inventory quantity appears under the warehouse name when available, otherwise under Store Custody.
+- Issued typed items still keep their PR / MR Nos, DN Nos, and DN References in Analytics and exports.
+- Added tests for warehouse-custody visibility in the Analytics module.
+
+Validation
+- python3 -m py_compile on updated files: PASSED
+- Headless regression suite: ALL 1405 CHECKS PASSED

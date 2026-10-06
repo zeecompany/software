@@ -1045,7 +1045,7 @@ class ItemMasterAnalyticsTab(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         note = QLabel(
             "This analytics view auto-detects final Delivery Note items whose Item Master 2nd Type is set. "
-            "Use it to see what Devices, Instruments or Tools are currently outstanding at each site."
+            "It also includes typed items still in inventory under warehouse / store custody, so you can see the full current position."
         )
         note.setWordWrap(True)
         v.addWidget(note)
@@ -1054,7 +1054,7 @@ class ItemMasterAnalyticsTab(QWidget):
         bar.setObjectName("Card")
         gl = QGridLayout(bar)
         gl.setContentsMargins(10, 8, 10, 8)
-        self.f_text = W.SearchBox("Search 2nd type, item code, description, site, PR or DN reference ...")
+        self.f_text = W.SearchBox("Search 2nd type, item code, description, site, warehouse, PR or DN reference ...")
         self.f_type2 = W.combo(["All 2nd Types"], editable=True)
         self.f_site = W.combo(["All Sites"], editable=True)
         for w in (self.f_text, self.f_type2, self.f_site):
@@ -1097,7 +1097,7 @@ class ItemMasterAnalyticsTab(QWidget):
         charts.addWidget(right, 1)
         v.addLayout(charts, 1)
 
-        tbl = W.Card("Current Delivery Note analytics")
+        tbl = W.Card("Current typed material analytics")
         self.table = W.DataTable(["2nd Type", "Item Code", "Description", "Current Site", "Current Location",
                                   "Issued To", "PR / MR Nos", "DN Nos", "DN References",
                                   "Current Qty", "Issued", "Returned", "Damaged", "DNs"])
@@ -1124,12 +1124,24 @@ class ItemMasterAnalyticsTab(QWidget):
         cur_site = self.f_site.currentText()
         type2s = ["All 2nd Types"] + S.distinct_second_types(self.db)
         sites = ["All Sites"] + [str(r[0]) for r in self.db.query(
-            """SELECT DISTINCT project FROM documents d
-                 JOIN document_lines l ON l.doc_id=d.id
-                 JOIN items i ON i.id=l.item_id
-                WHERE d.doc_type='DN' AND d.status='FINAL' AND COALESCE(i.second_type,'')<>''
-                  AND COALESCE(project,'')<>''
-                ORDER BY project""")]
+            """SELECT site FROM (
+                    SELECT DISTINCT project AS site
+                      FROM documents d
+                      JOIN document_lines l ON l.doc_id=d.id
+                      JOIN items i ON i.id=l.item_id
+                     WHERE d.doc_type='DN' AND d.status='FINAL' AND COALESCE(i.second_type,'')<>''
+                       AND COALESCE(project,'')<>''
+                    UNION
+                    SELECT DISTINCT warehouse AS site
+                      FROM items
+                     WHERE COALESCE(second_type,'')<>'' AND COALESCE(balance,0)>0
+                       AND COALESCE(warehouse,'')<>''
+                    UNION
+                    SELECT 'Store Custody' AS site
+                      FROM items
+                     WHERE COALESCE(second_type,'')<>'' AND COALESCE(balance,0)>0
+                       AND COALESCE(warehouse,'')=''
+                ) ORDER BY site""")]
         self.f_type2.blockSignals(True)
         self.f_type2.clear(); self.f_type2.addItems(type2s)
         if cur_type2 in type2s:
@@ -1146,7 +1158,7 @@ class ItemMasterAnalyticsTab(QWidget):
         d = S.typed_item_analytics(self.db, **self._filters())
         self.rows = d["rows"]
         self.cards["rows"].set_value(f"{d['row_count']:,}", "typed item group(s)")
-        self.cards["qty"].set_value(_fmt_qty(d["total_qty"]), "currently at sites")
+        self.cards["qty"].set_value(_fmt_qty(d["total_qty"]), "current typed custody qty")
         self.cards["sites"].set_value(f"{d['site_count']:,}", "site footprint")
         self.cards["types"].set_value(f"{d['second_type_count']:,}", "2nd type groups")
         self.c_site.set_data(d["by_site"] or [("No data", 0)])
@@ -1167,7 +1179,7 @@ class ItemMasterAnalyticsTab(QWidget):
     def export_excel(self):
         f = D.export_excel(
             self.db,
-            "Analytics — Typed Delivery Note Items",
+            "Analytics — Typed Material Custody",
             ["2nd Type", "Item Code", "Description", "Current Site", "Current Location", "Issued To",
              "PR / MR Nos", "DN Nos", "DN References", "Current Qty", "Issued", "Returned", "Damaged", "DNs"],
             [[r.get("second_type", ""), r.get("item_code", ""), r.get("description", ""), r.get("site", ""),
@@ -1184,7 +1196,7 @@ class ItemMasterAnalyticsTab(QWidget):
     def export_pdf(self):
         f = D.report_pdf(
             self.db,
-            "Analytics — Typed Delivery Note Items",
+            "Analytics — Typed Material Custody",
             ["2nd Type", "Item Code", "Description", "Current Site", "Current Location", "Issued To",
              "PR / MR Nos", "DN Nos", "DN References", "Current Qty", "Issued", "Returned", "Damaged", "DNs"],
             [[r.get("second_type", ""), r.get("item_code", ""), r.get("description", ""), r.get("site", ""),
@@ -1193,7 +1205,7 @@ class ItemMasterAnalyticsTab(QWidget):
               float(r.get("issued_qty") or 0), float(r.get("returned_qty") or 0),
               float(r.get("damaged_qty") or 0), int(r.get("dn_count") or 0)]
              for r in self.rows],
-            subtitle="Auto-detected from final Delivery Notes using the Item Master 2nd Type classification",
+            subtitle="Auto-detected from final Delivery Notes plus typed items still under warehouse / store custody",
         )
         self.last_file = f
         W.toast(self, f"Exported {f.name}")

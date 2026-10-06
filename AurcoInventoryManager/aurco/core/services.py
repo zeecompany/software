@@ -796,12 +796,14 @@ def distinct_second_types(db: Database) -> list[str]:
 
 
 def typed_item_analytics(db: Database, text: str = "", second_type: str = "", site: str = "") -> dict[str, Any]:
-    """Current site position of typed Item Master materials.
+    """Current custody position of typed Item Master materials.
 
     Uses final stock movements, so a DN automatically appears here when its item
     has a 2nd Type on the Item Master. Returns and damaged returns reduce the
-    current quantity at that site. The analytics also carries the related PR / MR
-    number(s), DN number(s), and DN reference number(s) from the issuing DN.
+    current quantity at that site. Any typed quantity still sitting in inventory
+    is also included here under warehouse / store custody. The analytics carries
+    the related PR / MR number(s), DN number(s), and DN reference number(s) from
+    the issuing DN.
     """
     rows = db.query("""
         SELECT l.item_id, l.item_code, l.txn_type, l.qty_in, l.qty_out, l.reason, l.txn_date,
@@ -817,6 +819,12 @@ def typed_item_analytics(db: Database, text: str = "", second_type: str = "", si
           LEFT JOIN items i ON i.id=l.item_id
           LEFT JOIN documents d ON d.id=l.doc_id
          WHERE l.txn_type IN ('ISSUE','RETURN','DAMAGE')
+    """)
+    custody_rows = db.query("""
+        SELECT id, code, description, uom, second_type, balance, warehouse, location, rack
+          FROM items
+         WHERE COALESCE(second_type,'')<>''
+           AND COALESCE(balance,0) > 0
     """)
     doc_map = {
         str(r["doc_no"]): {
@@ -918,11 +926,21 @@ def typed_item_analytics(db: Database, text: str = "", second_type: str = "", si
     by_type: dict[str, float] = {}
     by_item: dict[str, float] = {}
     total_qty = 0.0
+    def _add_row(row: dict[str, Any]) -> None:
+        nonlocal total_qty
+        qty = float(row.get("qty") or 0)
+        out.append(row)
+        total_qty += qty
+        by_site[row["site"]] = by_site.get(row["site"], 0.0) + qty
+        by_type[row["second_type"]] = by_type.get(row["second_type"], 0.0) + qty
+        item_label = f"{row['description']} @ {row['site']}"
+        by_item[item_label] = by_item.get(item_label, 0.0) + qty
+
     for g in grouped.values():
         current_qty = g["issued_qty"] - g["returned_qty"] - g["damaged_qty"]
         if current_qty <= 1e-9:
             continue
-        row = {
+        _add_row({
             "second_type": g["second_type"],
             "site": g["site"],
             "location": g["location"],
@@ -938,13 +956,42 @@ def typed_item_analytics(db: Database, text: str = "", second_type: str = "", si
             "returned_qty": g["returned_qty"],
             "damaged_qty": g["damaged_qty"],
             "dn_count": len(g["dn_nos"]),
-        }
-        out.append(row)
-        total_qty += current_qty
-        by_site[row["site"]] = by_site.get(row["site"], 0.0) + current_qty
-        by_type[row["second_type"]] = by_type.get(row["second_type"], 0.0) + current_qty
-        item_label = f"{row['description']} @ {row['site']}"
-        by_item[item_label] = by_item.get(item_label, 0.0) + current_qty
+        })
+
+    for r in custody_rows:
+        row = dict(r)
+        row_type = str(row.get("second_type") or "").strip()
+        if not row_type:
+            continue
+        if second_type and row_type != second_type:
+            continue
+        row_site = str(row.get("warehouse") or "").strip() or "Store Custody"
+        if site and row_site != site:
+            continue
+        row_location = str(row.get("location") or row.get("rack") or "").strip() or "-"
+        item_code = str(row.get("code") or "").strip()
+        desc = str(row.get("description") or "").strip() or item_code or "(blank description)"
+        uom = str(row.get("uom") or "").strip()
+        hay = " ".join((row_type, item_code, desc, row_site, row_location, uom, "Store Custody", "warehouse")).lower()
+        if needle and needle not in hay:
+            continue
+        _add_row({
+            "second_type": row_type,
+            "site": row_site,
+            "location": row_location,
+            "item_code": item_code,
+            "description": desc,
+            "uom": uom,
+            "issued_to": "Store Custody",
+            "pr_nos": "-",
+            "dn_nos": "-",
+            "dn_refs": "-",
+            "qty": float(row.get("balance") or 0),
+            "issued_qty": 0.0,
+            "returned_qty": 0.0,
+            "damaged_qty": 0.0,
+            "dn_count": 0,
+        })
     out.sort(key=lambda r: (str(r["site"]).lower(), str(r["second_type"]).lower(), -float(r["qty"]), str(r["description"]).lower()))
     return {
         "rows": out,

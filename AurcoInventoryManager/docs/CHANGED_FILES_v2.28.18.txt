@@ -1,0 +1,26 @@
+AURCO Inventory Manager 2.28.18
+Package: software v 42.zip
+Compared against: software v 41.zip
+
+Modified files (10):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/services.py
+- AurcoInventoryManager/aurco/ui/surveyor_tools_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.18.txt
+- software v 42 - changed files.txt
+- software v 42.zip
+
+Main changes
+- Item Master / DN analytics now also includes typed items that are still in inventory and have not been issued anywhere yet.
+- Remaining typed stock is shown under warehouse / store custody, using the item warehouse when available and Store Custody when no warehouse is set.
+- The same analytics continues to show PR / MR Nos, DN Nos, and DN References for issued typed material.
+- Updated Analytics filters, summaries, and search so warehouse-custody rows appear alongside site-issued rows.
+- Added regression coverage proving typed inventory still in the warehouse appears correctly in Analytics.
+
+Validation
+- python3 -m py_compile on updated files: PASSED
+- Headless regression suite: ALL 1405 CHECKS PASSED
