@@ -4329,6 +4329,46 @@ def main() -> int:
           "if the old Tools Station DB files are locked, the app keeps using the legacy folder instead of crashing")
     _fallback_db.close()
 
+    _sv_old_root = root / "SURVEYOR_TOOLS_OLD_SCHEMA"
+    shutil.rmtree(_sv_old_root, ignore_errors=True)
+    _cfg.set_storage_root(_sv_old_root)
+    _old_folder = _sv_old_root / SV.FOLDER
+    _old_folder.mkdir(parents=True, exist_ok=True)
+    _old_db_path = _old_folder / SV.DB_NAME
+    _old_conn = sqlite3.connect(_old_db_path)
+    _old_conn.executescript("""
+        CREATE TABLE records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instrument_desc TEXT NOT NULL DEFAULT '',
+            serial_no TEXT DEFAULT '',
+            make_model TEXT DEFAULT '',
+            location TEXT NOT NULL DEFAULT 'Warehouse',
+            qty REAL NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'Active',
+            issued_to TEXT DEFAULT '',
+            employee_code TEXT DEFAULT '',
+            iqama_id TEXT DEFAULT '',
+            designation TEXT DEFAULT '',
+            division TEXT DEFAULT '',
+            current_project TEXT DEFAULT '',
+            issued_by TEXT DEFAULT '',
+            remarks TEXT DEFAULT '',
+            picture_path TEXT DEFAULT '',
+            created_by TEXT DEFAULT '',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT ''
+        );
+        INSERT INTO records(instrument_desc, serial_no, location, qty, status, issued_by)
+        VALUES('Old Schema Tool', 'OLD-001', 'Warehouse', 1, 'Active', 'Store Officer');
+    """)
+    _old_conn.commit()
+    _old_conn.close()
+    _upgraded_old = SV.SurveyorDB(_old_db_path, current_user="admin")
+    _old_row = next(r for r in SV.list_records(_upgraded_old) if r.get("serial_no") == "OLD-001")
+    check("second_type" in _old_row and _old_row["second_type"] == "",
+          "an older Tools Station database upgrades cleanly by adding the missing second_type column")
+    _upgraded_old.close()
+
     _cfg.set_storage_root(_sv_root)
     svp = win.page_survey
     svp.sdb.execute("DELETE FROM records")

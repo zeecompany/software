@@ -165,7 +165,6 @@ CREATE TABLE IF NOT EXISTS records (
     updated_at        TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS ix_sv_desc     ON records(instrument_desc);
-CREATE INDEX IF NOT EXISTS ix_sv_type2    ON records(second_type);
 CREATE INDEX IF NOT EXISTS ix_sv_serial   ON records(serial_no);
 CREATE INDEX IF NOT EXISTS ix_sv_location ON records(location);
 CREATE INDEX IF NOT EXISTS ix_sv_status   ON records(status);
