@@ -1,0 +1,40 @@
+software v 44 / AURCO Inventory Manager v2.28.20
+
+Included updates
+1. Tools Station restored as a dedicated module
+   - Brought back the separate Tools Station page in navigation
+   - Kept Analytics as its own separate module
+   - Preserved compatibility with the current Tools, Instruments & Devices storage folder
+
+2. Tools Station rebuild around the user Excel format
+   - Site sync template/import now matches fields such as:
+     Instrument Description, Serial No., Make / Model, Location, Quantity,
+     Status, Issued To / Employee Name, Employee Code, Iqama ID,
+     Designation, Division/Department, Current Project, Issued By,
+     Remarks, Picture Path
+   - CSV/XLSX header detection improved, including title rows before the real header
+   - File-wise sync history remains available
+
+3. Movement and custody tracking enhancements
+   - Issue/handover form now captures Employee Code and Division/Department
+   - Item lines now support Picture Path
+   - Return flow supports After Picture Path
+   - Transfer flow supports Employee Code, Iqama/National ID, Designation,
+     Division/Department, Responsible Person, Authorised By and After Picture Path
+   - Site-sync imports now create per-asset movement event history records
+     including source, before/after site-holder-status and picture references
+
+4. Dashboard and reporting
+   - Tools Station dashboard now includes KPI coverage for:
+     total tools, available, issued, transferred to sites, returned,
+     pending/missing, synced Excel files and sites covered
+   - Register/detail/history views now show Employee Code and Picture Path
+   - Tools Station PDF output now includes richer employee details and picture path
+
+5. Versioning and packaging
+   - Updated application version to v2.28.20
+   - Packaged next upload as: software v 44.zip
+
+Validation
+- py_compile passed on the updated Tools Station/core/UI/test modules
+- Full regression suite passed: 1384 / 1384 checks

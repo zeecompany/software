@@ -1,7 +1,7 @@
-"""TOOLS, INSTRUMENTS & DEVICES — custody register UI (was "Tool Station").
+"""TOOLS STATION — custody register UI rebuilt around Excel/site sync.
 
 Five tabs:
-    📊 Dashboard    KPI tiles + charts driven purely by Tools, Instruments & Devices data
+    📊 Dashboard    KPI tiles + charts driven purely by Tools Station data
     📋 Register     the unified filter — every document type in ONE shape
     🔧 Assets       where is each tool right now, and its full history
     📂 Sync Folder  index a synchronised folder of signed handover PDFs
@@ -49,6 +49,14 @@ def _paint(table: W.DataTable, col: int, colors: dict) -> None:
 #:   key · caption · glyph · colour · the register filter it drills into
 TILE_SPECS: list[tuple[str, str, str, str, dict]] = [
     ("documents", "Handover Documents", "🧾", W.NAVY, {}),
+    ("total_tools", "Total Tools", "🧰", W.NAVY, {}),
+    ("available", "Available", "✅", "#1a9c52", {}),
+    ("issued_site", "Issued", "📤", T.TXN_COLORS[T.ISSUE], {}),
+    ("transferred_site", "Transferred to Sites", "🚚", T.TXN_COLORS[T.TRANSFER], {}),
+    ("returned_site", "Returned", "↩", T.TXN_COLORS[T.RETURN], {}),
+    ("pending_items", "Pending / Missing", "⚠", "#c92a2a", {}),
+    ("site_files", "Synced Excel Files", "📄", "#14538f", {}),
+    ("sites_covered", "Sites Covered", "📍", "#7048e8", {}),
     ("issues", "Issues", "📤", T.TXN_COLORS[T.ISSUE], {"txn_type": T.ISSUE}),
     ("transfers", "Transfers", "🔁", T.TXN_COLORS[T.TRANSFER], {"txn_type": T.TRANSFER}),
     ("loans", "Temporary Loans", "⏳", T.TXN_COLORS[T.LOAN], {"txn_type": T.LOAN}),
@@ -88,9 +96,9 @@ PANEL_SPECS: list[tuple[str, str]] = [
     ("recent", "Latest handovers"),
 ]
 
-DEFAULT_TILES = ["documents", "issues", "transfers", "loans", "returns", "open",
-                 "overdue", "custodians", "assets", "assets_out", "calib_soon",
-                 "calib_expired", "damaged", "items", "out_qty", "photos"]
+DEFAULT_TILES = ["total_tools", "available", "issued_site", "transferred_site", "returned_site",
+                 "pending_items", "site_files", "sites_covered", "documents", "issues",
+                 "transfers", "returns", "open", "assets", "out_qty", "photos"]
 DEFAULT_PANELS = [k for k, _ in PANEL_SPECS]
 
 
@@ -487,7 +495,7 @@ class ToolDashboard(QWidget):
                          ("Custodians", f"{d['custodians']:,}", "#12283f"),
                          ("Assets Out", f"{d['assets_out']:,}", "#9a6700")]
                 self.last_file = D.tool_report_pdf(
-                    self.db, "Tools, Instruments & Devices — Dashboard View",
+                    self.db, "Tools Station — Dashboard View",
                     cols, rows, subtitle=subtitle, stats=stats)
         except Exception as exc:          # noqa: BLE001
             W.error_box(self, f"Could not export the view.\n\n{exc}")
@@ -750,13 +758,13 @@ class RegisterTab(QWidget):
 
     # -------------------------------------------------------------- render
     DOC_COLS = ["Reference", "Type", "Date", "Project", "Location", "Handed To",
-                "Iqama / ID", "Mobile", "Items", "Qty", "Returned",
+                "Employee Code", "Iqama / ID", "Mobile", "Items", "Qty", "Returned",
                 "Outstanding", "Expected Return", "Days Late", "Issued By",
                 "Scanned", "Status"]
     ITEM_COLS = ["Reference", "Type", "Date", "Asset / Tool ID", "Category",
                  "Description", "Make / Model", "Serial No.", "Qty",
                  "Returned", "Outstanding", "Cond.", "Calib. Due",
-                 "Handed To", "Project", "Status"]
+                 "Handed To", "Employee Code", "Project", "Picture Path", "Status"]
 
     def reload(self):
         f = self.filters()
@@ -771,10 +779,10 @@ class RegisterTab(QWidget):
                      round(float(l["qty"] or 0), 2),
                      round(float(l["qty_returned"] or 0), 2),
                      round(l["outstanding"], 2), l["condition"],
-                     T.fmt_date(l["calib_due"]), l["handed_to"],
-                     l["project_id"], l["status"]] for l in lines]
+                     T.fmt_date(l["calib_due"]), l["handed_to"], l.get("employee_code", ""),
+                     l["project_id"], l.get("photo", ""), l["status"]] for l in lines]
             self.table.fill(self.ITEM_COLS, data)
-            _paint(self.table, 15, T.STATUS_COLORS)
+            _paint(self.table, 17, T.STATUS_COLORS)
             _paint(self.table, 1, T.TXN_COLORS)
             self.count.setText(f"{len(data)} item line(s)")
         else:
@@ -785,7 +793,7 @@ class RegisterTab(QWidget):
             self.rows = rows
             data = [[r["ref_no"], r["txn_type"], T.fmt_date(r["doc_date"]),
                      r["project_id"] or r["project_name"], r["location"],
-                     r["handed_to"], r["iqama_id"], r["mobile"], r["n_items"],
+                     r["handed_to"], r.get("employee_code", ""), r["iqama_id"], r["mobile"], r["n_items"],
                      round(r["qty"], 2), round(r["qty_back"], 2),
                      round(r["outstanding"], 2),
                      T.fmt_date(r["expected_return"]),
@@ -793,7 +801,7 @@ class RegisterTab(QWidget):
                      "Yes" if r["source_file"] else "—", r["status"]]
                     for r in rows]
             self.table.fill(self.DOC_COLS, data)
-            _paint(self.table, 16, T.STATUS_COLORS)
+            _paint(self.table, 17, T.STATUS_COLORS)
             _paint(self.table, 1, T.TXN_COLORS)
             out = sum(r["outstanding"] for r in rows)
             self.count.setText(
@@ -827,11 +835,11 @@ class RegisterTab(QWidget):
                  round(max(0.0, float(l["qty"] or 0)
                            - float(l["qty_returned"] or 0)), 2),
                  l["accessories"], l["condition"], T.fmt_date(l["calib_due"]),
-                 l["remarks"]] for l in h["lines"]]
+                 l["remarks"], l.get("photo", "")] for l in h["lines"]]
         self.t_lines.fill(["No.", "Asset / Tool ID", "Category", "Description",
                            "Make / Model", "Serial No.", "Qty", "Returned",
                            "Outstanding", "Accessories", "Cond.", "Calib. Due",
-                           "Remarks / Defects"], rows)
+                           "Remarks / Defects", "Picture Path"], rows)
 
     # ------------------------------------------------------------- actions
     def new_doc(self):
@@ -1038,14 +1046,18 @@ class HandoverDialog(QDialog):
         bf.setLabelAlignment(Qt.AlignRight)
         self.to = QLineEdit(r.get("handed_to", ""))
         bf.addRow("Handed To (full name) *", self.to)
+        self.emp_code = QLineEdit(r.get("employee_code", ""))
+        bf.addRow("Employee Code", self.emp_code)
         self.iqama = QLineEdit(r.get("iqama_id", ""))
-        bf.addRow("Employee / Iqama ID", self.iqama)
+        bf.addRow("Iqama / National ID", self.iqama)
         self.job = QLineEdit(r.get("job_title", ""))
-        bf.addRow("Job Title", self.job)
+        bf.addRow("Designation / Job Title", self.job)
+        self.dept = QLineEdit(r.get("department", ""))
+        bf.addRow("Division / Department", self.dept)
         self.mob = QLineEdit(r.get("mobile", ""))
         bf.addRow("Mobile No.", self.mob)
         self.comp = QLineEdit(r.get("company", "AURCO"))
-        bf.addRow("Company / Department", self.comp)
+        bf.addRow("Company", self.comp)
         self.mail = QLineEdit(r.get("email", ""))
         bf.addRow("Email", self.mail)
         self.sup = QLineEdit(r.get("supervisor", ""))
@@ -1111,9 +1123,9 @@ class HandoverDialog(QDialog):
 
     ITEM_HEADS = ["Asset / Tool ID", "Category", "Description", "Make / Model",
                   "Serial No.", "Qty", "Accessories", "Cond.", "Calib. Due",
-                  "Remarks"]
+                  "Remarks", "Picture Path"]
     _KEYS = ["asset_id", "category", "description", "make_model", "serial_no",
-             "qty", "accessories", "condition", "calib_due", "remarks"]
+             "qty", "accessories", "condition", "calib_due", "remarks", "photo"]
 
     def _type_changed(self):
         loan = self.txn.currentText() == T.LOAN
@@ -1193,8 +1205,10 @@ class HandoverDialog(QDialog):
             "project_name": self.projname.text().strip(),
             "location": self.loc.text().strip(),
             "handed_to": self.to.text().strip(),
+            "employee_code": self.emp_code.text().strip(),
             "iqama_id": self.iqama.text().strip(),
             "job_title": self.job.text().strip(),
+            "department": self.dept.text().strip(),
             "mobile": self.mob.text().strip(),
             "company": self.comp.text().strip(),
             "email": self.mail.text().strip(),
@@ -1254,10 +1268,10 @@ class ReturnDialog(QDialog):
         bar.addStretch(1)
         v.addLayout(bar)
 
-        self.table = QTableWidget(0, 7)
+        self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
             ["Asset / Tool ID", "Description", "Serial No.", "Outstanding",
-             "Returning", "Cond.", "Remarks"])
+             "Returning", "Cond.", "Remarks", "After Picture Path"])
         v.addWidget(self.table, 1)
         self.lines = [l for l in handover["lines"]
                       if float(l["qty"] or 0) - float(l["qty_returned"] or 0) > 1e-9]
@@ -1267,7 +1281,7 @@ class ReturnDialog(QDialog):
             out = float(l["qty"] or 0) - float(l["qty_returned"] or 0)
             for c, val in enumerate([l["asset_id"], l["description"],
                                      l["serial_no"], f"{out:g}", "0",
-                                     l["condition"], ""]):
+                                     l["condition"], "", l.get("photo", "")]):
                 it = QTableWidgetItem(str(val))
                 if c < 4:
                     it.setFlags(it.flags() & ~Qt.ItemIsEditable)
@@ -1296,7 +1310,8 @@ class ReturnDialog(QDialog):
                 continue
             rets.append({"line_id": l["id"], "qty": qty,
                          "condition": self.table.item(r, 5).text().strip(),
-                         "remarks": self.table.item(r, 6).text().strip()})
+                         "remarks": self.table.item(r, 6).text().strip(),
+                         "photo": self.table.item(r, 7).text().strip()})
         if not rets:
             W.error_box(self, "Enter a quantity on at least one line.")
             return
@@ -1334,20 +1349,28 @@ class TransferDialog(QDialog):
         form = QFormLayout()
         self.to = QLineEdit()
         form.addRow("Transfer To (full name) *", self.to)
+        self.emp_code = QLineEdit()
+        form.addRow("Employee Code", self.emp_code)
         self.iqama = QLineEdit()
-        form.addRow("Employee / Iqama ID", self.iqama)
+        form.addRow("Iqama / National ID", self.iqama)
         self.job = QLineEdit()
-        form.addRow("Job Title", self.job)
+        form.addRow("Designation / Job Title", self.job)
+        self.dept = QLineEdit()
+        form.addRow("Division / Department", self.dept)
         self.mob = QLineEdit()
         form.addRow("Mobile No.", self.mob)
         self.proj = QLineEdit(handover.get("project_id", ""))
-        form.addRow("Project ID", self.proj)
+        form.addRow("Project / Site", self.proj)
         self.loc = QLineEdit(handover.get("location", ""))
         form.addRow("Location", self.loc)
         self.date = date_edit(T.today())
         form.addRow("Transfer Date", self.date)
+        self.resp = QLineEdit()
+        form.addRow("Responsible Person", self.resp)
         self.by = QLineEdit()
         form.addRow("Authorised By", self.by)
+        self.after_photo = QLineEdit()
+        form.addRow("After Picture Path", self.after_photo)
         v.addLayout(form)
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -1362,13 +1385,17 @@ class TransferDialog(QDialog):
         try:
             T.post_transfer(self.tdb, self.h["ref_no"], {
                 "handed_to": self.to.text().strip(),
+                "employee_code": self.emp_code.text().strip(),
                 "iqama_id": self.iqama.text().strip(),
                 "job_title": self.job.text().strip(),
+                "department": self.dept.text().strip(),
                 "mobile": self.mob.text().strip(),
                 "project_id": self.proj.text().strip(),
                 "location": self.loc.text().strip(),
                 "doc_date": iso(self.date),
+                "company": self.resp.text().strip(),
                 "issued_by": self.by.text().strip(),
+                "photo": self.after_photo.text().strip(),
             })
         except Exception as exc:          # noqa: BLE001
             W.error_box(self, f"Could not transfer custody.\n\n{exc}")
@@ -1465,15 +1492,15 @@ class AssetsTab(QWidget):
         aid = self.table.item(r, 0).text()
         self.lbl.setText(f"Movement history — {aid}")
         rows = [[h["ref_no"], h["txn_type"], T.fmt_date(h["doc_date"]),
-                 h["doc_time"], h["handed_to"], h["iqama_id"], h["project_id"],
+                 h["doc_time"], h["handed_to"], h.get("employee_code", ""), h["iqama_id"], h["project_id"],
                  h["location"], round(float(h["qty"] or 0), 2),
                  round(float(h["qty_returned"] or 0), 2), h["condition"],
-                 h["issued_by"], h["status"]]
+                 h["issued_by"], h.get("remarks", ""), h.get("photo", ""), h["status"]]
                 for h in T.asset_history(self.tdb, aid)]
         self.t_hist.fill(["Reference", "Type", "Date", "Time", "Handed To",
-                          "Iqama / ID", "Project", "Location", "Qty",
-                          "Returned", "Cond.", "Issued By", "Status"], rows)
-        _paint(self.t_hist, 12, T.STATUS_COLORS)
+                          "Employee Code", "Iqama / ID", "Project", "Location", "Qty",
+                          "Returned", "Cond.", "Issued By", "Remarks", "Picture Path", "Status"], rows)
+        _paint(self.t_hist, 15, T.STATUS_COLORS)
         _paint(self.t_hist, 1, T.TXN_COLORS)
 
     def _rebuild(self):
@@ -1759,7 +1786,7 @@ class ToolReportsTab(QWidget):
 
 # ================================================================= the page
 class ToolStationPage(QWidget):
-    """Top-level page holding the five Tools, Instruments & Devices tabs."""
+    """Top-level page holding the five Tools Station tabs."""
     dataChanged = Signal()
 
     def __init__(self, db: Database, parent=None):
@@ -1802,7 +1829,7 @@ class ToolStationPage(QWidget):
 
         tools = QHBoxLayout()
         tools.addWidget(W.button("💾  Backup Module", slot=self._backup,
-                                 tip="Back up the Tools, Instruments and Devices database"))
+                                 tip="Back up the Tools Station database"))
         tools.addWidget(W.button("♻  Restore...", slot=self._restore))
         tools.addWidget(W.button("📂  Open Data Folder", slot=self._folder))
         tools.addWidget(W.button("🔄  Refresh", slot=self.refresh))
@@ -1838,8 +1865,9 @@ class ToolStationPage(QWidget):
             self.reports.run()
         d = T.dashboard(self.tdb)
         self.stat.setText(
-            f"{d['documents']} document(s) · {d['assets']} asset(s) · "
-            f"{d['out_qty']:,.0f} still out · {d['overdue']} overdue")
+            f"{d['documents']} handover document(s) · {d.get('total_tools', 0)} synced tool row(s) · "
+            f"{d.get('site_files', 0)} Excel file(s) · {d.get('sites_covered', 0)} site(s) · "
+            f"{d['overdue']} overdue")
         self.dataChanged.emit()
 
     def _backup(self):
@@ -1848,16 +1876,16 @@ class ToolStationPage(QWidget):
         except Exception as exc:          # noqa: BLE001
             W.error_box(self, f"Backup failed.\n\n{exc}")
             return
-        W.info_box(self, f"Tools, Instruments and Devices backed up to:\n\n{p}",
+        W.info_box(self, f"Tools Station backed up to:\n\n{p}",
                    "Backup complete")
 
     def _restore(self):
         f, _ = QFileDialog.getOpenFileName(
-            self, "Restore the Tools, Instruments and Devices database", "",
+            self, "Restore the Tools Station database", "",
             "Database (*.db)")
         if not f:
             return
-        if not W.confirm(self, "Replace the current Tools, Instruments and Devices data with this "
+        if not W.confirm(self, "Replace the current Tools Station data with this "
                                "backup?\n\nA safety copy of the current data is "
                                "taken first."):
             return
@@ -1867,7 +1895,7 @@ class ToolStationPage(QWidget):
             W.error_box(self, f"Restore failed.\n\n{exc}")
             return
         self.refresh()
-        W.toast(self, "Tools, Instruments and Devices restored.")
+        W.toast(self, "Tools Station restored.")
 
     def _folder(self):
         D.open_path(T.module_folder())
@@ -1983,14 +2011,32 @@ class SiteExcelSyncPanel(QWidget):
 
         inv = W.Card("Current synced site inventory preview")
         self.t_inventory = W.DataTable()
+        self.t_inventory.itemSelectionChanged.connect(self._reload_asset_events)
         inv.add(self.t_inventory, 1)
+        self.t_events = W.DataTable()
+        self.t_events.setMaximumHeight(170)
+        inv.add(self.t_events)
         v.addWidget(inv, 1)
         self.reload()
+
+    def _reload_asset_events(self):
+        r = self.t_inventory.currentRow()
+        if r < 0 or self.t_inventory.item(r, 0) is None:
+            self.t_events.setRowCount(0)
+            return
+        asset_key = self.t_inventory.item(r, 0).text()
+        rows = T.site_asset_events(self.tdb, asset_key, 40)
+        self.t_events.fill(["Date", "Movement", "From Site", "To Site", "From Holder", "To Holder",
+                            "From Status", "To Status", "Responsible", "Remarks"],
+                           [[e.get("event_date", ""), e.get("movement_type", ""), e.get("site_before", ""), e.get("site_after", ""),
+                             e.get("holder_before", ""), e.get("holder_after", ""), e.get("status_before", ""), e.get("status_after", ""),
+                             e.get("responsible_person", ""), e.get("remarks", "")]
+                            for e in rows])
 
     def _template(self):
         cols, rows = T.site_sync_template_rows()
         out = Path(D.config.folder(T.FOLDER)) / f"{D.safe_name(T.MODULE_NAME)}_Site_Sync_Template.xlsx"
-        self.last_file = D.export_excel(self.db, "Tools, Instruments & Devices — Site Sync Template", cols, rows, out)
+        self.last_file = D.export_excel(self.db, "Tools Station — Site Sync Template", cols, rows, out)
         W.toast(self, f"Template saved: {self.last_file.name}")
         D.open_path(self.last_file)
 
@@ -2135,16 +2181,18 @@ class SiteExcelSyncPanel(QWidget):
         if not rows:
             W.error_box(self, "There is no synced site inventory to export yet.")
             return
-        cols = ["Site Name", "Item Code", "Item Name", "Category", "Type", "Brand", "Model",
-                "Serial Number", "Quantity", "Condition", "Status", "Location", "Remarks",
-                "Last Updated", "Source File"]
-        data = [[r.get("site_name", ""), r.get("item_code", ""), r.get("item_name", ""),
-                 r.get("category", ""), r.get("item_type", ""), r.get("brand", ""),
-                 r.get("model", ""), r.get("serial_no", ""), float(r.get("qty") or 0),
-                 r.get("condition", ""), r.get("status", ""), r.get("location", ""),
-                 r.get("remarks", ""), r.get("last_updated", ""), Path(str(r.get("source_file", ""))).name]
+        cols = ["Site Name", "Instrument Description", "Type", "Serial No.", "Quantity", "Status",
+                "Issued To / Employee Name", "Employee Code", "Iqama ID", "Designation",
+                "Division/Department", "Current Project", "Location", "Issued By", "Remarks",
+                "Picture Path", "Last Updated", "Source File"]
+        data = [[r.get("site_name", ""), r.get("description", ""), r.get("item_type", ""),
+                 r.get("serial_no", ""), float(r.get("qty") or 0), r.get("status", ""),
+                 r.get("holder", ""), r.get("employee_code", ""), r.get("iqama_id", ""),
+                 r.get("designation", ""), r.get("department", ""), r.get("project_id", ""),
+                 r.get("location", ""), r.get("issued_by", ""), r.get("remarks", ""),
+                 r.get("picture_path", ""), r.get("last_updated", ""), Path(str(r.get("source_file", ""))).name]
                 for r in rows]
-        self.last_file = D.export_excel(self.db, "Tools, Instruments & Devices — Site Sync Inventory", cols, data)
+        self.last_file = D.export_excel(self.db, "Tools Station — Site Sync Inventory", cols, data)
         W.toast(self, f"Exported: {self.last_file.name}")
         D.open_path(self.last_file)
 
@@ -2188,15 +2236,19 @@ class SiteExcelSyncPanel(QWidget):
         self._reload_history()
 
         inv = T.search_site_inventory(self.tdb)[:250]
-        self.t_inventory.fill(["Site Name", "Item Code", "Item Name", "Category", "Type", "Brand", "Model",
-                               "Serial Number", "Quantity", "Condition", "Status", "Location", "Remarks",
-                               "Last Updated"],
-                              [[r.get("site_name", ""), r.get("item_code", ""), r.get("item_name", ""),
-                                r.get("category", ""), r.get("item_type", ""), r.get("brand", ""),
-                                r.get("model", ""), r.get("serial_no", ""), float(r.get("qty") or 0),
-                                r.get("condition", ""), r.get("status", ""), r.get("location", ""),
-                                r.get("remarks", ""), r.get("last_updated", "")]
+        self.t_inventory.fill(["Asset Key", "Site Name", "Instrument Description", "Type", "Serial No.", "Quantity", "Status",
+                               "Issued To / Employee Name", "Employee Code", "Iqama ID", "Designation",
+                               "Division/Department", "Current Project", "Location", "Issued By", "Remarks",
+                               "Picture Path", "Last Updated"],
+                              [[r.get("asset_key", ""), r.get("site_name", ""), r.get("description", ""), r.get("item_type", ""),
+                                r.get("serial_no", ""), float(r.get("qty") or 0), r.get("status", ""),
+                                r.get("holder", ""), r.get("employee_code", ""), r.get("iqama_id", ""), r.get("designation", ""),
+                                r.get("department", ""), r.get("project_id", ""), r.get("location", ""), r.get("issued_by", ""),
+                                r.get("remarks", ""), r.get("picture_path", ""), r.get("last_updated", "")]
                                for r in inv])
+        if self.t_inventory.columnCount() > 0:
+            self.t_inventory.setColumnHidden(0, True)
+        self._reload_asset_events()
         dash = T.site_inventory_dashboard(self.tdb)
         self.lbl_sync.setText(f"Last synced: {(dash.get('last_sync') or 'never')[:16]}  ·  {dash.get('row_count', 0)} row(s)")
 
@@ -2212,7 +2264,7 @@ class SiteSyncMappingDialog(QDialog):
         self.rows = [list(r) for r in rows]
         self.source = source
         self.synced = 0
-        self.setWindowTitle("Tools, Instruments & Devices — Map the uploaded Excel columns")
+        self.setWindowTitle("Tools Station — Map the uploaded Excel columns")
         self.resize(1080, 720)
         v = QVBoxLayout(self)
         v.addWidget(QLabel(
@@ -2273,11 +2325,8 @@ class SiteSyncMappingDialog(QDialog):
 
     def _refresh(self, *_):
         self.records = T.site_sync_preview(self.headers, self.rows, self._mapping(), self._defaults())
-        cols = [lbl for _, lbl in T.SITE_SYNC_FIELDS[:-1]] + ["Last Updated"]
-        data = [[r.get("site_name", ""), r.get("item_code", ""), r.get("item_name", ""), r.get("category", ""),
-                 r.get("item_type", ""), r.get("brand", ""), r.get("model", ""), r.get("serial_no", ""),
-                 float(r.get("qty") or 0), r.get("condition", ""), r.get("status", ""), r.get("location", ""),
-                 r.get("remarks", ""), r.get("last_updated", "")]
+        cols = [lbl for _, lbl in T.SITE_SYNC_FIELDS]
+        data = [[r.get(f, "") if f != "qty" else float(r.get("qty") or 0) for f, _ in T.SITE_SYNC_FIELDS]
                 for r in self.records[:300]]
         self.preview.fill(cols, data)
         self.info.setText(f"{len(self.records)} record(s) ready  ·  {len(self._mapping())} column(s) mapped")
@@ -2297,5 +2346,5 @@ class SiteSyncMappingDialog(QDialog):
             W.error_box(self, f"The file could not be imported.\n\n{exc}")
             return
         self.synced = 1 if tmp.get("status") == "Synced" else 0
-        W.info_box(self, f"{tmp.get('created', 0)} row(s) created and {tmp.get('updated', 0)} updated.")
+        W.info_box(self, f"Created: {tmp.get('created', 0)}\nUpdated: {tmp.get('updated', 0)}\nFailed: {tmp.get('failed', 0)}", "Import result")
         self.accept()

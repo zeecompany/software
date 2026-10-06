@@ -2090,7 +2090,7 @@ def tool_report_pdf(db: Database, title: str, cols: list[str],
                     rows: list[list[Any]], out_path: str | Path | None = None,
                     subtitle: str = "",
                     stats: list[tuple[str, str, str]] | None = None) -> Path:
-    """Report PDF for the Tools, Instruments & Devices module, written into its own folder.
+    """Report PDF for the Tools Station module, written into its own folder.
 
     `db` is the *inventory* database, used read-only for the letterhead and
     theme only — no tool-custody data ever reaches it.
@@ -2183,10 +2183,11 @@ def handover_pdf(db: Database, tdb, handover_id: int,
         Spacer(1, 3 * mm),
         _section("B — RECIPIENT / CUSTODIAN DETAILS"),
         _kv_block([("Handed To", h["handed_to"] or "-"),
-                   ("Employee / Iqama ID", h["iqama_id"] or "-"),
-                   ("Job Title", h["job_title"] or "-"),
+                   ("Employee ID / Code", h.get("employee_code", "") or "-"),
+                   ("Iqama / National ID", h["iqama_id"] or "-"),
+                   ("Designation / Job Title", h["job_title"] or "-"),
+                   ("Division / Department", h.get("department", "") or h["company"] or "-"),
                    ("Mobile No.", h["mobile"] or "-"),
-                   ("Company / Department", h["company"] or "-"),
                    ("Email", h["email"] or "-"),
                    ("Supervisor / Manager", h["supervisor"] or "-"),
                    ("Cost Code / WBS", h["cost_code"] or "-")],
@@ -2196,15 +2197,15 @@ def handover_pdf(db: Database, tdb, handover_id: int,
 
     cols = ["No.", "Asset / Tool ID", "Category", "Description", "Make / Model",
             "Serial No.", "Qty", "Returned", "Accessories / Components",
-            "Cond.", "Calib. Due", "Remarks / Defects"]
+            "Cond.", "Calib. Due", "Remarks / Defects", "Picture Path"]
     rows = [[l["line_no"], l["asset_id"], l["category"], l["description"],
              l["make_model"], l["serial_no"] or "-",
              round(float(l["qty"] or 0), 2),
              round(float(l["qty_returned"] or 0), 2),
              l["accessories"] or "-", l["condition"],
-             _T.fmt_date(l["calib_due"]) or "-", l["remarks"]]
+             _T.fmt_date(l["calib_due"]) or "-", l["remarks"], l.get("photo", "")]
             for l in h["lines"]]
-    weights = [3, 9, 8, 16, 8, 9, 4, 5, 14, 4, 8, 12]
+    weights = [3, 8, 8, 14, 8, 8, 4, 5, 12, 4, 8, 10, 10]
     widths = [page_w * w / sum(weights) for w in weights]
     story.append(_grid(cols, rows, widths, 7.2, db=db, compact=True))
     story.append(Spacer(1, 1.5 * mm))

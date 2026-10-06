@@ -3835,7 +3835,7 @@ def main() -> int:
     check(ct.startswith("Material Availability Report"),
           "and keeps its original report name")
 
-    section("Tools, Instruments & Devices — the module")
+    section("Tools Station — the module")
     from aurco.core import toolstation as TS
     from aurco.ui.tool_station import (ToolStationPage, RegisterTab,
                                        HandoverDialog, ReturnDialog,
@@ -4023,7 +4023,7 @@ def main() -> int:
           "and it is a real PDF")
 
     # -- separation from stock is physical, not conventional
-    check(str(tdb.path) != str(db.path), "the Tools, Instruments & Devices module has its own database")
+    check(str(tdb.path) != str(db.path), "the Tools Station module has its own database")
     # inspect real code, not comments: strip docstrings/comments first
     import ast as _ast
     _tree = _ast.parse((Path(__file__).resolve().parents[1] / "aurco" / "core"
@@ -4094,7 +4094,7 @@ def main() -> int:
 
     # -- backup / restore round trip
     bk = tdb.backup(note="test")
-    check(bk.exists(), "the Tools, Instruments & Devices module backs itself up")
+    check(bk.exists(), "the Tools Station module backs itself up")
     n_before = len(TS.search(tdb))
     TS.delete_handovers(tdb, [h3["id"]])
     check(len(TS.search(tdb)) == n_before - 1, "a handover can be deleted")
@@ -4213,7 +4213,7 @@ def main() -> int:
     pi.lines.clear_lines()
 
     # ============================ the tools dashboard: filters and configuration
-    section("Tools, Instruments & Devices — dashboard")
+    section("Tools Station — dashboard")
     dash = tsp.dash
     dash.reset_filters()
     total_docs = dash.tiles["documents"].lbl_value.text()
@@ -4422,59 +4422,65 @@ def main() -> int:
           "re-importing the same employee code updates the existing employee master row")
 
     # ==================== Tools, Instruments & Devices + Analytics site sync
-    section("Tools, Instruments & Devices — Excel folder sync and Analytics")
+    section("Tools Station — Excel folder sync and Analytics")
     from aurco.core import toolstation as T
     from aurco.ui.tool_station import ToolStationPage
     import aurco.ui.tool_station as _tsp_mod
     for _k in ("confirm", "info_box", "error_box", "toast"):
         setattr(_tsp_mod.W, _k, getattr(W, _k))
-    check("Tools, Instruments & Devices" in win.pages, "the Tools, Instruments & Devices page is available")
-    check("Tools Station" not in win.pages, "the old separate Tools Station page has been removed")
+    check("Tools Station" in win.pages, "the Tools Station page is available")
     check("Analytics" in win.pages, "the separate Analytics module is available")
     check("Tools Station" not in _cfg.SUBFOLDERS, "the old Tools Station storage folder is no longer part of the standard structure")
 
     tpage = win.page_tools
     tdb = tpage.tdb
-    for _tbl in ("site_sync_runs", "site_inventory", "site_sync_files", "site_sync_folders"):
+    for _tbl in ("site_asset_events", "site_sync_runs", "site_inventory", "site_sync_files", "site_sync_folders"):
         tdb.execute(f"DELETE FROM {_tbl}")
     tdb.commit()
 
     _sync_dir = root / "site_sync_folder"
     shutil.rmtree(_sync_dir, ignore_errors=True)
     _sync_dir.mkdir(parents=True, exist_ok=True)
-    _cols, _sample = T.site_sync_template_rows()
-    _csv = _sync_dir / "jafura_inventory.csv"
-    _csv.write_text("|".join(_cols) + "\n" + "\n".join("|".join(str(c) for c in row) for row in _sample), encoding="utf-8")
+    _csv = _sync_dir / "noor_tools.csv"
+    _csv.write_text(
+        "ATTIQ UR REHMAN CONT. CO.\n"
+        "Tools Station Template\n"
+        "Instrument Description|Serial No.|Make / Model|Location|Quantity|Status|Issued To / Employee Name|Employee Code|Iqama ID|Designation|Division/Department|Current Project|Issued By|Remarks|Picture Path\n"
+        "TOTAL STATION|1338275|LEICA (TS02)|NOOR|1|Issued|ZOHAIB BILAL|IDL-0040|2482103955|Surveyor|SURVEY|NOOR|M. Ali Zain||\n"
+        "AUTO LEVEL|2205565|LEICA|WAREHOUSE|1|Available||||Surveyor|SURVEY|WAREHOUSE|M. Ali Zain|Ready|\n",
+        encoding="utf-8")
     _fid = T.save_site_sync_folder(tdb, _sync_dir, "Main Site Sync", "", True, 1)
     _sync_res = T.sync_site_sync_folder(tdb, _fid, force=True)
     check(_sync_res["synced"] >= 1 and _sync_res["failed"] == 0,
-          "the tools module can sync a site-wise Excel/CSV folder without errors")
-    _inv = T.search_site_inventory(tdb, site_name="Jafura", item_type="Device")
-    check(any(r["item_name"] == "Gas Tester" and float(r["qty"]) == 8 for r in _inv),
-          "the synced inventory clearly shows which site currently has which device quantity")
+          "the Tools Station module can sync a site-wise Excel/CSV folder without errors")
+    _inv = T.search_site_inventory(tdb, site_name="NOOR")
+    check(any(r["description"] == "TOTAL STATION" and r["holder"] == "ZOHAIB BILAL" and r["employee_code"] == "IDL-0040" for r in _inv),
+          "the synced inventory clearly shows which site currently has which tool and employee")
     _dash_sync = T.site_inventory_dashboard(tdb)
-    check(_dash_sync["site_count"] >= 3 and _dash_sync["file_count"] >= 1,
-          "the site-sync dashboard summarises sites and synced files")
-    check(any(k == "Jafura" and float(v) >= 8 for k, v in _dash_sync["by_site"]),
+    check(_dash_sync["site_count"] >= 1 and _dash_sync["file_count"] >= 1 and _dash_sync["issued_qty"] >= 1,
+          "the site-sync dashboard summarises sites, synced files and issued quantities")
+    check(any(k == "NOOR" and float(v) >= 1 for k, v in _dash_sync["by_site"]),
           "the site-sync dashboard includes a site-wise quantity breakdown")
     check(any(r["status"] == "Synced" for r in T.site_sync_scan_files(tdb)),
           "file-wise sync history is stored for synced files")
+    check(any(e["movement_type"] == "Imported" for e in T.site_asset_events(tdb)),
+          "site-sync movements create an event history for the tool")
     tpage.sync.reload()
     tpage.sync.site_excel.reload()
     app.processEvents()
     check(hasattr(tpage.sync, "site_excel") and tpage.sync.site_excel.t_folders.rowCount() >= 1
           and len(T.search_site_inventory(tdb)) >= 1,
-          "the Tools module shows the embedded site Excel sync panel with inventory preview")
+          "the Tools Station module shows the embedded site Excel sync panel with inventory preview")
 
     win.go("Analytics")
     win.page_analytics.refresh()
     app.processEvents()
-    win.page_analytics.site_sync.f_site.setCurrentText("Jafura")
-    win.page_analytics.site_sync.f_type.setCurrentText("Device")
+    win.page_analytics.site_sync.f_site.setCurrentText("NOOR")
+    win.page_analytics.site_sync.f_type.setCurrentText("Instrument")
     win.page_analytics.site_sync.reload()
-    check(win.page_analytics.site_sync.cards["qty"].lbl_value.text() == "8"
+    check(win.page_analytics.site_sync.cards["qty"].lbl_value.text() == "1"
           and win.page_analytics.site_sync.table.rowCount() >= 1,
-          "the Analytics module shows the Jafura device quantity from the synced site folder")
+          "the Analytics module shows the NOOR instrument quantity from the synced site folder")
     win.page_analytics.site_sync.reset_filters()
 
     _item_a = S.save_item(db, {"code": "BULK-001", "description": "Bulk Normal 1", "uom": "EA", "warehouse": "Main"})
