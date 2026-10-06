@@ -1533,13 +1533,34 @@ class SyncFolderTab(QWidget):
         v.setContentsMargins(4, 6, 4, 6)
         v.setSpacing(9)
 
-        card = W.Card("Synchronised handover folders")
+        intro = QLabel(
+            "This sync area has <b>two separate modes</b>: "
+            "<b>Signed Handover PDFs</b> for scanned handover forms, and "
+            "<b>Site-wise Excel Sync</b> for instrument allocation sheets. "
+            "If your file contains columns such as <i>Instrument Description</i>, "
+            "<i>Serial No.</i> and <i>Make / Model</i>, import it from the Excel sync tab below — not from the PDF handover list."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"color:{W.MUTED};")
+        v.addWidget(intro)
+
+        self.mode_tabs = QTabWidget()
+        self.mode_tabs.setDocumentMode(True)
+        v.addWidget(self.mode_tabs, 1)
+
+        pdf_page = QWidget()
+        pv = QVBoxLayout(pdf_page)
+        pv.setContentsMargins(0, 0, 0, 0)
+        pv.setSpacing(9)
+
+        card = W.Card("Signed handover PDF folders")
         note = QLabel(
             "Point this at the folder your signed handover forms sync to — a "
             "local drive, a network share or a OneDrive / Google Drive folder. "
-            "AURCO reads every PDF, decodes the reference number, and files the "
-            "handover automatically.<br><b>Files are only ever read.</b> "
-            "Nothing in the synchronised folder is moved, renamed or deleted.")
+            "AURCO reads every <b>PDF</b>, decodes the reference number, and files the "
+            "handover automatically.<br><b>Excel / CSV files are ignored here on purpose.</b> "
+            "Use the <b>Site-wise Excel Sync</b> tab for instrument allocation sheets and the mapping workflow."
+        )
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{W.MUTED};")
         card.add(note)
@@ -1557,7 +1578,7 @@ class SyncFolderTab(QWidget):
         self.t_folders.setMaximumHeight(130)
         card.add(self.t_folders)
         frow = QHBoxLayout()
-        frow.addWidget(W.button("🔄  Sync All Folders", "Accent", self.sync_all))
+        frow.addWidget(W.button("🔄  Sync All PDF Folders", "Accent", self.sync_all))
         frow.addWidget(W.button("🗑  Remove Folder", slot=self._remove))
         frow.addWidget(W.button("📁  Open Folder", slot=self._open))
         frow.addStretch(1)
@@ -1567,32 +1588,34 @@ class SyncFolderTab(QWidget):
         fw = QWidget()
         fw.setLayout(frow)
         card.add(fw)
-        v.addWidget(card)
+        pv.addWidget(card)
 
         bar = QHBoxLayout()
-        self.search = W.SearchBox("Search file name or reference ...")
+        self.search = W.SearchBox("Search PDF file name or handover reference ...")
         self.search.textChanged.connect(self.reload)
         bar.addWidget(self.search, 2)
         self.f_status = W.combo(["All", "New", "Imported", "Linked",
                                  "Unreadable", "Failed", "Missing"])
         self.f_status.currentTextChanged.connect(self.reload)
         bar.addWidget(self.f_status)
-        bar.addWidget(W.button("⬆  Import Selected", "Primary", self._import_sel))
-        bar.addWidget(W.button("♻  Re-import (overwrite)", slot=self._reimport))
+        bar.addWidget(W.button("⬆  Import Selected PDF", "Primary", self._import_sel))
+        bar.addWidget(W.button("♻  Re-import PDF (overwrite)", slot=self._reimport))
         bar.addWidget(W.button("📎  Open File", slot=self._open_file))
         bar.addStretch(1)
         self.count = QLabel()
         self.count.setStyleSheet(f"color:{W.MUTED};")
         bar.addWidget(self.count)
-        v.addLayout(bar)
+        pbw = QWidget(); pbw.setLayout(bar)
+        pv.addWidget(pbw)
 
         self.table = W.DataTable()
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        v.addWidget(self.table, 1)
+        pv.addWidget(self.table, 1)
+        self.mode_tabs.addTab(pdf_page, "📄  Signed Handover PDFs")
 
         self.site_excel = SiteExcelSyncPanel(self.tdb, self.db)
         self.site_excel.imported.connect(self.imported.emit)
-        v.addWidget(self.site_excel)
+        self.mode_tabs.addTab(self.site_excel, "📊  Site-wise Excel Sync")
         self.reload()
 
     def _browse(self):
@@ -1612,7 +1635,7 @@ class SyncFolderTab(QWidget):
             return
         self.path.clear()
         self.reload()
-        W.toast(self, "Folder added. Press Sync All Folders to read it.")
+        W.toast(self, "PDF handover folder added. Press Sync All PDF Folders to read it.")
 
     def _sel_folder(self) -> dict | None:
         r = self.t_folders.currentRow()
@@ -1641,8 +1664,10 @@ class SyncFolderTab(QWidget):
         res = T.sync_all(self.tdb, auto_import=True)
         self.reload()
         self.imported.emit()
-        msg = (f"{res['seen']} file(s) seen · {res['new']} new · "
+        msg = (f"{res['seen']} PDF file(s) seen · {res['new']} new · "
                f"{res['imported']} handover(s) imported")
+        if res.get("ignored_spreadsheets"):
+            msg += f" · {res['ignored_spreadsheets']} spreadsheet(s) ignored"
         if res["offline"]:
             msg += f" · {len(res['offline'])} folder(s) offline"
         W.toast(self, msg)
@@ -1667,10 +1692,10 @@ class SyncFolderTab(QWidget):
         _paint(self.table, 2, {"Imported": "#1a9c52", "Linked": "#1098ad",
                                "New": "#9a6700", "Unreadable": "#c92a2a",
                                "Failed": "#c92a2a", "Missing": "#c92a2a"})
-        self.count.setText(f"{len(rows)} file(s)")
+        self.count.setText(f"{len(rows)} PDF file(s)")
         online = [f for f in T.folders(self.tdb) if f["online"]]
         self.status.setText(
-            f"{len(online)} of {len(T.folders(self.tdb))} folder(s) online")
+            f"{len(online)} of {len(T.folders(self.tdb))} PDF folder(s) online")
 
     def _sel_paths(self) -> list[str]:
         return [self.table.item(i.row(), 6).text()
@@ -1912,7 +1937,17 @@ class SiteExcelSyncPanel(QWidget):
         self.folders: list[dict] = []
         self.last_file: Path | None = None
 
-        v = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        root.addWidget(scroll)
+        body = QWidget()
+        scroll.setWidget(body)
+
+        v = QVBoxLayout(body)
         v.setContentsMargins(0, 10, 0, 0)
         v.setSpacing(9)
 
@@ -1925,6 +1960,14 @@ class SiteExcelSyncPanel(QWidget):
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{W.MUTED};")
         sample.add(note)
+        expected = QLabel(
+            "<b>Expected sample headings:</b> Instrument Description · Serial No. · Make / Model · "
+            "Location · Quantity · Status · Issued To / Employee Name · Employee Code · Iqama ID · "
+            "Designation · Division/Department · Current Project · Issued By · Remarks · Picture Path"
+        )
+        expected.setWordWrap(True)
+        expected.setStyleSheet(f"color:{W.NAVY};")
+        sample.add(expected)
         cols, rows = T.site_sync_template_rows()
         self.t_sample = W.DataTable()
         self.t_sample.fill(cols, rows)

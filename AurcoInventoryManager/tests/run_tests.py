@@ -3918,6 +3918,16 @@ def main() -> int:
     again = TS.sync_folder(tdb, fid)
     check(again["imported"] == 0 and TS.by_ref(tdb, "WH-087IS2308202601"),
           "SYNCING TWICE NEVER DOUBLE-POSTS THE SAME FORM")
+    from openpyxl import Workbook
+    _wb_pdf = Workbook()
+    _ws_pdf = _wb_pdf.active
+    _ws_pdf.append(["Instrument Description", "Serial No.", "Make / Model", "Location", "Quantity", "Status", "Issued To / Employee Name", "Employee Code", "Iqama ID", "Designation", "Division/Department", "Current Project", "Issued By", "Remarks", "Picture Path"])
+    _ws_pdf.append(["TOTAL STATION", "1338275", "LEICA (TS02)", "NOOR", 1, "Issued", "ZOHAIB BILAL", "IDL-0040", "2482103955", "Surveyor", "SURVEY", "NOOR", "M. Ali Zain", "", ""])
+    _pdf_xlsx = sync_dir / "Instrument Station Template.xlsx"
+    _wb_pdf.save(_pdf_xlsx)
+    TS.sync_folder(tdb, fid)
+    check(not any(str(r["name"]).lower().endswith(".xlsx") for r in TS.scan_files(tdb)),
+          "Excel template files are ignored by the signed-PDF sync folder instead of being marked unreadable")
     check(len(TS.search(tdb)) == 1, "still exactly one document")
     check(sync_dir.joinpath(pdf.name).exists(),
           "the source file is left where it was — never moved or deleted")
@@ -4450,6 +4460,22 @@ def main() -> int:
         "TOTAL STATION|1338275|LEICA (TS02)|NOOR|1|Issued|ZOHAIB BILAL|IDL-0040|2482103955|Surveyor|SURVEY|NOOR|M. Ali Zain||\n"
         "AUTO LEVEL|2205565|LEICA|WAREHOUSE|1|Available||||Surveyor|SURVEY|WAREHOUSE|M. Ali Zain|Ready|\n",
         encoding="utf-8")
+    _xlsx_map = root / "instrument_sync_mapping.xlsx"
+    _wb = Workbook()
+    _ws = _wb.active
+    _ws.append(["ATTIQ UR REHMAN CONT. CO."])
+    _ws.append(["Instrument Station Template"])
+    _ws.append(["Instrument Description", "Serial No.", "Make / Model", "Location", "Quantity", "Status", "Issued To / Employee Name", "Employee Code", "Iqama ID", "Designation", "Division/Department", "Current Project", "Issued By", "Remarks", "Picture Path"])
+    _ws.append(["TOTAL STATION", "1338275", "LEICA (TS02)", "NOOR", 1, "Issued", "ZOHAIB BILAL", "IDL-0040", "2482103955", "Surveyor", "SURVEY", "NOOR", "M. Ali Zain", "", ""])
+    _wb.save(_xlsx_map)
+    _headers_xlsx, _rows_xlsx = T.site_sync_read_table(_xlsx_map)
+    _map_xlsx = T.site_sync_auto_map(_headers_xlsx)
+    check(_headers_xlsx[:5] == ["Instrument Description", "Serial No.", "Make / Model", "Location", "Quantity"],
+          "the Excel sync reader detects the real instrument header row even when title rows come first")
+    check(set(_map_xlsx.values()) >= {"description", "serial_no", "make_model", "location", "qty", "status", "holder", "employee_code", "iqama_id", "designation", "department", "project_id", "issued_by", "remarks", "picture_path"},
+          "the mapping engine recognises the exact instrument sheet column names")
+    check(len(T.site_sync_preview(_headers_xlsx, _rows_xlsx, _map_xlsx)) == 1,
+          "the mapping preview builds usable instrument records from that Excel template")
     _fid = T.save_site_sync_folder(tdb, _sync_dir, "Main Site Sync", "", True, 1)
     _sync_res = T.sync_site_sync_folder(tdb, _fid, force=True)
     check(_sync_res["synced"] >= 1 and _sync_res["failed"] == 0,

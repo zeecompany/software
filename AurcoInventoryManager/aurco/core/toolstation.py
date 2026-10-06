@@ -1719,7 +1719,8 @@ def build_report(db: ToolDB, name: str, f: dict | None = None) -> Report:
 
 
 # ------------------------------------------------- synchronised drop folder
-SUPPORTED_SUFFIXES = (".pdf", ".xlsx", ".xlsm", ".csv", ".txt")
+HANDOVER_SUFFIXES = (".pdf",)
+SPREADSHEET_SUFFIXES = (".xlsx", ".xlsm", ".csv", ".txt")
 
 
 def folders(db: ToolDB, active_only: bool = False) -> list[dict]:
@@ -1815,11 +1816,15 @@ def sync_folder(db: ToolDB, folder_id: int, auto_import: bool = True) -> dict:
                 "imported": 0, "failed": 0, "errors": []}
 
     res = {"ok": True, "message": note, "seen": 0, "new": 0, "imported": 0,
-           "updated": 0, "failed": 0, "errors": []}
+           "updated": 0, "failed": 0, "errors": [], "ignored_spreadsheets": 0}
     for f in sorted(Path(row["path"]).rglob("*")):
-        if not f.is_file() or f.suffix.lower() not in SUPPORTED_SUFFIXES:
+        if not f.is_file() or f.name.startswith("~$") or f.name.startswith("."):
             continue
-        if f.name.startswith("~$") or f.name.startswith("."):
+        suffix = f.suffix.lower()
+        if suffix in SPREADSHEET_SUFFIXES:
+            res["ignored_spreadsheets"] += 1
+            continue
+        if suffix not in HANDOVER_SUFFIXES:
             continue
         res["seen"] += 1
         try:
@@ -1868,14 +1873,16 @@ def sync_folder(db: ToolDB, folder_id: int, auto_import: bool = True) -> dict:
 
 def sync_all(db: ToolDB, auto_import: bool = True) -> dict:
     total = {"ok": True, "seen": 0, "new": 0, "imported": 0, "updated": 0,
-             "failed": 0, "errors": [], "folders": 0, "offline": []}
+             "failed": 0, "errors": [], "folders": 0, "offline": [],
+             "ignored_spreadsheets": 0}
     for f in folders(db, active_only=True):
         r = sync_folder(db, f["id"], auto_import)
         total["folders"] += 1
         if not r["ok"]:
             total["offline"].append(f["path"])
             continue
-        for k in ("seen", "new", "imported", "updated", "failed"):
+        for k in ("seen", "new", "imported", "updated", "failed",
+                  "ignored_spreadsheets"):
             total[k] += r.get(k, 0)
         total["errors"] += r.get("errors", [])
     return total
@@ -2252,15 +2259,27 @@ def import_folder_files(db: ToolDB, paths: Sequence[str],
                         overwrite: bool = False) -> dict:
     res = {"imported": 0, "skipped": 0, "failed": 0, "errors": []}
     for path in paths:
+        p = Path(path)
+        suffix = p.suffix.lower()
+        if suffix in SPREADSHEET_SUFFIXES:
+            res["skipped"] += 1
+            res["errors"].append(
+                f"{p.name}: this is a spreadsheet — use Site-wise Excel Sync / Import Excel instead"
+            )
+            continue
+        if suffix not in HANDOVER_SUFFIXES:
+            res["skipped"] += 1
+            res["errors"].append(f"{p.name}: unsupported handover file type")
+            continue
         try:
-            got = import_pdf(db, path, overwrite)
+            got = import_pdf(db, p, overwrite)
             if got:
                 res["imported"] += 1
             else:
                 res["skipped"] += 1
         except Exception as exc:           # noqa: BLE001
             res["failed"] += 1
-            res["errors"].append(f"{Path(path).name}: {exc}")
+            res["errors"].append(f"{p.name}: {exc}")
     return res
 
 

@@ -1,0 +1,36 @@
+software v 46 / AURCO Inventory Manager v2.28.22
+
+Included updates
+1. Fixed the Instrument Station unreadable Excel issue
+   - The Signed Handover PDF sync now reads PDF files only
+   - Excel / CSV template files are no longer shown there as unreadable handover files
+   - Spreadsheet files are now treated as part of the Site-wise Excel Sync workflow
+
+2. Improved Sync Folder page clarity
+   - Split the sync area into two clearer inner tabs:
+     Signed Handover PDFs
+     Site-wise Excel Sync
+   - Added clearer user guidance explaining which area is for PDF handovers
+     and which area is for Excel instrument allocation sheets
+
+3. Improved Excel template / mapping visibility
+   - Added the exact expected Excel headings on screen:
+     Instrument Description, Serial No., Make / Model, Location, Quantity,
+     Status, Issued To / Employee Name, Employee Code, Iqama ID,
+     Designation, Division/Department, Current Project, Issued By,
+     Remarks, Picture Path
+   - Kept the mapping-based Excel import workflow
+   - Confirmed title rows before the real headers are detected correctly
+
+4. Improved details display
+   - Made the Site-wise Excel Sync area scroll properly so the settings,
+     file history, import controls, mapping/import actions, and synced
+     inventory details are visible correctly on screen
+
+5. Versioning and packaging
+   - Updated application version to v2.28.22
+   - Packaged next upload as: software v 46.zip
+
+Validation
+- py_compile passed on the updated Instrument Station/core/UI/test modules
+- Full regression suite passed: 1391 / 1391 checks
