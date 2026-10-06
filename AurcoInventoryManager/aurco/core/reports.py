@@ -199,11 +199,11 @@ def build_report(db: Database, name: str, filters: dict | None = None) -> Report
     if name == "Out of Stock Report":
         return title, STOCK_COLS, _stock_table(db, _item_rows(db, f, S.OUT))
     if name == "Item Master":
-        cols = ["Code", "Description", "Category", "Sub", "UOM", "Brand", "Model", "Barcode",
+        cols = ["Code", "Description", "Category", "2nd Type", "Sub", "UOM", "Brand", "Model", "Barcode",
                 "Min", "Max", "Balance", "Reserved", "Free", "Warehouse", "Location",
                 "Rack", "Active"]
         _res = S.reserved_map(db)
-        rows = [[r["code"], r["description"], r["category"], r["subcategory"], r["uom"],
+        rows = [[r["code"], r["description"], r["category"], r["second_type"], r["subcategory"], r["uom"],
                  r["brand"], r["model"], r["barcode"], r["min_level"], r["max_level"],
                  r["balance"], round(_res.get(r["id"], 0), 2),
                  round(max(0.0, (r["balance"] or 0) - _res.get(r["id"], 0)), 2),

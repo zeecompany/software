@@ -10,7 +10,7 @@ from . import services as S
 
 ITEM_TARGETS = {
     "code": "Item Code", "description": "Description", "short_desc": "Short Description",
-    "category": "Category", "subcategory": "Subcategory", "uom": "UOM", "brand": "Brand",
+    "category": "Category", "second_type": "2nd Type", "subcategory": "Subcategory", "uom": "UOM", "brand": "Brand",
     "model": "Model / Part No", "specification": "Specification", "barcode": "Barcode",
     "alt_code": "Alternate Code", "min_level": "Minimum Level", "max_level": "Maximum Level",
     "reorder_level": "Reorder Level", "critical_level": "Critical Level",
@@ -218,7 +218,7 @@ def write_template(mode: str, out_path: str | Path) -> Path:
         c.fill = PatternFill("solid", fgColor="0B3D6B")
         ws.column_dimensions[get_column_letter(i)].width = 20
     if mode == "Item Master":
-        ws.append(["ITM-00001", "Sample bolt M12 x 60mm", "Bolt M12", "Fasteners", "Bolts",
+        ws.append(["ITM-00001", "Sample bolt M12 x 60mm", "Bolt M12", "Fasteners", "Tools", "Bolts",
                    "PCS", "AURCO", "M12-60", "Grade 8.8", "8901234567890", "ALT-001",
                    40, 200, 60, 20, 150, 3.5, "Main Warehouse", "Rack A", "A-01-02", ""])
     wb.save(out)

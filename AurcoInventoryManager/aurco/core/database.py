@@ -10,7 +10,7 @@ from typing import Any, Iterable, Sequence
 
 from . import config
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 DDL = """
 PRAGMA journal_mode=WAL;
@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS items (
     description    TEXT NOT NULL,
     short_desc     TEXT DEFAULT '',
     category       TEXT DEFAULT '',
+    second_type    TEXT DEFAULT '',
     subcategory    TEXT DEFAULT '',
     uom            TEXT DEFAULT 'PCS',
     brand          TEXT DEFAULT '',
@@ -666,6 +667,12 @@ class Database:
             if col not in columns("attachments"):
                 self.conn.execute(sql)
                 added.append(f"attachments.{col}")
+
+        # v11: optional 2nd Type on the item master for analytics / typed material tracking
+        if "second_type" not in columns("items"):
+            self.conn.execute("ALTER TABLE items ADD COLUMN second_type TEXT DEFAULT ''")
+            added.append("items.second_type")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS ix_items_type2 ON items(second_type)")
         if added:
             self.conn.commit()
             try:

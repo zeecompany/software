@@ -3610,6 +3610,112 @@ def main() -> int:
     check(S.reserved_for(db, rq_iid) == 0,
           "cancelling the request releases the reserved qty")
 
+    section("Item Master 2nd Type analytics")
+    _itm_type_root = root / "item_type_upgrade.db"
+    _itm_type_root.unlink(missing_ok=True)
+    _typed_db = database.Database(_itm_type_root)
+    S.save_item(_typed_db, {"code": "OLD-TYPE-1", "description": "Old typed item",
+                            "uom": "PCS", "opening_balance": 1})
+    _typed_db.close()
+    _raw = sqlite3.connect(_itm_type_root)
+    _raw.executescript("""
+        PRAGMA foreign_keys=OFF;
+        ALTER TABLE items RENAME TO items_with_type;
+        CREATE TABLE items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            description TEXT NOT NULL,
+            short_desc TEXT DEFAULT '',
+            category TEXT DEFAULT '',
+            subcategory TEXT DEFAULT '',
+            uom TEXT DEFAULT 'PCS',
+            brand TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            specification TEXT DEFAULT '',
+            barcode TEXT DEFAULT '',
+            alt_code TEXT DEFAULT '',
+            min_level REAL DEFAULT 0,
+            max_level REAL DEFAULT 0,
+            reorder_level REAL DEFAULT 0,
+            critical_level REAL DEFAULT 0,
+            threshold_mode TEXT DEFAULT 'GLOBAL',
+            min_pct REAL,
+            crit_pct REAL,
+            opening_balance REAL DEFAULT 0,
+            balance REAL NOT NULL DEFAULT 0,
+            damaged_qty REAL NOT NULL DEFAULT 0,
+            unit_cost REAL DEFAULT 0,
+            warehouse TEXT DEFAULT '',
+            location TEXT DEFAULT '',
+            rack TEXT DEFAULT '',
+            remarks TEXT DEFAULT '',
+            image_path TEXT DEFAULT '',
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+        INSERT INTO items(id, code, description, short_desc, category, subcategory, uom, brand,
+                          model, specification, barcode, alt_code, min_level, max_level,
+                          reorder_level, critical_level, threshold_mode, min_pct, crit_pct,
+                          opening_balance, balance, damaged_qty, unit_cost, warehouse, location,
+                          rack, remarks, image_path, active, created_at, updated_at)
+        SELECT id, code, description, short_desc, category, subcategory, uom, brand,
+               model, specification, barcode, alt_code, min_level, max_level,
+               reorder_level, critical_level, threshold_mode, min_pct, crit_pct,
+               opening_balance, balance, damaged_qty, unit_cost, warehouse, location,
+               rack, remarks, image_path, active, created_at, updated_at
+          FROM items_with_type;
+        DROP TABLE items_with_type;
+        DELETE FROM settings WHERE key='schema_version';
+        PRAGMA foreign_keys=ON;
+    """)
+    _raw.commit(); _raw.close()
+    _typed_up = database.Database(_itm_type_root)
+    check("second_type" in {r["name"] for r in _typed_up.query("PRAGMA table_info(items)")},
+          "an older item master database upgrades cleanly by adding the missing second_type column")
+    _typed_up.close()
+
+    gt_code = "GAS-DN-1"
+    gt_existing = db.one("SELECT id FROM items WHERE code=?", (gt_code,))
+    if gt_existing:
+        gt_id = int(gt_existing["id"])
+        S.save_item(db, {"description": "Gas Tester", "category": "Safety", "second_type": "Device",
+                         "uom": "PCS", "warehouse": "Main", "location": "A-01"}, gt_id)
+    else:
+        gt_id = S.save_item(db, {"code": gt_code, "description": "Gas Tester", "category": "Safety",
+                                 "second_type": "Device", "uom": "PCS", "warehouse": "Main",
+                                 "location": "A-01", "opening_balance": 12})
+    ip2 = _IP(db)
+    ip2.search.setText(gt_code)
+    ip2.reload()
+    check("2nd Type" in ip2.table.headers() and ip2.table.item(0, ip2.table.headers().index("2nd Type")).text() == "Device",
+          "the Item Master grid shows the optional 2nd Type column")
+    dlg_type = _ID(db, gt_id)
+    check(hasattr(dlg_type, "second_type") and dlg_type.second_type.currentText() == "Device",
+          "the Item Master editor stores the optional 2nd Type dropdown")
+    dlg_type.reject()
+    _t4, c_im2, r_im2 = reports.build_report(db, "Item Master", {})
+    _row_gt = next(r for r in r_im2 if r[0] == gt_code)
+    check("2nd Type" in c_im2 and _row_gt[c_im2.index("2nd Type")] == "Device",
+          "the Item Master report includes the 2nd Type column")
+    _dn_typed = S.post_issue(db, S.DocHeader(doc_type="DN", doc_date="2026-08-30", issued_to="Site Team",
+                                             project="Jafura", location="Jafura Yard"),
+                             [S.Line(item_id=gt_id, qty=8, remarks="Typed analytics test")])
+    _typed_an = S.typed_item_analytics(db, second_type="Device", site="Jafura")
+    check(any(r["item_code"] == gt_code and abs(float(r["qty"]) - 8.0) < 1e-9 for r in _typed_an["rows"]),
+          "typed item analytics auto-detects Delivery Note issues from the Item Master 2nd Type")
+    win.go("Analytics")
+    win.page_analytics.refresh()
+    app.processEvents()
+    win.page_analytics.item_analytics.f_type2.setCurrentText("Device")
+    win.page_analytics.item_analytics.f_site.setCurrentText("Jafura")
+    win.page_analytics.item_analytics.reload()
+    check(win.page_analytics.item_analytics.cards["qty"].lbl_value.text() == "8"
+          and any(win.page_analytics.item_analytics.table.item(r, 1).text() == gt_code
+                  for r in range(win.page_analytics.item_analytics.table.rowCount())),
+          "the Analytics module shows 8 gas testers currently at Jafura from Delivery Note data")
+    win.page_analytics.item_analytics.reset_filters()
+
     section("MR print heading carries the PR number and project")
     from aurco.ui.material_page import MaterialPage as _MPT
     from aurco.core import documents as _D
@@ -4525,13 +4631,13 @@ def main() -> int:
     win.go("Analytics")
     win.page_analytics.refresh()
     app.processEvents()
-    win.page_analytics.analytics.f_type2.setCurrentText("Device")
-    win.page_analytics.analytics.f_site.setCurrentText("Jafura")
-    win.page_analytics.analytics.reload()
-    check(win.page_analytics.analytics.cards["qty"].lbl_value.text() == "8"
-          and win.page_analytics.analytics.table.rowCount() == 1,
-          "the separate Analytics module shows 8 gas testers currently at Jafura under Device")
-    win.page_analytics.analytics.reset_filters()
+    win.page_analytics.tools_analytics.f_type2.setCurrentText("Device")
+    win.page_analytics.tools_analytics.f_site.setCurrentText("Jafura")
+    win.page_analytics.tools_analytics.reload()
+    check(win.page_analytics.tools_analytics.cards["qty"].lbl_value.text() == "8"
+          and win.page_analytics.tools_analytics.table.rowCount() == 1,
+          "the separate Analytics module still shows the Tools Station Jafura device view")
+    win.page_analytics.tools_analytics.reset_filters()
     svp.register.export_pdf()
     _ts_reg_pdf = svp.register.last_file
     check(_ts_reg_pdf and _ts_reg_pdf.exists() and _ts_reg_pdf.suffix.lower() == ".pdf",

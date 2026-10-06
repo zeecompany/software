@@ -2,8 +2,8 @@
 # Windows EXE version resource for AURCO Inventory Manager
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 28, 5, 0),
-    prodvers=(2, 28, 5, 0),
+    filevers=(2, 28, 16, 0),
+    prodvers=(2, 28, 16, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,

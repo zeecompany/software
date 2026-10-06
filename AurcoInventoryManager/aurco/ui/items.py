@@ -56,6 +56,8 @@ class ItemDialog(QDialog):
         form.addRow("Short Description", self.short)
         self.cat = W.combo([""] + lookup(db, "categories"), True, self.row.get("category", ""))
         form.addRow("Category", self.cat)
+        self.second_type = W.combo([""] + S.ITEM_SECOND_TYPES, True, self.row.get("second_type", ""))
+        form.addRow("2nd Type (optional)", self.second_type)
         self.subcat = QLineEdit(self.row.get("subcategory", ""))
         form.addRow("Subcategory", self.subcat)
         self.uom = W.combo(lookup(db, "uoms") or ["PCS"], True,
@@ -219,6 +221,7 @@ class ItemDialog(QDialog):
         data = {
             "code": self.code.text().strip(), "description": self.desc.text().strip(),
             "short_desc": self.short.text().strip(), "category": self.cat.currentText().strip(),
+            "second_type": self.second_type.currentText().strip(),
             "subcategory": self.subcat.text().strip(), "uom": self.uom.currentText().strip(),
             "brand": self.brand.text().strip(), "model": self.model.text().strip(),
             "specification": self.spec.toPlainText().strip(),
@@ -462,26 +465,31 @@ class ItemsPage(QWidget):
         data = []
         for r in self.rows:
             mn, crit = S.item_thresholds(self.db, r)
-            data.append([r["code"], r["description"], r["category"], r["uom"], r["brand"],
+            data.append([r["code"], r["description"], r["category"], r.get("second_type", ""), r["uom"], r["brand"],
                          round(r["balance"], 2), round(r.get("reserved", 0), 2),
                          round(r.get("free", r["balance"]), 2),
                          round(mn, 2), round(r["max_level"] or 0, 2),
                          round(r["unit_cost"] or 0, 2), round(r["value"], 2),
                          r["warehouse"], r["location"], r["rack"], r["barcode"], r["status"]])
-        self.table.fill(["Item Code", "Description", "Category", "UOM", "Brand", "Balance",
+        self.table.fill(["Item Code", "Description", "Category", "2nd Type", "UOM", "Brand", "Balance",
                          "Reserved", "Free to Use", "Min Level", "Max Level", "Unit Cost",
                          f"Value ({cur})", "Warehouse", "Location", "Rack/Bin", "Barcode",
-                         "Status"], data, status_col=16)
+                         "Status"], data, status_col=17)
         self._paint_reserved()
         self._update_count()
 
     def _paint_reserved(self):
         """Reserved stock is highlighted so it is never mistaken for free stock."""
         from PySide6.QtGui import QBrush, QColor, QFont
+        try:
+            ci_res = self.table.headers().index("Reserved")
+            ci_free = self.table.headers().index("Free to Use")
+        except ValueError:
+            return
         for r, row in enumerate(self.rows):
             res = float(row.get("reserved", 0) or 0)
-            cell = self.table.item(r, 6)
-            free = self.table.item(r, 7)
+            cell = self.table.item(r, ci_res)
+            free = self.table.item(r, ci_free)
             if cell is None:
                 continue
             if res > 1e-9:

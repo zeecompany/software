@@ -446,8 +446,8 @@ class MainWindow(QMainWindow):
                              "serial numbers, 2nd type classification, person/site transfer history, pictures, "
                              "location summary sheet and live tracking. Its own database; "
                              "no stock effect.",
-            "Analytics": "Separate analytics module for transferred Tools Station items — "
-                         "2nd type, current site, current location and grouped live quantities.",
+            "Analytics": "Separate analytics module for typed materials — auto-detected from Item Master / Delivery Notes, "
+                         "plus Tools Station 2nd-type site visibility.",
             "Cable Records": "Separate cable drum register — length left on every "
                              "drum, every cut, the cable schedule and its megger "
                              "tests. Its own database; no stock effect.",

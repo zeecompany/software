@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QCompleter, QDialog, QDialogButtonBox, QDoubleSpi
 
 from ..core import documents as D
 from ..core import employees as EMP
+from ..core import services as S
 from ..core import surveyor_tools as SV
 from ..core.database import Database
 from . import widgets as W
@@ -1032,6 +1033,166 @@ class AnalyticsTab(QWidget):
         D.open_path(f)
 
 
+class ItemMasterAnalyticsTab(QWidget):
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.rows: list[dict] = []
+        self.last_file: Path | None = None
+        self.cards: dict[str, W.StatCard] = {}
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        note = QLabel(
+            "This analytics view auto-detects final Delivery Note items whose Item Master 2nd Type is set. "
+            "Use it to see what Devices, Instruments or Tools are currently outstanding at each site."
+        )
+        note.setWordWrap(True)
+        v.addWidget(note)
+
+        bar = QWidget()
+        bar.setObjectName("Card")
+        gl = QGridLayout(bar)
+        gl.setContentsMargins(10, 8, 10, 8)
+        self.f_text = W.SearchBox("Search 2nd type, item code, description, site or issued to ...")
+        self.f_type2 = W.combo(["All 2nd Types"], editable=True)
+        self.f_site = W.combo(["All Sites"], editable=True)
+        for w in (self.f_text, self.f_type2, self.f_site):
+            if hasattr(w, "textChanged"):
+                w.textChanged.connect(self.reload)
+            else:
+                w.currentTextChanged.connect(self.reload)
+        gl.addWidget(self.f_text, 0, 0, 1, 4)
+        gl.addWidget(self.f_type2, 0, 4)
+        gl.addWidget(self.f_site, 0, 5)
+        gl.addWidget(W.button("Excel", slot=self.export_excel), 0, 6)
+        gl.addWidget(W.button("PDF", slot=self.export_pdf), 0, 7)
+        gl.addWidget(W.button("Reset", slot=self.reset_filters), 0, 8)
+        v.addWidget(bar)
+
+        cards = QGridLayout()
+        for i, (key, label, glyph, color) in enumerate((
+                ("rows", "Analytics Rows", "📋", W.NAVY),
+                ("qty", "Current Qty", "Σ", "#0b6e83"),
+                ("sites", "Sites", "📍", "#7048e8"),
+                ("types", "2nd Types", "🧩", "#1a9c52"),
+        )):
+            c = W.StatCard(label, glyph=glyph, color=color)
+            self.cards[key] = c
+            cards.addWidget(c, 0, i)
+        v.addLayout(cards)
+
+        charts = QHBoxLayout()
+        left = W.Card("Current quantity by site")
+        self.c_site = W.BarChart([], color="#0b6e83")
+        left.add(self.c_site, 1)
+        charts.addWidget(left, 1)
+        mid = W.Card("2nd type mix")
+        self.c_type = W.DonutChart()
+        mid.add(self.c_type, 1)
+        charts.addWidget(mid, 1)
+        right = W.Card("Top items by site")
+        self.c_item = W.BarChart([], color="#1f6feb", horizontal=True)
+        right.add(self.c_item, 1)
+        charts.addWidget(right, 1)
+        v.addLayout(charts, 1)
+
+        tbl = W.Card("Current Delivery Note analytics")
+        self.table = W.DataTable(["2nd Type", "Item Code", "Description", "Current Site", "Current Location",
+                                  "Issued To", "Current Qty", "Issued", "Returned", "Damaged", "DNs"])
+        tbl.add(self.table, 1)
+        v.addWidget(tbl, 1)
+
+    def _filters(self) -> dict[str, str]:
+        type2 = self.f_type2.currentText().strip()
+        site = self.f_site.currentText().strip()
+        return {
+            "text": self.f_text.text().strip(),
+            "second_type": "" if type2 == "All 2nd Types" else type2,
+            "site": "" if site == "All Sites" else site,
+        }
+
+    def reset_filters(self):
+        self.f_text.clear()
+        self.f_type2.setCurrentIndex(0)
+        self.f_site.setCurrentIndex(0)
+        self.reload()
+
+    def reload_filters(self):
+        cur_type2 = self.f_type2.currentText()
+        cur_site = self.f_site.currentText()
+        type2s = ["All 2nd Types"] + S.distinct_second_types(self.db)
+        sites = ["All Sites"] + [str(r[0]) for r in self.db.query(
+            """SELECT DISTINCT project FROM documents d
+                 JOIN document_lines l ON l.doc_id=d.id
+                 JOIN items i ON i.id=l.item_id
+                WHERE d.doc_type='DN' AND d.status='FINAL' AND COALESCE(i.second_type,'')<>''
+                  AND COALESCE(project,'')<>''
+                ORDER BY project""")]
+        self.f_type2.blockSignals(True)
+        self.f_type2.clear(); self.f_type2.addItems(type2s)
+        if cur_type2 in type2s:
+            self.f_type2.setCurrentText(cur_type2)
+        self.f_type2.blockSignals(False)
+        self.f_site.blockSignals(True)
+        self.f_site.clear(); self.f_site.addItems(sites)
+        if cur_site in sites:
+            self.f_site.setCurrentText(cur_site)
+        self.f_site.blockSignals(False)
+
+    def reload(self):
+        self.reload_filters()
+        d = S.typed_item_analytics(self.db, **self._filters())
+        self.rows = d["rows"]
+        self.cards["rows"].set_value(f"{d['row_count']:,}", "typed item group(s)")
+        self.cards["qty"].set_value(_fmt_qty(d["total_qty"]), "currently at sites")
+        self.cards["sites"].set_value(f"{d['site_count']:,}", "site footprint")
+        self.cards["types"].set_value(f"{d['second_type_count']:,}", "2nd type groups")
+        self.c_site.set_data(d["by_site"] or [("No data", 0)])
+        self.c_type.set_data([(k, v, "#0b6e83" if i % 2 == 0 else "#7048e8")
+                              for i, (k, v) in enumerate(d["by_second_type"])])
+        self.c_item.set_data(d["top_items"] or [("No data", 0)])
+        self.table.fill(
+            ["2nd Type", "Item Code", "Description", "Current Site", "Current Location", "Issued To", "Current Qty", "Issued", "Returned", "Damaged", "DNs"],
+            [[r.get("second_type", ""), r.get("item_code", ""), r.get("description", ""), r.get("site", ""),
+              r.get("location", ""), r.get("issued_to", ""), float(r.get("qty") or 0),
+              float(r.get("issued_qty") or 0), float(r.get("returned_qty") or 0),
+              float(r.get("damaged_qty") or 0), int(r.get("dn_count") or 0)]
+             for r in self.rows],
+        )
+
+    def export_excel(self):
+        f = D.export_excel(
+            self.db,
+            "Analytics — Typed Delivery Note Items",
+            ["2nd Type", "Item Code", "Description", "Current Site", "Current Location", "Issued To", "Current Qty", "Issued", "Returned", "Damaged", "DNs"],
+            [[r.get("second_type", ""), r.get("item_code", ""), r.get("description", ""), r.get("site", ""),
+              r.get("location", ""), r.get("issued_to", ""), float(r.get("qty") or 0),
+              float(r.get("issued_qty") or 0), float(r.get("returned_qty") or 0),
+              float(r.get("damaged_qty") or 0), int(r.get("dn_count") or 0)]
+             for r in self.rows],
+        )
+        self.last_file = f
+        W.toast(self, f"Exported {f.name}")
+        D.open_path(f)
+
+    def export_pdf(self):
+        f = D.report_pdf(
+            self.db,
+            "Analytics — Typed Delivery Note Items",
+            ["2nd Type", "Item Code", "Description", "Current Site", "Current Location", "Issued To", "Current Qty", "Issued", "Returned", "Damaged", "DNs"],
+            [[r.get("second_type", ""), r.get("item_code", ""), r.get("description", ""), r.get("site", ""),
+              r.get("location", ""), r.get("issued_to", ""), float(r.get("qty") or 0),
+              float(r.get("issued_qty") or 0), float(r.get("returned_qty") or 0),
+              float(r.get("damaged_qty") or 0), int(r.get("dn_count") or 0)]
+             for r in self.rows],
+            subtitle="Auto-detected from final Delivery Notes using the Item Master 2nd Type classification",
+        )
+        self.last_file = f
+        W.toast(self, f"Exported {f.name}")
+        D.open_path(f)
+
+
 class AnalyticsPage(QWidget):
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -1041,17 +1202,23 @@ class AnalyticsPage(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(12, 10, 12, 10)
         head = QLabel(
-            "📈  <b>Analytics</b> — separate transferred-material visibility for Tools Station, "
-            "showing where every 2nd Type item currently is by site, location and live quantity."
+            "📈  <b>Analytics</b> — a separate module for typed materials. It auto-detects Delivery Note items from the Item Master 2nd Type, and also includes Tools Station site analytics."
         )
         head.setWordWrap(True)
         v.addWidget(head)
-        self.analytics = AnalyticsTab(self.sdb)
-        v.addWidget(self.analytics, 1)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.item_analytics = ItemMasterAnalyticsTab(self.db)
+        self.tools_analytics = AnalyticsTab(self.sdb)
+        self.analytics = self.item_analytics
+        self.tabs.addTab(self.item_analytics, "📦 Item Master / DN")
+        self.tabs.addTab(self.tools_analytics, "🧭 Tools Station")
+        v.addWidget(self.tabs, 1)
 
     def refresh(self):
         self.sdb.current_user = getattr(self.db, "current_user", "admin")
-        self.analytics.reload()
+        self.item_analytics.reload()
+        self.tools_analytics.reload()
 
 
 class SurveyorToolsPage(QWidget):

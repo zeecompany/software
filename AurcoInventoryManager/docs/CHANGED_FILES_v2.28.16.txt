@@ -1,0 +1,32 @@
+AURCO Inventory Manager 2.28.16
+Package: software v 40.zip
+Compared against: software v 39.zip
+
+Modified files (14):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/database.py
+- AurcoInventoryManager/aurco/core/importer.py
+- AurcoInventoryManager/aurco/core/reports.py
+- AurcoInventoryManager/aurco/core/services.py
+- AurcoInventoryManager/aurco/ui/items.py
+- AurcoInventoryManager/aurco/ui/main_window.py
+- AurcoInventoryManager/aurco/ui/surveyor_tools_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.16.txt
+- software v 40 - changed files.txt
+
+Main changes
+- Added an optional Item Master 2nd Type field with the exact allowed values: Device, Instrument, and Tools.
+- Updated Item Master search, import/template, grid, editor, and report output so the new 2nd Type is visible and saved consistently.
+- Added automatic schema upgrade support for older inventory databases that do not yet have items.second_type.
+- Added a separate Analytics module view for Item Master / Delivery Note material classification, showing current site/location quantities derived from stock movements.
+- Kept the top-level Analytics module showing both Item Master / DN analytics and the existing Tools Station analytics.
+- Fixed the Item Master report compatibility issue with sqlite3.Row while validating the new 2nd Type column.
+- Added regression coverage for old-database upgrade, Item Master UI/report behavior, and typed Delivery Note analytics.
+
+Validation
+- python3 -m py_compile on updated files: PASSED
+- Headless regression suite: ALL 1401 CHECKS PASSED

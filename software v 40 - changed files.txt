@@ -1,0 +1,31 @@
+AURCO Inventory Manager 2.28.16
+Package: software v 40.zip
+Compared against: software v 39.zip
+
+Modified files (14):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/database.py
+- AurcoInventoryManager/aurco/core/importer.py
+- AurcoInventoryManager/aurco/core/reports.py
+- AurcoInventoryManager/aurco/core/services.py
+- AurcoInventoryManager/aurco/ui/items.py
+- AurcoInventoryManager/aurco/ui/main_window.py
+- AurcoInventoryManager/aurco/ui/surveyor_tools_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.16.txt
+- software v 40 - changed files.txt
+
+Main changes
+- Added an optional 2nd Type field to Item Master with the exact values Device, Instrument, and Tools.
+- Delivery Note analytics now automatically classify issued material from Item Master and summarize current quantities by site/location.
+- The separate Analytics module now shows both Item Master / DN analytics and Tools Station analytics.
+- Older inventory databases upgrade automatically by adding the missing items.second_type column.
+- Item Master import/template, grid, editor, search, and report output were updated for the new 2nd Type field.
+- Added regression tests for the old-database upgrade path and the new typed analytics flow.
+
+Validation
+- python3 -m py_compile on updated files: PASSED
+- Headless regression suite: ALL 1401 CHECKS PASSED

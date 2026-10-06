@@ -7,6 +7,7 @@ inside one SQLite transaction.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -647,7 +648,9 @@ def count_to_adjustment(db: Database, count_doc_id: int) -> str:
 
 
 # ---------------------------------------------------------------- item CRUD
-ITEM_FIELDS = ["code", "description", "short_desc", "category", "subcategory", "uom", "brand",
+ITEM_SECOND_TYPES = ["Device", "Instrument", "Tools"]
+
+ITEM_FIELDS = ["code", "description", "short_desc", "category", "second_type", "subcategory", "uom", "brand",
                "model", "specification", "barcode", "alt_code", "min_level", "max_level",
                "reorder_level", "critical_level", "threshold_mode", "min_pct", "crit_pct",
                "opening_balance", "unit_cost", "warehouse", "location", "rack", "remarks",
@@ -753,8 +756,8 @@ def search_items(db: Database, text: str = "", category: str = "", warehouse: st
         like = f"%{text.strip()}%"
         sql += (" AND (code LIKE ? OR description LIKE ? OR short_desc LIKE ? OR barcode LIKE ?"
                 " OR alt_code LIKE ? OR brand LIKE ? OR model LIKE ? OR category LIKE ?"
-                " OR location LIKE ? OR uom LIKE ?)")
-        p += [like] * 10
+                " OR second_type LIKE ? OR location LIKE ? OR uom LIKE ?)")
+        p += [like] * 11
     if category:
         sql += " AND category=?"
         p.append(category)
@@ -785,6 +788,131 @@ def find_by_barcode(db: Database, code: str) -> dict | None:
     d = dict(r)
     d["status"] = stock_status(db, d)
     return d
+
+
+def distinct_second_types(db: Database) -> list[str]:
+    rows = db.query("SELECT DISTINCT second_type FROM items WHERE COALESCE(second_type,'')<>'' ORDER BY second_type")
+    return [str(r[0]) for r in rows if str(r[0] or "").strip()]
+
+
+def typed_item_analytics(db: Database, text: str = "", second_type: str = "", site: str = "") -> dict[str, Any]:
+    """Current site position of typed Item Master materials.
+
+    Uses final stock movements, so a DN automatically appears here when its item
+    has a 2nd Type on the Item Master. Returns and damaged returns reduce the
+    current quantity at that site.
+    """
+    rows = db.query("""
+        SELECT l.item_id, l.item_code, l.txn_type, l.qty_in, l.qty_out, l.reason, l.txn_date,
+               COALESCE(i.description,'') AS description,
+               COALESCE(i.uom,'') AS uom,
+               COALESCE(i.second_type,'') AS second_type,
+               COALESCE(i.unit_cost,0) AS unit_cost,
+               COALESCE(NULLIF(d.project,''), NULLIF(d.department,''), '') AS own_site,
+               COALESCE(NULLIF(d.issued_to,''), NULLIF(d.returned_by,''), '') AS own_party,
+               COALESCE(NULLIF(d.location,''), NULLIF(d.to_location,''), NULLIF(d.from_location,''), '') AS own_location,
+               d.doc_no, d.linked_doc
+          FROM stock_ledger l
+          LEFT JOIN items i ON i.id=l.item_id
+          LEFT JOIN documents d ON d.id=l.doc_id
+         WHERE l.txn_type IN ('ISSUE','RETURN','DAMAGE')
+    """)
+    doc_map = {
+        str(r["doc_no"]): {
+            "site": str(r["project"] or r["department"] or "").strip(),
+            "party": str(r["issued_to"] or r["returned_by"] or "").strip(),
+            "location": str(r["location"] or r["to_location"] or r["from_location"] or "").strip(),
+        }
+        for r in db.query("SELECT doc_no, project, department, issued_to, returned_by, location, to_location, from_location FROM documents")
+    }
+    needle = text.strip().lower()
+    grouped: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for r in rows:
+        row = dict(r)
+        row_type = str(row.get("second_type") or "").strip()
+        if not row_type:
+            continue
+        if second_type and row_type != second_type:
+            continue
+        linked = doc_map.get(str(row.get("linked_doc") or ""), {})
+        row_site = str(row.get("own_site") or linked.get("site") or "").strip() or "(unassigned)"
+        if site and row_site != site:
+            continue
+        row_party = str(row.get("own_party") or linked.get("party") or "").strip() or "-"
+        row_location = str(row.get("own_location") or linked.get("location") or "").strip() or "-"
+        item_code = str(row.get("item_code") or "").strip()
+        desc = str(row.get("description") or "").strip() or item_code or "(blank description)"
+        uom = str(row.get("uom") or "").strip()
+        hay = " ".join((row_type, item_code, desc, row_site, row_party, row_location, uom)).lower()
+        if needle and needle not in hay:
+            continue
+        key = (row_type, row_site, row_location, item_code, desc)
+        g = grouped.setdefault(key, {
+            "second_type": row_type,
+            "site": row_site,
+            "location": row_location,
+            "item_code": item_code,
+            "description": desc,
+            "uom": uom,
+            "issued_to": set(),
+            "issued_qty": 0.0,
+            "returned_qty": 0.0,
+            "damaged_qty": 0.0,
+            "dn_nos": set(),
+        })
+        if row_party and row_party != "-":
+            g["issued_to"].add(row_party)
+        doc_no = str(row.get("doc_no") or "").strip()
+        if doc_no:
+            g["dn_nos"].add(doc_no)
+        if row.get("txn_type") == "ISSUE":
+            g["issued_qty"] += float(row.get("qty_out") or 0)
+        elif row.get("txn_type") == "RETURN":
+            g["returned_qty"] += float(row.get("qty_in") or 0)
+        else:
+            m = re.search(r"([\d.]+)", str(row.get("reason") or ""))
+            if m:
+                g["damaged_qty"] += float(m.group(1))
+    out: list[dict[str, Any]] = []
+    by_site: dict[str, float] = {}
+    by_type: dict[str, float] = {}
+    by_item: dict[str, float] = {}
+    total_qty = 0.0
+    for g in grouped.values():
+        current_qty = g["issued_qty"] - g["returned_qty"] - g["damaged_qty"]
+        if current_qty <= 1e-9:
+            continue
+        row = {
+            "second_type": g["second_type"],
+            "site": g["site"],
+            "location": g["location"],
+            "item_code": g["item_code"],
+            "description": g["description"],
+            "uom": g["uom"],
+            "issued_to": ", ".join(sorted(g["issued_to"])) or "-",
+            "qty": current_qty,
+            "issued_qty": g["issued_qty"],
+            "returned_qty": g["returned_qty"],
+            "damaged_qty": g["damaged_qty"],
+            "dn_count": len(g["dn_nos"]),
+        }
+        out.append(row)
+        total_qty += current_qty
+        by_site[row["site"]] = by_site.get(row["site"], 0.0) + current_qty
+        by_type[row["second_type"]] = by_type.get(row["second_type"], 0.0) + current_qty
+        item_label = f"{row['description']} @ {row['site']}"
+        by_item[item_label] = by_item.get(item_label, 0.0) + current_qty
+    out.sort(key=lambda r: (str(r["site"]).lower(), str(r["second_type"]).lower(), -float(r["qty"]), str(r["description"]).lower()))
+    return {
+        "rows": out,
+        "row_count": len(out),
+        "total_qty": total_qty,
+        "site_count": len(by_site),
+        "second_type_count": len(by_type),
+        "by_site": sorted(by_site.items(), key=lambda kv: (-kv[1], kv[0].lower())),
+        "by_second_type": sorted(by_type.items(), key=lambda kv: (-kv[1], kv[0].lower())),
+        "top_items": sorted(by_item.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:10],
+    }
 
 
 def global_search(db: Database, text: str) -> dict[str, list[dict]]:
