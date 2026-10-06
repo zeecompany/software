@@ -4462,7 +4462,11 @@ def main() -> int:
         encoding="utf-8")
     _xlsx_map = root / "instrument_sync_mapping.xlsx"
     _wb = Workbook()
-    _ws = _wb.active
+    _cover = _wb.active
+    _cover.title = "Cover"
+    _cover.append(["Instrument station workbook cover sheet"])
+    _cover.append(["Nothing to import here"])
+    _ws = _wb.create_sheet("Allocation")
     _ws.append(["ATTIQ UR REHMAN CONT. CO."])
     _ws.append(["Instrument Station Template"])
     _ws.append(["Instrument Description", "Serial No.", "Make / Model", "Location", "Quantity", "Status", "Issued To / Employee Name", "Employee Code", "Iqama ID", "Designation", "Division/Department", "Current Project", "Issued By", "Remarks", "Picture Path"])

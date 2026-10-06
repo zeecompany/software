@@ -2583,10 +2583,14 @@ def _site_sync_upsert_inventory_record(db: ToolDB, payload: dict[str, Any], prev
     return None, payload, True, True
 
 
+def _site_sync_header_score(row: Sequence[Any]) -> int:
+    return sum(1 for c in row if norm(c) in SITE_SYNC_HEADER_MAP)
+
+
 def _site_sync_header_rows(data: list[list[Any]]) -> tuple[list[str], list[list[Any]]]:
     best_i, best_score = 0, -1
-    for i, row in enumerate(data[:12]):
-        score = sum(1 for c in row if norm(c) in SITE_SYNC_HEADER_MAP)
+    for i, row in enumerate(data[:20]):
+        score = _site_sync_header_score(row)
         if score > best_score:
             best_i, best_score = i, score
     head = [str(c).strip() for c in data[best_i]]
@@ -2597,14 +2601,37 @@ def _site_sync_header_rows(data: list[list[Any]]) -> tuple[list[str], list[list[
     return head, rows
 
 
+def _site_sync_prepare_rows(data: Sequence[Sequence[Any]]) -> list[list[Any]]:
+    rows = [list(r) for r in data if any(str(c).strip() for c in r)]
+    if not rows:
+        return []
+    width = max(len(r) for r in rows)
+    return [list(r) + [""] * (width - len(r)) for r in rows]
+
+
 def site_sync_read_table(path: str | Path) -> tuple[list[str], list[list[Any]]]:
     p = Path(path)
     if p.suffix.lower() in (".xlsx", ".xlsm"):
         from openpyxl import load_workbook
         wb = load_workbook(p, data_only=True, read_only=True)
-        ws = wb.active
-        data = [[("" if c is None else c) for c in row] for row in ws.iter_rows(values_only=True)]
-        wb.close()
+        best_data: list[list[Any]] = []
+        best_rank = (-1, -1, -1)
+        try:
+            for ws in wb.worksheets:
+                sheet_data = _site_sync_prepare_rows(
+                    [[("" if c is None else c) for c in row] for row in ws.iter_rows(values_only=True)]
+                )
+                if not sheet_data:
+                    continue
+                best_score = max((_site_sync_header_score(r) for r in sheet_data[:20]), default=-1)
+                non_blank_cells = sum(1 for row in sheet_data for c in row if str(c).strip())
+                rank = (best_score, non_blank_cells, len(sheet_data))
+                if rank > best_rank:
+                    best_rank = rank
+                    best_data = sheet_data
+        finally:
+            wb.close()
+        data = best_data
     else:
         raw = p.read_text(encoding="utf-8", errors="ignore")
         sample_lines = [ln for ln in raw.splitlines() if ln.strip()]
@@ -2617,11 +2644,9 @@ def site_sync_read_table(path: str | Path) -> tuple[list[str], list[list[Any]]]:
         data = list(csv.reader(io.StringIO(raw), dialect))
         if data and max(len(r) for r in data) <= 1 and "|" in raw:
             data = list(csv.reader(io.StringIO(raw), delimiter="|"))
-    data = [list(r) for r in data if any(str(c).strip() for c in r)]
+        data = _site_sync_prepare_rows(data)
     if not data:
         return [], []
-    width = max(len(r) for r in data)
-    data = [list(r) + [""] * (width - len(r)) for r in data]
     return _site_sync_header_rows(data)
 
 
@@ -2629,7 +2654,15 @@ def site_sync_auto_map(headers: Sequence[str]) -> dict[int, str]:
     out: dict[int, str] = {}
     used: set[str] = set()
     for i, h in enumerate(headers):
-        field = SITE_SYNC_HEADER_MAP.get(norm(h))
+        key = norm(h)
+        field = SITE_SYNC_HEADER_MAP.get(key)
+        if not field and key:
+            for probe, mapped in sorted(SITE_SYNC_HEADER_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
+                if mapped in used:
+                    continue
+                if key.startswith(probe) or key.endswith(probe) or probe in key or (len(key) >= 8 and key in probe):
+                    field = mapped
+                    break
         if field and field not in used:
             out[i] = field
             used.add(field)
@@ -2853,7 +2886,8 @@ def sync_site_sync_file(db: ToolDB, path: str | Path, folder_id: int | None = No
     headers, rows = site_sync_read_table(p)
     mapping = site_sync_auto_map(headers)
     if not mapping:
-        msg = "no recognisable columns"
+        msg = ("no recognisable instrument columns — expected headings like "
+               "Instrument Description, Serial No., Make / Model, Location, Quantity, Status")
         if row:
             file_id = int(row["id"])
             db.execute("UPDATE site_sync_files SET status=?, rows_failed=1, last_sync=?, note=?, detected_site=? WHERE id=?", ("Failed", _now(), msg, assigned_site or p.stem, file_id))

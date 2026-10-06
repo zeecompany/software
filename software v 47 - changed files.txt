@@ -1,0 +1,26 @@
+software v 47 / AURCO Inventory Manager v2.28.23
+
+Included updates
+1. Fixed the Site-wise Excel Sync "nothing mapped" issue
+   - Instrument Station now scans all workbook sheets, not only the active one
+   - It automatically picks the sheet that best matches the instrument columns
+   - This fixes cases where a cover sheet or summary sheet existed before the real data sheet
+
+2. Improved mapping recognition
+   - Automatic heading matching is now more tolerant/fuzzy
+   - Exact user columns such as Instrument Description, Serial No., Make / Model,
+     Location, Quantity, Status, Issued To / Employee Name, Employee Code,
+     Iqama ID, Designation, Division/Department, Current Project, Issued By,
+     Remarks, and Picture Path are recognised more reliably
+
+3. Better failure handling
+   - If a file still has no usable instrument columns, the error message is now clearer
+     and explains what headings are expected
+
+4. Versioning and packaging
+   - Updated application version to v2.28.23
+   - Packaged next upload as: software v 47.zip
+
+Validation
+- py_compile passed on the updated Instrument Station/core/test modules
+- Full regression suite passed: 1391 / 1391 checks
