@@ -7,7 +7,7 @@ A separate station in the same spirit as the Admin Station: it tracks **who is
 holding which tool**, not how much stock exists. Enforced physically, not by
 convention:
 
-    ·  its own SQLite file        <storage>/Tools, Instruments & Devices/
+    ·  its own SQLite file        <storage>/Instrument Station/
                                   tool_station.db
     ·  its own schema, numbering, audit trail and backups
     ·  no foreign key, join or import from items / stock_ledger / documents
@@ -59,9 +59,9 @@ from typing import Any, Iterable, Sequence
 
 from . import config
 
-MODULE_NAME = "Tools Station"
-FOLDER = "Tools, Instruments & Devices"
-LEGACY_FOLDER = "Tool Station"        # folder name used before the rename
+MODULE_NAME = "Instrument Station"
+FOLDER = MODULE_NAME
+LEGACY_FOLDERS = ("Tools Station", "Tools, Instruments & Devices", "Tool Station")
 DB_NAME = "tool_station.db"
 
 SCHEMA_VERSION = 2
@@ -384,31 +384,26 @@ def norm(s: Any) -> str:
 
 
 def _migrate_legacy_folder() -> None:
-    """Move an existing "Tool Station" data folder to the new module name.
-
-    Renaming the module must never strand the custody database, so the old
-    folder is moved once, on first use. If anything at all goes wrong (network
-    share, file in use) the old folder is simply left alone and its content is
-    copied instead — the module keeps working either way.
-    """
+    """Move older Tool/Instrument Station data folders into the new module name."""
     root = config.get_storage_root() or config.default_storage_root()
-    old, new = Path(root) / LEGACY_FOLDER, Path(root) / FOLDER
-    if not old.exists() or old == new:
-        return
-    try:
-        if not new.exists():
-            old.rename(new)
-            return
-        # both exist: only fill the gaps, never overwrite newer data
-        for item in old.iterdir():
-            target = new / item.name
-            if target.exists():
-                continue
-            shutil.move(str(item), str(target))
-        if not any(old.iterdir()):
-            old.rmdir()
-    except OSError:
-        pass
+    new = Path(root) / FOLDER
+    for legacy_name in LEGACY_FOLDERS:
+        old = Path(root) / legacy_name
+        if not old.exists() or old == new:
+            continue
+        try:
+            if not new.exists():
+                old.rename(new)
+                return
+            for item in old.iterdir():
+                target = new / item.name
+                if target.exists():
+                    continue
+                shutil.move(str(item), str(target))
+            if not any(old.iterdir()):
+                old.rmdir()
+        except OSError:
+            continue
 
 
 def module_folder() -> Path:
@@ -537,7 +532,7 @@ def next_ref(db: "ToolDB", warehouse: str, project_id: str, txn_type: str,
 
 # ------------------------------------------------------------------- database
 class ToolDB:
-    """Standalone database for the Tools, Instruments & Devices module."""
+    """Standalone database for the Instrument Station module."""
 
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path or db_path())
@@ -632,7 +627,7 @@ class ToolDB:
                 if col not in have:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
-        # Backfill old site-sync schemas into the richer Tools Station shape.
+        # Backfill old site-sync schemas into the richer Instrument Station shape.
         try:
             cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(site_inventory)")}
             if "source_key" in cols and "asset_key" in cols:
@@ -1418,7 +1413,7 @@ def dashboard(db: ToolDB, f: dict | None = None) -> dict:
         "damaged": sum(1 for l in lines
                        if str(l.get("condition") or "").upper().startswith("D")),
         "photos": sum(1 for l in lines if l.get("photo")),
-        # Excel/site-sync KPI aliases for the rebuilt Tools Station dashboard
+        # Excel/site-sync KPI aliases for the rebuilt Instrument Station dashboard
         "total_tools": site_dash.get("row_count", 0),
         "available": site_dash.get("available_qty", 0),
         "issued_site": site_dash.get("issued_qty", 0),
@@ -2420,6 +2415,12 @@ SITE_SYNC_HEADER_MAP = {
     "lastupdated": "last_updated", "updatedat": "last_updated",
 }
 SITE_SYNC_SUFFIXES = (".xlsx", ".xlsm", ".csv", ".txt")
+SITE_INVENTORY_COLS = [
+    "asset_key", "file_id", "folder_id", "item_code", "description", "item_type", "category",
+    "make_model", "serial_no", "qty", "status", "condition", "holder", "employee_code",
+    "iqama_id", "designation", "department", "project_id", "site_name", "location", "issued_by",
+    "remarks", "picture_path", "source_file", "file_hash", "last_updated", "last_sync",
+]
 _SYNC_UNAVAILABLE = {"pending", "missing", "repair", "underrepair", "damaged", "returned", "unavailable", "outofservice"}
 
 
@@ -2491,6 +2492,76 @@ def _site_sync_event_type(before: dict[str, Any] | None, after: dict[str, Any] |
     if a_status in _SYNC_UNAVAILABLE:
         return "Pending"
     return "Updated"
+
+
+def _site_sync_normalize_inventory_record(rec: dict[str, Any], fallback_site: str = "", source_file: str = "", file_hash_value: str = "", file_id: int = 0, folder_id: int = 0) -> dict[str, Any]:
+    payload = {c: rec.get(c, "") for c in SITE_INVENTORY_COLS}
+    payload["item_code"] = str(payload.get("item_code") or "").strip()
+    payload["description"] = str(payload.get("description") or "").strip()
+    payload["serial_no"] = str(payload.get("serial_no") or "").strip()
+    if not (payload["description"] or payload["serial_no"] or payload["item_code"]):
+        raise ValueError("Enter at least an instrument description, serial number or item code.")
+    payload["site_name"] = _site_sync_guess_site(rec, fallback_site)
+    payload["make_model"] = str(payload.get("make_model") or "").strip()
+    payload["item_type"] = str(payload.get("item_type") or _site_sync_guess_type(payload["description"]) or "Instrument").strip()
+    payload["category"] = str(payload.get("category") or payload["item_type"] or "Instrument").strip()
+    raw_qty = str(rec.get("qty") or "").strip()
+    payload["qty"] = 1 if raw_qty == "" else to_float(rec.get("qty"), 0)
+    payload["condition"] = str(payload.get("condition") or "A").strip() or "A"
+    payload["holder"] = str(payload.get("holder") or "").strip()
+    payload["employee_code"] = str(payload.get("employee_code") or "").strip()
+    payload["iqama_id"] = str(payload.get("iqama_id") or "").strip()
+    payload["designation"] = str(payload.get("designation") or "").strip()
+    payload["department"] = str(payload.get("department") or "").strip()
+    payload["project_id"] = str(payload.get("project_id") or "").strip()
+    payload["location"] = str(payload.get("location") or payload["site_name"] or "Warehouse").strip()
+    payload["issued_by"] = str(payload.get("issued_by") or "").strip()
+    payload["remarks"] = str(payload.get("remarks") or "").strip()
+    payload["picture_path"] = str(payload.get("picture_path") or "").strip()
+    payload["status"] = _site_sync_status({**rec, **payload})
+    payload["asset_key"] = str(payload.get("asset_key") or _site_sync_asset_key(payload, payload["site_name"])).strip()
+    payload["source_file"] = str(source_file or payload.get("source_file") or "Manual Entry").strip() or "Manual Entry"
+    payload["file_hash"] = str(file_hash_value or payload.get("file_hash") or "").strip()
+    payload["file_id"] = int(payload.get("file_id") or file_id or 0)
+    payload["folder_id"] = int(payload.get("folder_id") or folder_id or 0)
+    payload["last_updated"] = to_date(payload.get("last_updated")) or today()
+    payload["last_sync"] = str(payload.get("last_sync") or _now())
+    return payload
+
+
+def _site_sync_upsert_inventory_record(db: ToolDB, payload: dict[str, Any], previous_asset_key: str = "", movement_type: str = "", source_kind: str = "Excel Sync", source_ref: str = "") -> tuple[dict[str, Any] | None, dict[str, Any], bool, bool]:
+    lookup_key = str(previous_asset_key or payload.get("asset_key") or "").strip()
+    before_row = db.one("SELECT * FROM site_inventory WHERE asset_key=?", (lookup_key,)) if lookup_key else None
+    before = dict(before_row) if before_row else None
+    if before and payload["asset_key"] != before.get("asset_key"):
+        clash = db.one("SELECT asset_key FROM site_inventory WHERE asset_key=?", (payload["asset_key"],))
+        if clash:
+            raise ValueError(f'Another record already uses this asset key: {payload["asset_key"]}')
+    vals = [payload.get(c, "") for c in SITE_INVENTORY_COLS]
+    tracked = [c for c in SITE_INVENTORY_COLS if c not in ("file_id", "folder_id", "source_file", "file_hash", "last_sync")]
+    if before:
+        changed = payload["asset_key"] != before.get("asset_key", "") or any(str(before.get(c, "")) != str(payload.get(c, "")) for c in tracked)
+        db.execute(
+            "UPDATE site_inventory SET asset_key=?, file_id=?, folder_id=?, item_code=?, description=?, item_type=?, category=?, make_model=?, serial_no=?, qty=?, status=?, condition=?, holder=?, employee_code=?, iqama_id=?, designation=?, department=?, project_id=?, site_name=?, location=?, issued_by=?, remarks=?, picture_path=?, source_file=?, file_hash=?, last_updated=?, last_sync=?, updated_at=? WHERE asset_key=?",
+            vals + [_now(), before["asset_key"]],
+        )
+        if changed:
+            _site_sync_write_event(
+                db, before, payload, movement_type or _site_sync_event_type(before, payload),
+                payload.get("source_file", ""), int(payload.get("file_id") or 0), int(payload.get("folder_id") or 0),
+                source_kind=source_kind, source_ref=source_ref, responsible_person=str(payload.get("issued_by") or ""), remarks=str(payload.get("remarks") or ""),
+            )
+        return before, payload, False, changed
+    db.execute(
+        "INSERT INTO site_inventory(asset_key,file_id,folder_id,item_code,description,item_type,category,make_model,serial_no,qty,status,condition,holder,employee_code,iqama_id,designation,department,project_id,site_name,location,issued_by,remarks,picture_path,source_file,file_hash,last_updated,last_sync) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        vals,
+    )
+    _site_sync_write_event(
+        db, None, payload, movement_type or _site_sync_event_type(None, payload),
+        payload.get("source_file", ""), int(payload.get("file_id") or 0), int(payload.get("folder_id") or 0),
+        source_kind=source_kind, source_ref=source_ref, responsible_person=str(payload.get("issued_by") or ""), remarks=str(payload.get("remarks") or ""),
+    )
+    return None, payload, True, True
 
 
 def _site_sync_header_rows(data: list[list[Any]]) -> tuple[list[str], list[list[Any]]]:
@@ -2678,8 +2749,9 @@ def site_sync_runs(db: ToolDB, file_id: int = 0, limit: int = 200) -> list[dict]
     return [dict(r) for r in db.query(sql, p)]
 
 
-def _site_sync_write_event(db: ToolDB, before: dict[str, Any] | None, after: dict[str, Any] | None, movement_type: str, source_file: str = "", file_id: int = 0, folder_id: int = 0, responsible_person: str = "", remarks: str = "") -> None:
+def _site_sync_write_event(db: ToolDB, before: dict[str, Any] | None, after: dict[str, Any] | None, movement_type: str, source_file: str = "", file_id: int = 0, folder_id: int = 0, source_kind: str = "Excel Sync", source_ref: str = "", responsible_person: str = "", remarks: str = "") -> None:
     base = after or before or {}
+    ref = str(source_ref or Path(source_file).name or source_file or base.get("asset_key") or movement_type).strip()
     db.execute(
         """INSERT INTO site_asset_events(asset_key,item_code,description,serial_no,qty_before,qty_after,
                   movement_type,source_kind,source_ref,source_file,file_id,folder_id,event_date,
@@ -2690,7 +2762,7 @@ def _site_sync_write_event(db: ToolDB, before: dict[str, Any] | None, after: dic
         (
             base.get("asset_key", ""), base.get("item_code", ""), base.get("description", ""),
             base.get("serial_no", ""), to_float((before or {}).get("qty"), 0), to_float((after or {}).get("qty"), 0),
-            movement_type, "Excel Sync", Path(source_file).name or source_file, source_file, file_id, folder_id,
+            movement_type, source_kind, ref, source_file, file_id, folder_id,
             str((after or before or {}).get("last_updated") or today())[:10],
             (before or {}).get("site_name", ""), (after or {}).get("site_name", ""),
             (before or {}).get("holder", ""), (after or {}).get("holder", ""),
@@ -2720,32 +2792,18 @@ def import_site_sync_preview_records(db: ToolDB, records: Sequence[dict], source
     created = updated = failed = 0
     seen: set[str] = set()
     for rec in records:
-        payload = dict(rec)
-        payload["site_name"] = _site_sync_guess_site(payload, assigned_site or detected_site)
-        payload["status"] = _site_sync_status(payload)
-        payload["asset_key"] = payload.get("asset_key") or _site_sync_asset_key(payload, payload["site_name"])
-        payload["source_file"] = str(p)
-        payload["file_hash"] = digest
-        payload["file_id"] = file_id
-        payload["folder_id"] = folder_id or 0
-        payload["last_sync"] = _now()
-        payload["last_updated"] = to_date(payload.get("last_updated")) or modified[:10]
-        seen.add(payload["asset_key"])
-        before_row = db.one("SELECT * FROM site_inventory WHERE asset_key=?", (payload["asset_key"],))
-        before = dict(before_row) if before_row else None
-        cols = ["asset_key", "file_id", "folder_id", "item_code", "description", "item_type", "category", "make_model", "serial_no", "qty", "status", "condition", "holder", "employee_code", "iqama_id", "designation", "department", "project_id", "site_name", "location", "issued_by", "remarks", "picture_path", "source_file", "file_hash", "last_updated", "last_sync"]
-        vals = [payload.get(c, "") for c in cols]
         try:
-            if before:
-                changed = any(str(before.get(c, "")) != str(payload.get(c, "")) for c in cols if c not in ("file_id", "folder_id", "source_file", "file_hash", "last_sync"))
-                db.execute("UPDATE site_inventory SET file_id=?, folder_id=?, item_code=?, description=?, item_type=?, category=?, make_model=?, serial_no=?, qty=?, status=?, condition=?, holder=?, employee_code=?, iqama_id=?, designation=?, department=?, project_id=?, site_name=?, location=?, issued_by=?, remarks=?, picture_path=?, source_file=?, file_hash=?, last_updated=?, last_sync=?, updated_at=? WHERE asset_key=?", vals[1:] + [_now(), payload["asset_key"]])
-                if changed:
-                    updated += 1
-                    _site_sync_write_event(db, before, payload, _site_sync_event_type(before, payload), str(p), file_id, folder_id or 0)
-            else:
-                db.execute("INSERT INTO site_inventory(asset_key,file_id,folder_id,item_code,description,item_type,category,make_model,serial_no,qty,status,condition,holder,employee_code,iqama_id,designation,department,project_id,site_name,location,issued_by,remarks,picture_path,source_file,file_hash,last_updated,last_sync) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", vals)
+            payload = _site_sync_normalize_inventory_record(
+                rec, assigned_site or detected_site, str(p), digest, file_id, folder_id or 0
+            )
+            seen.add(payload["asset_key"])
+            _, _, was_created, was_changed = _site_sync_upsert_inventory_record(
+                db, payload, source_kind="Excel Sync", source_ref=p.name
+            )
+            if was_created:
                 created += 1
-                _site_sync_write_event(db, None, payload, _site_sync_event_type(None, payload), str(p), file_id, folder_id or 0)
+            elif was_changed:
+                updated += 1
         except Exception:
             failed += 1
     stale = [dict(r) for r in db.query("SELECT * FROM site_inventory WHERE file_id=?", (file_id,)) if r["asset_key"] not in seen]
@@ -2849,6 +2907,29 @@ def distinct_site_inventory(db: ToolDB, column: str) -> list[str]:
     if column not in safe:
         return []
     return [str(r[0]) for r in db.query(f"SELECT DISTINCT {column} FROM site_inventory WHERE COALESCE({column},'')<>'' ORDER BY {column}")]
+
+
+def site_inventory_record(db: ToolDB, asset_key: str) -> dict[str, Any] | None:
+    row = db.one("SELECT * FROM site_inventory WHERE asset_key=?", (asset_key,))
+    return dict(row) if row else None
+
+
+def manual_site_inventory_save(db: ToolDB, rec: dict[str, Any], previous_asset_key: str = "", movement_type: str = "", source_ref: str = "") -> dict[str, Any]:
+    payload = _site_sync_normalize_inventory_record(
+        rec, str(rec.get("site_name") or rec.get("project_id") or rec.get("location") or "Warehouse"),
+        str(rec.get("source_file") or "Manual Entry"), str(rec.get("file_hash") or ""), int(rec.get("file_id") or 0), int(rec.get("folder_id") or 0),
+    )
+    existing = site_inventory_record(db, previous_asset_key or payload["asset_key"])
+    default_move = "Manual Added" if existing is None else "Updated"
+    before, after, created, changed = _site_sync_upsert_inventory_record(
+        db, payload, previous_asset_key=previous_asset_key,
+        movement_type=movement_type or default_move,
+        source_kind="Manual Entry",
+        source_ref=source_ref or movement_type or ("Manual Add" if existing is None else "Manual Edit"),
+    )
+    db.commit()
+    db.audit("UPDATED", "instrument-site-row", after["asset_key"], movement_type or ("Created" if created else "Edited"))
+    return {"asset_key": after["asset_key"], "created": created, "changed": changed, "record": after}
 
 
 def search_site_inventory(db: ToolDB, text: str = "", site_name: str = "", category: str = "", item_type: str = "", status: str = "", date_from: str = "", date_to: str = "") -> list[dict]:

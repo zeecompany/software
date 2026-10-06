@@ -1,0 +1,37 @@
+software v 45 / AURCO Inventory Manager v2.28.21
+
+Included updates
+1. Instrument Station replaces Tools Station
+   - Removed the visible Tools Station module name from navigation
+   - Added the new visible module name: Instrument Station
+   - Updated page titles, dashboard wording, exports, backup/restore prompts,
+     manual text, and analytics wording accordingly
+
+2. Storage folder and migration
+   - Standard separate-module folder is now: Instrument Station
+   - Automatic migration now supports older legacy folders:
+     Tools Station
+     Tools, Instruments & Devices
+     Tool Station
+   - Existing tool/instrument station data is carried forward instead of lost
+
+3. Instrument sheet / sync workflow
+   - Kept the instrument-focused Excel / CSV sync workflow
+   - Updated sync template/export naming to Instrument Station
+   - Kept site-wise folder sync, file history, sync runs, and inventory preview
+   - Analytics still reads the synced instrument visibility correctly
+
+4. Manual instrument actions with picture proof
+   - Added Add Manual Instrument in the synced inventory panel
+   - Added Edit Selected, Transfer Selected, and Return Selected actions
+   - Added Picture Proof browse/open support in the manual instrument dialog
+   - Added direct Open Picture Proof from the inventory preview
+   - Manual add / transfer / return actions now create proper movement history records
+
+5. Versioning and packaging
+   - Updated application version to v2.28.21
+   - Packaged next upload as: software v 45.zip
+
+Validation
+- py_compile passed on the updated Instrument Station/core/UI modules
+- Full regression suite passed: 1387 / 1387 checks

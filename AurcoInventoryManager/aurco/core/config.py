@@ -17,7 +17,7 @@ APP_NAME = "AURCO Inventory Manager"
 APP_SHORT = "AurcoInventoryManager"
 BRAND = "AURCO"
 CREATED_BY = "Zain Shami"
-APP_VERSION = "2.28.20"
+APP_VERSION = "2.28.21"
 
 # Sub-folders automatically created inside the storage root.
 SUBFOLDERS = [
@@ -42,7 +42,7 @@ SUBFOLDERS = [
     "Admin Station",
     "Company Issuance",
     "Employee PPE Register",
-    "Tools, Instruments & Devices",
+    "Instrument Station",
     "Cable Records",
     "Labels",
 ]

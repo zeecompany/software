@@ -1,6 +1,6 @@
 # AURCO INVENTORY MANAGER — User & Build Guide
 
-**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.28.20
+**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.28.21
 **Platform:** Windows Desktop (.EXE) · offline · local-first · SQLite
 
 ---
@@ -127,12 +127,12 @@ Print labels from **Item Master → Print Barcodes** (Code128).
 
 ---
 
-## 3a. Tools, Instruments & Devices (Ctrl+Shift+T)
+## 3a. Instrument Station (Ctrl+Shift+T)
 
 A **stand-alone custody register** for tools, instruments and devices, built
 around the controlled form *WH-FRM-001 — Tools, Devices & Instruments Handover*.
 It answers one question: **who is holding which tool, and since when.** Its own
-database (`Tools, Instruments & Devices/tool_station.db`), its own backups and reports. **No
+database (`Instrument Station/tool_station.db`), its own backups and reports. **No
 stock movement is ever posted.**
 
 **Four transaction types**, exactly as on the paper form:

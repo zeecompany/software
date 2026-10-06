@@ -2090,7 +2090,7 @@ def tool_report_pdf(db: Database, title: str, cols: list[str],
                     rows: list[list[Any]], out_path: str | Path | None = None,
                     subtitle: str = "",
                     stats: list[tuple[str, str, str]] | None = None) -> Path:
-    """Report PDF for the Tools Station module, written into its own folder.
+    """Report PDF for the Instrument Station module, written into its own folder.
 
     `db` is the *inventory* database, used read-only for the letterhead and
     theme only — no tool-custody data ever reaches it.

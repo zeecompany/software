@@ -1,9 +1,9 @@
-"""TOOLS STATION — custody register UI rebuilt around Excel/site sync.
+"""INSTRUMENT STATION — custody register UI rebuilt around Excel/site sync.
 
 Five tabs:
-    📊 Dashboard    KPI tiles + charts driven purely by Tools Station data
+    📊 Dashboard    KPI tiles + charts driven purely by Instrument Station data
     📋 Register     the unified filter — every document type in ONE shape
-    🔧 Assets       where is each tool right now, and its full history
+    🔧 Assets       where is each instrument right now, and its full history
     📂 Sync Folder  index a synchronised folder of signed handover PDFs
     📈 Reports      16 reports, PDF / Excel / CSV / print / share
 
@@ -49,7 +49,7 @@ def _paint(table: W.DataTable, col: int, colors: dict) -> None:
 #:   key · caption · glyph · colour · the register filter it drills into
 TILE_SPECS: list[tuple[str, str, str, str, dict]] = [
     ("documents", "Handover Documents", "🧾", W.NAVY, {}),
-    ("total_tools", "Total Tools", "🧰", W.NAVY, {}),
+    ("total_tools", "Total Instruments", "🧰", W.NAVY, {}),
     ("available", "Available", "✅", "#1a9c52", {}),
     ("issued_site", "Issued", "📤", T.TXN_COLORS[T.ISSUE], {}),
     ("transferred_site", "Transferred to Sites", "🚚", T.TXN_COLORS[T.TRANSFER], {}),
@@ -88,7 +88,7 @@ PANEL_SPECS: list[tuple[str, str]] = [
     ("project", "By project / site"),
     ("holder", "By custodian (who is holding it)"),
     ("category", "By tool category"),
-    ("item", "Most handed-over tools"),
+    ("item", "Most handed-over instruments"),
     ("ageing", "Outstanding ageing (how long it has been out)"),
     ("io", "Handed over vs returned by month"),
     ("overdue_table", "⚠ Overdue — chase these first"),
@@ -495,7 +495,7 @@ class ToolDashboard(QWidget):
                          ("Custodians", f"{d['custodians']:,}", "#12283f"),
                          ("Assets Out", f"{d['assets_out']:,}", "#9a6700")]
                 self.last_file = D.tool_report_pdf(
-                    self.db, "Tools Station — Dashboard View",
+                    self.db, "Instrument Station — Dashboard View",
                     cols, rows, subtitle=subtitle, stats=stats)
         except Exception as exc:          # noqa: BLE001
             W.error_box(self, f"Could not export the view.\n\n{exc}")
@@ -1339,7 +1339,7 @@ class TransferDialog(QDialog):
             f"<b>{out:g}</b> item(s) currently with "
             f"<b>{handover['handed_to'] or '-'}</b> will move to the person "
             "below.<br>A new Transfer document is created and the original is "
-            "closed as <b>Transferred Out</b> — the tools never went back to "
+            "closed as <b>Transferred Out</b> — the instruments never went back to "
             "the warehouse, so it is not recorded as a return.")
         head.setWordWrap(True)
         head.setStyleSheet(f"background:{W.CARD}; border:1px solid {W.BORDER};"
@@ -1405,7 +1405,7 @@ class TransferDialog(QDialog):
 
 # ================================================================ assets tab
 class AssetsTab(QWidget):
-    """Where is each tool right now, and how did it get there."""
+    """Where is each instrument right now, and how did it get there."""
 
     def __init__(self, tdb: T.ToolDB, db: Database, parent=None):
         super().__init__(parent)
@@ -1786,7 +1786,7 @@ class ToolReportsTab(QWidget):
 
 # ================================================================= the page
 class ToolStationPage(QWidget):
-    """Top-level page holding the five Tools Station tabs."""
+    """Top-level page holding the five Instrument Station tabs."""
     dataChanged = Signal()
 
     def __init__(self, db: Database, parent=None):
@@ -1802,9 +1802,8 @@ class ToolStationPage(QWidget):
         v.setSpacing(8)
 
         banner = QLabel(
-            "🔧  <b>Tools, Instruments &amp; Devices</b> — a stand-alone custody register "
-            "for tools, "
-            "instruments and devices: issue, transfer, temporary loan and "
+            "🎛  <b>Instrument Station</b> — a stand-alone custody register "
+            "for instruments, devices and related field equipment: issue, transfer, temporary loan and "
             "return. It has its own database file "
             f"(<code>{self.tdb.path.name}</code>), its own backups and its own "
             "reports. Nothing here affects inventory stock.")
@@ -1829,7 +1828,7 @@ class ToolStationPage(QWidget):
 
         tools = QHBoxLayout()
         tools.addWidget(W.button("💾  Backup Module", slot=self._backup,
-                                 tip="Back up the Tools Station database"))
+                                 tip="Back up the Instrument Station database"))
         tools.addWidget(W.button("♻  Restore...", slot=self._restore))
         tools.addWidget(W.button("📂  Open Data Folder", slot=self._folder))
         tools.addWidget(W.button("🔄  Refresh", slot=self.refresh))
@@ -1865,7 +1864,7 @@ class ToolStationPage(QWidget):
             self.reports.run()
         d = T.dashboard(self.tdb)
         self.stat.setText(
-            f"{d['documents']} handover document(s) · {d.get('total_tools', 0)} synced tool row(s) · "
+            f"{d['documents']} handover document(s) · {d.get('total_tools', 0)} synced instrument row(s) · "
             f"{d.get('site_files', 0)} Excel file(s) · {d.get('sites_covered', 0)} site(s) · "
             f"{d['overdue']} overdue")
         self.dataChanged.emit()
@@ -1876,16 +1875,16 @@ class ToolStationPage(QWidget):
         except Exception as exc:          # noqa: BLE001
             W.error_box(self, f"Backup failed.\n\n{exc}")
             return
-        W.info_box(self, f"Tools Station backed up to:\n\n{p}",
+        W.info_box(self, f"Instrument Station backed up to:\n\n{p}",
                    "Backup complete")
 
     def _restore(self):
         f, _ = QFileDialog.getOpenFileName(
-            self, "Restore the Tools Station database", "",
+            self, "Restore the Instrument Station database", "",
             "Database (*.db)")
         if not f:
             return
-        if not W.confirm(self, "Replace the current Tools Station data with this "
+        if not W.confirm(self, "Replace the current Instrument Station data with this "
                                "backup?\n\nA safety copy of the current data is "
                                "taken first."):
             return
@@ -1895,7 +1894,7 @@ class ToolStationPage(QWidget):
             W.error_box(self, f"Restore failed.\n\n{exc}")
             return
         self.refresh()
-        W.toast(self, "Tools Station restored.")
+        W.toast(self, "Instrument Station restored.")
 
     def _folder(self):
         D.open_path(T.module_folder())
@@ -2009,7 +2008,23 @@ class SiteExcelSyncPanel(QWidget):
         files.add(self.t_history)
         v.addWidget(files, 1)
 
-        inv = W.Card("Current synced site inventory preview")
+        inv = W.Card("Current synced instrument inventory")
+        inv_note = QLabel(
+            "Manual entries are supported here too. Add an instrument with picture proof, "
+            "then edit, transfer or return it later while keeping the movement history."
+        )
+        inv_note.setWordWrap(True)
+        inv_note.setStyleSheet(f"color:{W.MUTED};")
+        inv.add(inv_note)
+        ibar = QHBoxLayout()
+        ibar.addWidget(W.button("➕  Add Manual Instrument", "Primary", self._add_inventory))
+        ibar.addWidget(W.button("✏  Edit Selected", slot=self._edit_inventory))
+        ibar.addWidget(W.button("🔁  Transfer Selected", slot=self._transfer_inventory))
+        ibar.addWidget(W.button("↩  Return Selected", "Accent", self._return_inventory))
+        ibar.addWidget(W.button("🖼  Open Picture Proof", slot=self._open_inventory_picture))
+        ibar.addStretch(1)
+        invw = QWidget(); invw.setLayout(ibar)
+        inv.add(invw)
         self.t_inventory = W.DataTable()
         self.t_inventory.itemSelectionChanged.connect(self._reload_asset_events)
         inv.add(self.t_inventory, 1)
@@ -2018,6 +2033,74 @@ class SiteExcelSyncPanel(QWidget):
         inv.add(self.t_events)
         v.addWidget(inv, 1)
         self.reload()
+
+    def _selected_inventory_record(self) -> dict | None:
+        r = self.t_inventory.currentRow()
+        if r < 0 or self.t_inventory.item(r, 0) is None:
+            return None
+        return T.site_inventory_record(self.tdb, self.t_inventory.item(r, 0).text())
+
+    def _save_inventory_dialog(self, mode: str, record: dict | None = None):
+        dlg = InstrumentInventoryDialog(record, mode, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        data = dlg.data()
+        movement = {
+            "add": "Manual Added",
+            "edit": "Updated",
+            "transfer": "Transferred",
+            "return": "Returned",
+        }.get(mode, "Updated")
+        source_ref = {
+            "add": "Manual Add",
+            "edit": "Manual Edit",
+            "transfer": "Manual Transfer",
+            "return": "Manual Return",
+        }.get(mode, "Manual Edit")
+        try:
+            T.manual_site_inventory_save(
+                self.tdb, data,
+                previous_asset_key=str((record or {}).get("asset_key") or ""),
+                movement_type=movement,
+                source_ref=source_ref,
+            )
+        except Exception as exc:  # noqa: BLE001
+            W.error_box(self, f"Could not save that instrument record.\n\n{exc}")
+            return
+        self.reload()
+        self.imported.emit()
+        W.toast(self, f"Instrument record {movement.lower()}.")
+
+    def _add_inventory(self):
+        self._save_inventory_dialog("add")
+
+    def _edit_inventory(self):
+        record = self._selected_inventory_record()
+        if not record:
+            W.error_box(self, "Select an instrument row first.")
+            return
+        self._save_inventory_dialog("edit", record)
+
+    def _transfer_inventory(self):
+        record = self._selected_inventory_record()
+        if not record:
+            W.error_box(self, "Select an instrument row first.")
+            return
+        self._save_inventory_dialog("transfer", record)
+
+    def _return_inventory(self):
+        record = self._selected_inventory_record()
+        if not record:
+            W.error_box(self, "Select an instrument row first.")
+            return
+        self._save_inventory_dialog("return", record)
+
+    def _open_inventory_picture(self):
+        record = self._selected_inventory_record()
+        if not record or not str(record.get("picture_path") or "").strip():
+            W.error_box(self, "The selected row does not have a picture proof path yet.")
+            return
+        D.open_path(Path(str(record.get("picture_path"))))
 
     def _reload_asset_events(self):
         r = self.t_inventory.currentRow()
@@ -2036,7 +2119,7 @@ class SiteExcelSyncPanel(QWidget):
     def _template(self):
         cols, rows = T.site_sync_template_rows()
         out = Path(D.config.folder(T.FOLDER)) / f"{D.safe_name(T.MODULE_NAME)}_Site_Sync_Template.xlsx"
-        self.last_file = D.export_excel(self.db, "Tools Station — Site Sync Template", cols, rows, out)
+        self.last_file = D.export_excel(self.db, "Instrument Station — Site Sync Template", cols, rows, out)
         W.toast(self, f"Template saved: {self.last_file.name}")
         D.open_path(self.last_file)
 
@@ -2192,7 +2275,7 @@ class SiteExcelSyncPanel(QWidget):
                  r.get("location", ""), r.get("issued_by", ""), r.get("remarks", ""),
                  r.get("picture_path", ""), r.get("last_updated", ""), Path(str(r.get("source_file", ""))).name]
                 for r in rows]
-        self.last_file = D.export_excel(self.db, "Tools Station — Site Sync Inventory", cols, data)
+        self.last_file = D.export_excel(self.db, "Instrument Station — Site Sync Inventory", cols, data)
         W.toast(self, f"Exported: {self.last_file.name}")
         D.open_path(self.last_file)
 
@@ -2253,6 +2336,151 @@ class SiteExcelSyncPanel(QWidget):
         self.lbl_sync.setText(f"Last synced: {(dash.get('last_sync') or 'never')[:16]}  ·  {dash.get('row_count', 0)} row(s)")
 
 
+class InstrumentInventoryDialog(QDialog):
+    """Manual add / edit / transfer / return dialog for site inventory rows."""
+
+    def __init__(self, record: dict | None = None, mode: str = "add", parent=None):
+        super().__init__(parent)
+        self.record = dict(record or {})
+        self.mode = mode
+        titles = {
+            "add": "Instrument Station — Add Manual Instrument",
+            "edit": "Instrument Station — Edit Instrument",
+            "transfer": "Instrument Station — Transfer Instrument",
+            "return": "Instrument Station — Return Instrument",
+        }
+        self.setWindowTitle(titles.get(mode, "Instrument Station — Instrument Record"))
+        self.resize(760, 560)
+        v = QVBoxLayout(self)
+        intro = {
+            "add": "Create a manual instrument record with picture proof. It will appear in the live dashboard and movement history.",
+            "edit": "Update the selected instrument details and keep a proper audit trail.",
+            "transfer": "Change the site, custodian or location for this instrument and record it as a transfer.",
+            "return": "Return this instrument to store / warehouse custody and save the return proof.",
+        }
+        note = QLabel(intro.get(mode, ""))
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{W.MUTED};")
+        v.addWidget(note)
+
+        form = QFormLayout()
+        self.e_item_code = QLineEdit(self.record.get("item_code", ""))
+        self.e_desc = QLineEdit(self.record.get("description", ""))
+        self.e_type = QLineEdit(self.record.get("item_type", "Instrument"))
+        self.e_cat = QLineEdit(self.record.get("category", self.record.get("item_type", "Instrument")))
+        self.e_make = QLineEdit(self.record.get("make_model", ""))
+        self.e_serial = QLineEdit(self.record.get("serial_no", ""))
+        self.sp_qty = QDoubleSpinBox(); self.sp_qty.setRange(0, 1000000); self.sp_qty.setDecimals(2)
+        self.sp_qty.setValue(float(self.record.get("qty") or 1))
+        self.c_status = QComboBox(); self.c_status.setEditable(True)
+        self.c_status.addItems(["", "Available", "Issued", "At Site", "Returned", "Pending", "Under Repair"])
+        self.c_status.setCurrentText(str(self.record.get("status") or ""))
+        self.c_condition = QComboBox(); self.c_condition.setEditable(True)
+        self.c_condition.addItems(["A", "B", "C", "D"])
+        self.c_condition.setCurrentText(str(self.record.get("condition") or "A"))
+        self.e_holder = QLineEdit(self.record.get("holder", ""))
+        self.e_emp = QLineEdit(self.record.get("employee_code", ""))
+        self.e_iqama = QLineEdit(self.record.get("iqama_id", ""))
+        self.e_designation = QLineEdit(self.record.get("designation", ""))
+        self.e_dept = QLineEdit(self.record.get("department", ""))
+        self.e_project = QLineEdit(self.record.get("project_id", ""))
+        self.e_site = QLineEdit(self.record.get("site_name", ""))
+        self.e_location = QLineEdit(self.record.get("location", ""))
+        self.e_issued = QLineEdit(self.record.get("issued_by", ""))
+        self.e_remarks = QPlainTextEdit(self.record.get("remarks", ""))
+        self.e_remarks.setMaximumHeight(90)
+        self.e_picture = QLineEdit(self.record.get("picture_path", ""))
+        self.d_updated = date_edit(str(self.record.get("last_updated") or _dt.date.today().isoformat()))
+
+        pic_row = QHBoxLayout()
+        pic_row.addWidget(self.e_picture, 1)
+        pic_row.addWidget(W.button("Browse...", slot=self._browse_picture))
+        pic_row.addWidget(W.button("Open", slot=self._open_picture))
+        pic_w = QWidget(); pic_w.setLayout(pic_row)
+
+        form.addRow("Item Code", self.e_item_code)
+        form.addRow("Instrument Description*", self.e_desc)
+        form.addRow("Type", self.e_type)
+        form.addRow("Category", self.e_cat)
+        form.addRow("Make / Model", self.e_make)
+        form.addRow("Serial No.", self.e_serial)
+        form.addRow("Quantity", self.sp_qty)
+        form.addRow("Status", self.c_status)
+        form.addRow("Condition", self.c_condition)
+        form.addRow("Issued To / Employee Name", self.e_holder)
+        form.addRow("Employee Code", self.e_emp)
+        form.addRow("Iqama ID", self.e_iqama)
+        form.addRow("Designation", self.e_designation)
+        form.addRow("Division / Department", self.e_dept)
+        form.addRow("Current Project", self.e_project)
+        form.addRow("Site Name", self.e_site)
+        form.addRow("Location", self.e_location)
+        form.addRow("Issued By / Responsible", self.e_issued)
+        form.addRow("Picture Proof", pic_w)
+        form.addRow("Last Updated", self.d_updated)
+        form.addRow("Remarks", self.e_remarks)
+        v.addLayout(form)
+
+        if mode == "transfer":
+            if not self.c_status.currentText().strip():
+                self.c_status.setCurrentText("Issued" if self.e_holder.text().strip() else "At Site")
+        elif mode == "return":
+            self.e_site.setText("Warehouse")
+            self.e_project.clear()
+            self.e_location.setText("Warehouse")
+            self.e_holder.clear()
+            self.e_emp.clear()
+            self.e_iqama.clear()
+            self.e_designation.clear()
+            self.e_dept.clear()
+            self.c_status.setCurrentText("Available")
+
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    def _browse_picture(self):
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Select the picture proof", "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;All files (*.*)"
+        )
+        if f:
+            self.e_picture.setText(f)
+
+    def _open_picture(self):
+        path = self.e_picture.text().strip()
+        if path:
+            D.open_path(Path(path))
+
+    def data(self) -> dict:
+        out = dict(self.record)
+        out.update({
+            "item_code": self.e_item_code.text().strip(),
+            "description": self.e_desc.text().strip(),
+            "item_type": self.e_type.text().strip() or "Instrument",
+            "category": self.e_cat.text().strip() or self.e_type.text().strip() or "Instrument",
+            "make_model": self.e_make.text().strip(),
+            "serial_no": self.e_serial.text().strip(),
+            "qty": self.sp_qty.value(),
+            "status": self.c_status.currentText().strip(),
+            "condition": self.c_condition.currentText().strip() or "A",
+            "holder": self.e_holder.text().strip(),
+            "employee_code": self.e_emp.text().strip(),
+            "iqama_id": self.e_iqama.text().strip(),
+            "designation": self.e_designation.text().strip(),
+            "department": self.e_dept.text().strip(),
+            "project_id": self.e_project.text().strip(),
+            "site_name": self.e_site.text().strip(),
+            "location": self.e_location.text().strip(),
+            "issued_by": self.e_issued.text().strip(),
+            "picture_path": self.e_picture.text().strip(),
+            "last_updated": iso(self.d_updated),
+            "remarks": self.e_remarks.toPlainText().strip(),
+        })
+        return out
+
+
 class SiteSyncMappingDialog(QDialog):
     """Manual Excel import with column preview / mapping."""
 
@@ -2264,7 +2492,7 @@ class SiteSyncMappingDialog(QDialog):
         self.rows = [list(r) for r in rows]
         self.source = source
         self.synced = 0
-        self.setWindowTitle("Tools Station — Map the uploaded Excel columns")
+        self.setWindowTitle("Instrument Station — Map the uploaded Excel columns")
         self.resize(1080, 720)
         v = QVBoxLayout(self)
         v.addWidget(QLabel(

@@ -27,9 +27,9 @@ from typing import Any, Sequence
 
 from . import config
 
-MODULE_NAME = "Tools Station"
+MODULE_NAME = "Surveyor Tools Record"
 FOLDER = MODULE_NAME
-LEGACY_FOLDERS = ("Surveyor Tools Record",)
+LEGACY_FOLDERS = ("Tools Station",)
 DB_NAME = "surveyor_tools.db"
 SCHEMA_VERSION = 4
 
@@ -1186,20 +1186,20 @@ def export_register_pdf(db: SurveyorDB, records: Sequence[dict[str, Any]], out_p
              r.get("issued_by", ""), r.get("remarks", ""),
              r.get("updated_at", "") or r.get("created_at", "")]
             for r in rows]
-    D.report_pdf(db, "Tools Station Register", cols, data, out_path=tmp_main,
+    D.report_pdf(db, "Instrument Station Register", cols, data, out_path=tmp_main,
                  subtitle="Current filtered register view")
     entries = _picture_report_entries(db, rows)
     appendix = None
     if entries:
         appendix = _build_picture_appendix_pdf(
             db,
-            "Tools Station Register — Pictures Appendix",
+            "Instrument Station Register — Pictures Appendix",
             f"{len(entries)} tool photo(s) attached at the end of the report",
             entries,
             tmp_pic,
         )
     final = _merge_pdf_parts(out, tmp_main, appendix)
-    db.audit("EXPORTED", "report", "Tools Station Register", f"PDF -> {final.name}")
+    db.audit("EXPORTED", "report", "Instrument Station Register", f"PDF -> {final.name}")
     return final
 
 
@@ -1223,17 +1223,17 @@ def export_history_pdf(db: SurveyorDB, record_id: int, out_path: str | Path | No
             for h in hist]
     subtitle = (f"Tool: {rec.get('instrument_desc', '') or '—'}  ·  Serial: {rec.get('serial_no', '') or '—'}  ·  "
                 f"Current location: {rec.get('location', '') or '—'}")
-    D.report_pdf(db, "Tools Station Transfer History", cols, data, out_path=tmp_main, subtitle=subtitle)
+    D.report_pdf(db, "Instrument Station Transfer History", cols, data, out_path=tmp_main, subtitle=subtitle)
     entries = _picture_report_entries(db, [rec])
     appendix = None
     if entries:
         appendix = _build_picture_appendix_pdf(
             db,
-            "Tools Station Transfer History — Picture Appendix",
+            "Instrument Station Transfer History — Picture Appendix",
             f"Reference number, serial number and current custody details for {rec.get('instrument_desc', '') or 'the selected tool'}.",
             entries,
             tmp_pic,
         )
     final = _merge_pdf_parts(out, tmp_main, appendix)
-    db.audit("EXPORTED", "report", "Tools Station Transfer History", f"PDF -> {final.name}")
+    db.audit("EXPORTED", "report", "Instrument Station Transfer History", f"PDF -> {final.name}")
     return final

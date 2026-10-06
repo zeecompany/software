@@ -734,7 +734,7 @@ print and share.</p>
 <p><b>Remember:</b> the module has its own <b>Backup</b> button. The main
 database backup does not include it.</p>
 """),
-    ("Tools Station", """
+    ("Instrument Station", """
 <h2>Tools, Instruments &amp; Devices <span style='color:#6b7c8f'>(Ctrl+Shift+T)</span></h2>
 <p>A <b>stand-alone custody register</b> for tools, instruments and devices,
 built around the controlled form <i>WH-FRM-001 — Tools, Devices &amp;

@@ -58,7 +58,7 @@ class RecordDialog(QDialog):
         self.main_db = main_db
         self.record = dict(record or {})
         self._filling_employee = False
-        self.setWindowTitle("Tools Station — " + ("Edit Record" if record else "New Record"))
+        self.setWindowTitle("Instrument Station — " + ("Edit Record" if record else "New Record"))
         self.resize(860, 560)
         v = QVBoxLayout(self)
 
@@ -211,7 +211,7 @@ class TransferDialog(QDialog):
         self.main_db = main_db
         self.record = dict(record or {})
         self._filling_employee = False
-        self.setWindowTitle("Tools Station — Transfer Tool")
+        self.setWindowTitle("Instrument Station — Transfer Instrument")
         self.resize(760, 500)
         v = QVBoxLayout(self)
 
@@ -630,7 +630,7 @@ class RegisterTab(QWidget):
             return
         self.reload()
         self.dataChanged.emit()
-        W.toast(self, "Tools Station record saved.")
+        W.toast(self, "Instrument Station record saved.")
 
     def edit_record(self):
         rec = self._current()
@@ -646,7 +646,7 @@ class RegisterTab(QWidget):
             return
         self.reload()
         self.dataChanged.emit()
-        W.toast(self, "Tools Station record updated.")
+        W.toast(self, "Instrument Station record updated.")
 
     def transfer_record(self):
         rec = self._current()
@@ -689,7 +689,7 @@ class RegisterTab(QWidget):
     def export_excel(self):
         f = D.export_excel(
             self.sdb,
-            "Tools Station Register",
+            "Instrument Station Register",
             ["Instrument Description", "2nd Type", "Serial No.", "Make / Model", "Location", "Issued To", "Employee Code", "Iqama ID", "Designation", "Division/Department", "Current Project", "Status", "Qty", "Issued By", "Picture", "Remarks", "Updated"],
             [[r.get("instrument_desc", ""), r.get("second_type", ""), r.get("serial_no", ""), r.get("make_model", ""),
               r.get("location", ""), r.get("issued_to", ""), r.get("employee_code", ""), r.get("iqama_id", ""),
@@ -770,7 +770,7 @@ class SurveyorImportTab(QWidget):
 
     def _template(self):
         cols, sample = SV.template_rows()
-        f = D.export_excel(self.db, "Tools Station Template", cols, sample,
+        f = D.export_excel(self.db, "Instrument Station Template", cols, sample,
                            Path(D.config.folder(SV.FOLDER)) / "Tools_Station_Template.xlsx",
                            totals=False)
         W.toast(self, f"Template saved: {f.name}")
@@ -778,7 +778,7 @@ class SurveyorImportTab(QWidget):
 
     def _file(self):
         f, _ = QFileDialog.getOpenFileName(
-            self, "Select the Tools Station sheet", "",
+            self, "Select the Instrument Station sheet", "",
             "Spreadsheets and text (*.xlsx *.xlsm *.csv *.txt);;All files (*)")
         if not f:
             return
@@ -807,7 +807,7 @@ class SurveyorImportTab(QWidget):
             return
         recs = SV.preview(headers, rows, mapping)
         if not recs:
-            W.error_box(self, "No usable Tools Station rows were found.")
+            W.error_box(self, "No usable Instrument Station rows were found.")
             return
         known = ", ".join(sorted({SV.LABELS.get(f, f) for f in mapping.values()}))
         if not W.confirm(self, f"{len(recs)} row(s) ready to import from {Path(str(source)).name}.\n\n"
@@ -816,7 +816,7 @@ class SurveyorImportTab(QWidget):
         ins, sk = SV.import_records(self.sdb, recs, str(source))
         self.paste.clear()
         self.imported.emit()
-        W.info_box(self, f"{ins} Tools Station record(s) imported."
+        W.info_box(self, f"{ins} Instrument Station record(s) imported."
                          + (f"\n{sk} row(s) skipped because they were duplicate or invalid." if sk else "")
                          + "\n\nYou can edit any imported row later from the Register tab.",
                    "Import complete")
@@ -855,7 +855,7 @@ class SummaryTab(QWidget):
     def export_excel(self):
         f = D.export_excel(
             self.sdb,
-            "Tools Station",
+            "Instrument Station",
             ["SR#", "Instrument Description", "2nd Type", "Warehouse", "Hajar", "Zuluf",
              "Yanbu", "Noor", "Total Quantity", "Remarks"],
             [[r["sr"], r["instrument_desc"], r.get("second_type", ""), float(r["Warehouse"]), float(r["Hajar"]),
@@ -878,7 +878,7 @@ class AnalyticsTab(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         note = QLabel(
-            "This analytics module shows where each 2nd Type item currently is — for example tools, devices and instruments by site/location — based on the latest live Tools Station register."
+            "This analytics module shows where each 2nd Type item currently is — for example tools, devices and instruments by site/location — based on the latest live Instrument Station register."
         )
         note.setWordWrap(True)
         v.addWidget(note)
@@ -1007,7 +1007,7 @@ class AnalyticsTab(QWidget):
     def export_excel(self):
         f = D.export_excel(
             self.sdb,
-            "Tools Station Analytics",
+            "Instrument Station Analytics",
             ["2nd Type", "Item Description", "Current Site", "Current Location", "Status", "Qty", "Custodians", "Serials", "Rows"],
             [[r.get("second_type", ""), r.get("instrument_desc", ""), r.get("site", ""), r.get("location", ""),
               r.get("status", ""), float(r.get("qty") or 0), r.get("custodians", ""), r.get("serials", ""),
@@ -1021,7 +1021,7 @@ class AnalyticsTab(QWidget):
     def export_pdf(self):
         f = D.report_pdf(
             self.sdb,
-            "Tools Station Analytics",
+            "Instrument Station Analytics",
             ["2nd Type", "Item Description", "Current Site", "Current Location", "Status", "Qty", "Custodians", "Serials", "Rows"],
             [[r.get("second_type", ""), r.get("instrument_desc", ""), r.get("site", ""), r.get("location", ""),
               r.get("status", ""), float(r.get("qty") or 0), r.get("custodians", ""), r.get("serials", ""),
@@ -1451,7 +1451,7 @@ class SurveyorToolsPage(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(12, 10, 12, 10)
         head = QLabel(
-            "🧭  <b>Tools Station</b> — keep serial numbers, 2nd type classification, locations, custody transfers, status, "
+            "🧭  <b>Instrument Station</b> — keep serial numbers, 2nd type classification, locations, custody transfers, status, "
             "pictures, analytics and a sheet-style summary for tools, devices, instruments and other survey or site assets."
         )
         head.setWordWrap(True)
@@ -1482,7 +1482,7 @@ class SurveyorToolsPage(QWidget):
 
     def backup(self):
         p = self.sdb.backup(note="manual backup")
-        W.info_box(self, f"Tools Station backed up to:\n\n{p}")
+        W.info_box(self, f"Instrument Station backed up to:\n\n{p}")
 
     def _after_register_change(self):
         self.refresh()

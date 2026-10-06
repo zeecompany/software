@@ -71,7 +71,7 @@ NAV = [
     ("Notes & Tasks", "🗒", "Ctrl+T"),
     ("SEPARATE MODULES", None, None),
     ("Admin Station", "🏢", "Ctrl+Shift+A"),
-    ("Tools Station", "🔧", "Ctrl+Shift+T"),
+    ("Instrument Station", "🎛", "Ctrl+Shift+T"),
     ("Analytics", "📈", None),
     ("Cable Records", "🧵", "Ctrl+Shift+B"),
     ("General DN Maker", "🧾", "Ctrl+G"),
@@ -315,7 +315,7 @@ class MainWindow(QMainWindow):
                            ("Document Library", self.page_library),
                            ("Report Center", self.page_reports), ("Audit Trail", self.page_audit),
                            ("Admin Station", self.page_admin),
-                           ("Tools Station", self.page_tools),
+                           ("Instrument Station", self.page_tools),
                            ("Analytics", self.page_analytics),
                            ("Cable Records", self.page_cables),
                            ("General DN Maker", self.page_gdn),
@@ -435,8 +435,8 @@ class MainWindow(QMainWindow):
             "Document Library": "Synced folders of scanned delivery notes — browse, "
                                 "preview and print",
             "Calculator": "Quick calculations without leaving AURCO",
-            "Tools Station": "Separate custody register for tools, instruments, devices and other equipment — issue, transfer, temporary loan, return, PDF handover sync and site-wise Excel folder sync. Its own database; no stock effect.",
-            "Analytics": "Separate analytics module for typed materials and site-wise synced inventory — auto-detected from Item Master / Delivery Notes plus Excel-synced tool/device/instrument visibility.",
+            "Instrument Station": "Separate custody register for instruments, devices and related field equipment — issue, transfer, temporary loan, return, picture proof, PDF handover sync and site-wise Excel folder sync. Its own database; no stock effect.",
+            "Analytics": "Separate analytics module for typed materials and site-wise synced inventory — auto-detected from Item Master / Delivery Notes plus Excel-synced instrument/device visibility.",
             "Cable Records": "Separate cable drum register — length left on every "
                              "drum, every cut, the cable schedule and its megger "
                              "tests. Its own database; no stock effect.",

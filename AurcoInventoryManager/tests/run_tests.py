@@ -3835,7 +3835,7 @@ def main() -> int:
     check(ct.startswith("Material Availability Report"),
           "and keeps its original report name")
 
-    section("Tools Station — the module")
+    section("Instrument Station — the module")
     from aurco.core import toolstation as TS
     from aurco.ui.tool_station import (ToolStationPage, RegisterTab,
                                        HandoverDialog, ReturnDialog,
@@ -4023,7 +4023,7 @@ def main() -> int:
           "and it is a real PDF")
 
     # -- separation from stock is physical, not conventional
-    check(str(tdb.path) != str(db.path), "the Tools Station module has its own database")
+    check(str(tdb.path) != str(db.path), "the Instrument Station module has its own database")
     # inspect real code, not comments: strip docstrings/comments first
     import ast as _ast
     _tree = _ast.parse((Path(__file__).resolve().parents[1] / "aurco" / "core"
@@ -4094,7 +4094,7 @@ def main() -> int:
 
     # -- backup / restore round trip
     bk = tdb.backup(note="test")
-    check(bk.exists(), "the Tools Station module backs itself up")
+    check(bk.exists(), "the Instrument Station module backs itself up")
     n_before = len(TS.search(tdb))
     TS.delete_handovers(tdb, [h3["id"]])
     check(len(TS.search(tdb)) == n_before - 1, "a handover can be deleted")
@@ -4213,7 +4213,7 @@ def main() -> int:
     pi.lines.clear_lines()
 
     # ============================ the tools dashboard: filters and configuration
-    section("Tools Station — dashboard")
+    section("Instrument Station — dashboard")
     dash = tsp.dash
     dash.reset_filters()
     total_docs = dash.tiles["documents"].lbl_value.text()
@@ -4264,17 +4264,17 @@ def main() -> int:
 
     # ---- the module folder was renamed, with the old one migrated
     from aurco.core import config as _cfg
-    check(TS.FOLDER == "Tools, Instruments & Devices",
+    check(TS.FOLDER == "Instrument Station",
           "the module folder carries the new name")
     legacy_root = Path("/tmp/AURCO_TEST_RENAME")
     shutil.rmtree(legacy_root, ignore_errors=True)
-    (legacy_root / TS.LEGACY_FOLDER).mkdir(parents=True)
-    (legacy_root / TS.LEGACY_FOLDER / "tool_station.db").write_text("x")
+    (legacy_root / TS.LEGACY_FOLDERS[1]).mkdir(parents=True)
+    (legacy_root / TS.LEGACY_FOLDERS[1] / "tool_station.db").write_text("x")
     _old_root = _cfg.get_storage_root()
     _cfg.set_storage_root(legacy_root)
     TS._migrate_legacy_folder()
     check((legacy_root / TS.FOLDER / "tool_station.db").exists(),
-          "an existing Tool Station folder is migrated, not abandoned")
+          "an existing legacy Instrument / Tool Station folder is migrated, not abandoned")
     _cfg.set_storage_root(_old_root)
 
     # ================= Excel paste / export + inline stock adjustment ======
@@ -4421,16 +4421,17 @@ def main() -> int:
           EMP.find_employee(db, employee_id="EMP-102")["designation"] == "Senior Surveyor",
           "re-importing the same employee code updates the existing employee master row")
 
-    # ==================== Tools, Instruments & Devices + Analytics site sync
-    section("Tools Station — Excel folder sync and Analytics")
+    # ==================== Instrument Station + Analytics site sync
+    section("Instrument Station — Excel folder sync and Analytics")
     from aurco.core import toolstation as T
     from aurco.ui.tool_station import ToolStationPage
     import aurco.ui.tool_station as _tsp_mod
     for _k in ("confirm", "info_box", "error_box", "toast"):
         setattr(_tsp_mod.W, _k, getattr(W, _k))
-    check("Tools Station" in win.pages, "the Tools Station page is available")
+    check("Instrument Station" in win.pages, "the Instrument Station page is available")
     check("Analytics" in win.pages, "the separate Analytics module is available")
-    check("Tools Station" not in _cfg.SUBFOLDERS, "the old Tools Station storage folder is no longer part of the standard structure")
+    check("Instrument Station" in _cfg.SUBFOLDERS and "Tools Station" not in _cfg.SUBFOLDERS and "Tools, Instruments & Devices" not in _cfg.SUBFOLDERS,
+          "the standard storage structure now uses the Instrument Station folder only")
 
     tpage = win.page_tools
     tdb = tpage.tdb
@@ -4444,7 +4445,7 @@ def main() -> int:
     _csv = _sync_dir / "noor_tools.csv"
     _csv.write_text(
         "ATTIQ UR REHMAN CONT. CO.\n"
-        "Tools Station Template\n"
+        "Instrument Station Template\n"
         "Instrument Description|Serial No.|Make / Model|Location|Quantity|Status|Issued To / Employee Name|Employee Code|Iqama ID|Designation|Division/Department|Current Project|Issued By|Remarks|Picture Path\n"
         "TOTAL STATION|1338275|LEICA (TS02)|NOOR|1|Issued|ZOHAIB BILAL|IDL-0040|2482103955|Surveyor|SURVEY|NOOR|M. Ali Zain||\n"
         "AUTO LEVEL|2205565|LEICA|WAREHOUSE|1|Available||||Surveyor|SURVEY|WAREHOUSE|M. Ali Zain|Ready|\n",
@@ -4452,7 +4453,7 @@ def main() -> int:
     _fid = T.save_site_sync_folder(tdb, _sync_dir, "Main Site Sync", "", True, 1)
     _sync_res = T.sync_site_sync_folder(tdb, _fid, force=True)
     check(_sync_res["synced"] >= 1 and _sync_res["failed"] == 0,
-          "the Tools Station module can sync a site-wise Excel/CSV folder without errors")
+          "the Instrument Station module can sync a site-wise Excel/CSV folder without errors")
     _inv = T.search_site_inventory(tdb, site_name="NOOR")
     check(any(r["description"] == "TOTAL STATION" and r["holder"] == "ZOHAIB BILAL" and r["employee_code"] == "IDL-0040" for r in _inv),
           "the synced inventory clearly shows which site currently has which tool and employee")
@@ -4465,12 +4466,49 @@ def main() -> int:
           "file-wise sync history is stored for synced files")
     check(any(e["movement_type"] == "Imported" for e in T.site_asset_events(tdb)),
           "site-sync movements create an event history for the tool")
+    _manual = T.manual_site_inventory_save(tdb, {
+        "description": "GNSS Receiver",
+        "serial_no": "GNSS-001",
+        "make_model": "Leica GS18",
+        "qty": 1,
+        "status": "Available",
+        "site_name": "Warehouse",
+        "location": "Warehouse Rack 3",
+        "issued_by": "M. Ali Zain",
+        "picture_path": "/tmp/manual_gnss.jpg",
+        "remarks": "Manual proof row",
+    }, movement_type="Manual Added", source_ref="Manual Add")
+    _manual_row = T.site_inventory_record(tdb, _manual["asset_key"])
+    check(_manual_row is not None and _manual_row["picture_path"] == "/tmp/manual_gnss.jpg",
+          "manual instrument rows can be added with picture proof")
+    _moved = T.manual_site_inventory_save(tdb, {
+        **_manual_row,
+        "site_name": "NOOR",
+        "location": "NOOR Survey Store",
+        "holder": "AHMED SURVEYOR",
+        "employee_code": "EMP-700",
+        "status": "Issued",
+    }, previous_asset_key=_manual["asset_key"], movement_type="Transferred", source_ref="Manual Transfer")
+    _returned = T.manual_site_inventory_save(tdb, {
+        **T.site_inventory_record(tdb, _moved["asset_key"]),
+        "site_name": "Warehouse",
+        "location": "Warehouse Rack 3",
+        "holder": "",
+        "employee_code": "",
+        "status": "Available",
+    }, previous_asset_key=_moved["asset_key"], movement_type="Returned", source_ref="Manual Return")
+    _manual_back = T.site_inventory_record(tdb, _returned["asset_key"])
+    check(_manual_back and _manual_back["site_name"] == "Warehouse" and not _manual_back["holder"],
+          "manual rows can be transferred and returned again")
+    _manual_moves = {e["movement_type"] for e in T.site_asset_events(tdb)}
+    check({"Manual Added", "Transferred", "Returned"}.issubset(_manual_moves),
+          "manual instrument actions keep a movement track record")
     tpage.sync.reload()
     tpage.sync.site_excel.reload()
     app.processEvents()
     check(hasattr(tpage.sync, "site_excel") and tpage.sync.site_excel.t_folders.rowCount() >= 1
           and len(T.search_site_inventory(tdb)) >= 1,
-          "the Tools Station module shows the embedded site Excel sync panel with inventory preview")
+          "the Instrument Station module shows the embedded site Excel sync panel with inventory preview")
 
     win.go("Analytics")
     win.page_analytics.refresh()
