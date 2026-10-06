@@ -1,0 +1,25 @@
+AURCO Inventory Manager 2.28.17
+Package: software v 41.zip
+Compared against: software v 40.zip
+
+Modified files (10):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/services.py
+- AurcoInventoryManager/aurco/ui/surveyor_tools_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.17.txt
+- software v 41 - changed files.txt
+- software v 41.zip
+
+Main changes
+- The Analytics module now shows the PR / MR number mentioned on the Delivery Note.
+- The Analytics module now also shows the DN number and DN reference number.
+- The same PR / DN details are included in the Analytics Excel and PDF exports.
+- Added test coverage for the new analytics columns and exported report content.
+
+Validation
+- python3 -m py_compile on updated files: PASSED
+- Headless regression suite: ALL 1403 CHECKS PASSED

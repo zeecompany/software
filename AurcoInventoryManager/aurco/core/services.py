@@ -800,7 +800,8 @@ def typed_item_analytics(db: Database, text: str = "", second_type: str = "", si
 
     Uses final stock movements, so a DN automatically appears here when its item
     has a 2nd Type on the Item Master. Returns and damaged returns reduce the
-    current quantity at that site.
+    current quantity at that site. The analytics also carries the related PR / MR
+    number(s), DN number(s), and DN reference number(s) from the issuing DN.
     """
     rows = db.query("""
         SELECT l.item_id, l.item_code, l.txn_type, l.qty_in, l.qty_out, l.reason, l.txn_date,
@@ -811,7 +812,7 @@ def typed_item_analytics(db: Database, text: str = "", second_type: str = "", si
                COALESCE(NULLIF(d.project,''), NULLIF(d.department,''), '') AS own_site,
                COALESCE(NULLIF(d.issued_to,''), NULLIF(d.returned_by,''), '') AS own_party,
                COALESCE(NULLIF(d.location,''), NULLIF(d.to_location,''), NULLIF(d.from_location,''), '') AS own_location,
-               d.doc_no, d.linked_doc
+               d.id AS doc_id, d.doc_type, d.doc_no, d.reference, d.linked_doc
           FROM stock_ledger l
           LEFT JOIN items i ON i.id=l.item_id
           LEFT JOIN documents d ON d.id=l.doc_id
@@ -819,12 +820,23 @@ def typed_item_analytics(db: Database, text: str = "", second_type: str = "", si
     """)
     doc_map = {
         str(r["doc_no"]): {
+            "id": int(r["id"]),
+            "doc_no": str(r["doc_no"] or "").strip(),
+            "doc_type": str(r["doc_type"] or "").strip(),
+            "reference": str(r["reference"] or "").strip(),
             "site": str(r["project"] or r["department"] or "").strip(),
             "party": str(r["issued_to"] or r["returned_by"] or "").strip(),
             "location": str(r["location"] or r["to_location"] or r["from_location"] or "").strip(),
         }
-        for r in db.query("SELECT doc_no, project, department, issued_to, returned_by, location, to_location, from_location FROM documents")
+        for r in db.query(
+            "SELECT id, doc_type, doc_no, reference, project, department, issued_to, returned_by, location, to_location, from_location FROM documents"
+        )
+        if str(r["doc_no"] or "").strip()
     }
+    line_map: dict[tuple[int, int], set[str]] = {}
+    for r in db.query("SELECT doc_id, item_id, pr_no FROM document_lines WHERE COALESCE(pr_no,'')<>''"):
+        key = (int(r["doc_id"]), int(r["item_id"]))
+        line_map.setdefault(key, set()).add(str(r["pr_no"] or "").strip())
     needle = text.strip().lower()
     grouped: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     for r in rows:
@@ -834,16 +846,39 @@ def typed_item_analytics(db: Database, text: str = "", second_type: str = "", si
             continue
         if second_type and row_type != second_type:
             continue
-        linked = doc_map.get(str(row.get("linked_doc") or ""), {})
+        linked = doc_map.get(str(row.get("linked_doc") or "").strip(), {})
         row_site = str(row.get("own_site") or linked.get("site") or "").strip() or "(unassigned)"
         if site and row_site != site:
             continue
         row_party = str(row.get("own_party") or linked.get("party") or "").strip() or "-"
         row_location = str(row.get("own_location") or linked.get("location") or "").strip() or "-"
+        item_id = int(row.get("item_id") or 0)
         item_code = str(row.get("item_code") or "").strip()
         desc = str(row.get("description") or "").strip() or item_code or "(blank description)"
         uom = str(row.get("uom") or "").strip()
-        hay = " ".join((row_type, item_code, desc, row_site, row_party, row_location, uom)).lower()
+        row_doc_type = str(row.get("doc_type") or "").strip()
+        row_doc_no = str(row.get("doc_no") or "").strip()
+        row_reference = str(row.get("reference") or "").strip()
+        row_doc_id = int(row.get("doc_id") or 0)
+        source_doc = linked if linked else {}
+        if row_doc_type == "DN" and row_doc_no:
+            source_doc = {
+                "id": row_doc_id,
+                "doc_no": row_doc_no,
+                "doc_type": row_doc_type,
+                "reference": row_reference,
+                "site": str(row.get("own_site") or "").strip(),
+                "party": str(row.get("own_party") or "").strip(),
+                "location": str(row.get("own_location") or "").strip(),
+            }
+        source_doc_id = int(source_doc.get("id") or 0)
+        source_doc_no = str(source_doc.get("doc_no") or "").strip()
+        source_ref = str(source_doc.get("reference") or "").strip()
+        source_prs = sorted(p for p in line_map.get((source_doc_id, item_id), set()) if p)
+        hay = " ".join((
+            row_type, item_code, desc, row_site, row_party, row_location, uom,
+            source_doc_no, source_ref, ", ".join(source_prs),
+        )).lower()
         if needle and needle not in hay:
             continue
         key = (row_type, row_site, row_location, item_code, desc)
@@ -859,12 +894,17 @@ def typed_item_analytics(db: Database, text: str = "", second_type: str = "", si
             "returned_qty": 0.0,
             "damaged_qty": 0.0,
             "dn_nos": set(),
+            "dn_refs": set(),
+            "pr_nos": set(),
         })
         if row_party and row_party != "-":
             g["issued_to"].add(row_party)
-        doc_no = str(row.get("doc_no") or "").strip()
-        if doc_no:
-            g["dn_nos"].add(doc_no)
+        if source_doc_no:
+            g["dn_nos"].add(source_doc_no)
+        if source_ref:
+            g["dn_refs"].add(source_ref)
+        for pr in source_prs:
+            g["pr_nos"].add(pr)
         if row.get("txn_type") == "ISSUE":
             g["issued_qty"] += float(row.get("qty_out") or 0)
         elif row.get("txn_type") == "RETURN":
@@ -890,6 +930,9 @@ def typed_item_analytics(db: Database, text: str = "", second_type: str = "", si
             "description": g["description"],
             "uom": g["uom"],
             "issued_to": ", ".join(sorted(g["issued_to"])) or "-",
+            "pr_nos": ", ".join(sorted(g["pr_nos"])) or "-",
+            "dn_nos": ", ".join(sorted(g["dn_nos"])) or "-",
+            "dn_refs": ", ".join(sorted(g["dn_refs"])) or "-",
             "qty": current_qty,
             "issued_qty": g["issued_qty"],
             "returned_qty": g["returned_qty"],

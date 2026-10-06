@@ -3699,21 +3699,39 @@ def main() -> int:
     check("2nd Type" in c_im2 and _row_gt[c_im2.index("2nd Type")] == "Device",
           "the Item Master report includes the 2nd Type column")
     _dn_typed = S.post_issue(db, S.DocHeader(doc_type="DN", doc_date="2026-08-30", issued_to="Site Team",
-                                             project="Jafura", location="Jafura Yard"),
-                             [S.Line(item_id=gt_id, qty=8, remarks="Typed analytics test")])
+                                             project="Jafura", location="Jafura Yard",
+                                             reference="JAF-DN-REF-01"),
+                             [S.Line(item_id=gt_id, qty=8, pr_no="PR-TYPED-01",
+                                     remarks="Typed analytics test")])
     _typed_an = S.typed_item_analytics(db, second_type="Device", site="Jafura")
-    check(any(r["item_code"] == gt_code and abs(float(r["qty"]) - 8.0) < 1e-9 for r in _typed_an["rows"]),
+    _typed_row = next(r for r in _typed_an["rows"] if r["item_code"] == gt_code)
+    check(abs(float(_typed_row["qty"]) - 8.0) < 1e-9,
           "typed item analytics auto-detects Delivery Note issues from the Item Master 2nd Type")
+    check(_typed_row["pr_nos"] == "PR-TYPED-01" and _typed_row["dn_refs"] == "JAF-DN-REF-01"
+          and _typed_row["dn_nos"] == _dn_typed,
+          "typed item analytics carries the DN PR number, DN number and DN reference")
     win.go("Analytics")
     win.page_analytics.refresh()
     app.processEvents()
     win.page_analytics.item_analytics.f_type2.setCurrentText("Device")
     win.page_analytics.item_analytics.f_site.setCurrentText("Jafura")
     win.page_analytics.item_analytics.reload()
+    _ia_tbl = win.page_analytics.item_analytics.table
+    _ia_hdrs = _ia_tbl.headers()
+    _ia_row = next(r for r in range(_ia_tbl.rowCount()) if _ia_tbl.item(r, 1).text() == gt_code)
     check(win.page_analytics.item_analytics.cards["qty"].lbl_value.text() == "8"
-          and any(win.page_analytics.item_analytics.table.item(r, 1).text() == gt_code
-                  for r in range(win.page_analytics.item_analytics.table.rowCount())),
-          "the Analytics module shows 8 gas testers currently at Jafura from Delivery Note data")
+          and _ia_tbl.item(_ia_row, _ia_hdrs.index("PR / MR Nos")).text() == "PR-TYPED-01"
+          and _ia_tbl.item(_ia_row, _ia_hdrs.index("DN References")).text() == "JAF-DN-REF-01",
+          "the Analytics module shows the current qty plus PR number and DN reference for typed DN data")
+    win.page_analytics.item_analytics.export_excel()
+    _ia_xl = win.page_analytics.item_analytics.last_file
+    _ia_ws = _lw(_ia_xl).active
+    _ia_heads = [str(_ia_ws.cell(row=5, column=c).value or "") for c in range(1, _ia_ws.max_column + 1)]
+    _ia_vals = [str(_ia_ws.cell(row=6, column=c).value or "") for c in range(1, _ia_ws.max_column + 1)]
+    check("PR / MR Nos" in _ia_heads and "DN References" in _ia_heads
+          and _ia_vals[_ia_heads.index("PR / MR Nos")] == "PR-TYPED-01"
+          and _ia_vals[_ia_heads.index("DN References")] == "JAF-DN-REF-01",
+          "the Analytics Excel report includes the DN PR number and DN reference")
     win.page_analytics.item_analytics.reset_filters()
 
     section("MR print heading carries the PR number and project")

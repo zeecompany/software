@@ -1054,7 +1054,7 @@ class ItemMasterAnalyticsTab(QWidget):
         bar.setObjectName("Card")
         gl = QGridLayout(bar)
         gl.setContentsMargins(10, 8, 10, 8)
-        self.f_text = W.SearchBox("Search 2nd type, item code, description, site or issued to ...")
+        self.f_text = W.SearchBox("Search 2nd type, item code, description, site, PR or DN reference ...")
         self.f_type2 = W.combo(["All 2nd Types"], editable=True)
         self.f_site = W.combo(["All Sites"], editable=True)
         for w in (self.f_text, self.f_type2, self.f_site):
@@ -1099,7 +1099,8 @@ class ItemMasterAnalyticsTab(QWidget):
 
         tbl = W.Card("Current Delivery Note analytics")
         self.table = W.DataTable(["2nd Type", "Item Code", "Description", "Current Site", "Current Location",
-                                  "Issued To", "Current Qty", "Issued", "Returned", "Damaged", "DNs"])
+                                  "Issued To", "PR / MR Nos", "DN Nos", "DN References",
+                                  "Current Qty", "Issued", "Returned", "Damaged", "DNs"])
         tbl.add(self.table, 1)
         v.addWidget(tbl, 1)
 
@@ -1153,9 +1154,11 @@ class ItemMasterAnalyticsTab(QWidget):
                               for i, (k, v) in enumerate(d["by_second_type"])])
         self.c_item.set_data(d["top_items"] or [("No data", 0)])
         self.table.fill(
-            ["2nd Type", "Item Code", "Description", "Current Site", "Current Location", "Issued To", "Current Qty", "Issued", "Returned", "Damaged", "DNs"],
+            ["2nd Type", "Item Code", "Description", "Current Site", "Current Location", "Issued To",
+             "PR / MR Nos", "DN Nos", "DN References", "Current Qty", "Issued", "Returned", "Damaged", "DNs"],
             [[r.get("second_type", ""), r.get("item_code", ""), r.get("description", ""), r.get("site", ""),
-              r.get("location", ""), r.get("issued_to", ""), float(r.get("qty") or 0),
+              r.get("location", ""), r.get("issued_to", ""), r.get("pr_nos", "-"),
+              r.get("dn_nos", "-"), r.get("dn_refs", "-"), float(r.get("qty") or 0),
               float(r.get("issued_qty") or 0), float(r.get("returned_qty") or 0),
               float(r.get("damaged_qty") or 0), int(r.get("dn_count") or 0)]
              for r in self.rows],
@@ -1165,9 +1168,11 @@ class ItemMasterAnalyticsTab(QWidget):
         f = D.export_excel(
             self.db,
             "Analytics — Typed Delivery Note Items",
-            ["2nd Type", "Item Code", "Description", "Current Site", "Current Location", "Issued To", "Current Qty", "Issued", "Returned", "Damaged", "DNs"],
+            ["2nd Type", "Item Code", "Description", "Current Site", "Current Location", "Issued To",
+             "PR / MR Nos", "DN Nos", "DN References", "Current Qty", "Issued", "Returned", "Damaged", "DNs"],
             [[r.get("second_type", ""), r.get("item_code", ""), r.get("description", ""), r.get("site", ""),
-              r.get("location", ""), r.get("issued_to", ""), float(r.get("qty") or 0),
+              r.get("location", ""), r.get("issued_to", ""), r.get("pr_nos", "-"),
+              r.get("dn_nos", "-"), r.get("dn_refs", "-"), float(r.get("qty") or 0),
               float(r.get("issued_qty") or 0), float(r.get("returned_qty") or 0),
               float(r.get("damaged_qty") or 0), int(r.get("dn_count") or 0)]
              for r in self.rows],
@@ -1180,9 +1185,11 @@ class ItemMasterAnalyticsTab(QWidget):
         f = D.report_pdf(
             self.db,
             "Analytics — Typed Delivery Note Items",
-            ["2nd Type", "Item Code", "Description", "Current Site", "Current Location", "Issued To", "Current Qty", "Issued", "Returned", "Damaged", "DNs"],
+            ["2nd Type", "Item Code", "Description", "Current Site", "Current Location", "Issued To",
+             "PR / MR Nos", "DN Nos", "DN References", "Current Qty", "Issued", "Returned", "Damaged", "DNs"],
             [[r.get("second_type", ""), r.get("item_code", ""), r.get("description", ""), r.get("site", ""),
-              r.get("location", ""), r.get("issued_to", ""), float(r.get("qty") or 0),
+              r.get("location", ""), r.get("issued_to", ""), r.get("pr_nos", "-"),
+              r.get("dn_nos", "-"), r.get("dn_refs", "-"), float(r.get("qty") or 0),
               float(r.get("issued_qty") or 0), float(r.get("returned_qty") or 0),
               float(r.get("damaged_qty") or 0), int(r.get("dn_count") or 0)]
              for r in self.rows],
