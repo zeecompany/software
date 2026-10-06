@@ -1032,6 +1032,28 @@ class AnalyticsTab(QWidget):
         D.open_path(f)
 
 
+class AnalyticsPage(QWidget):
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.sdb = SV.SurveyorDB(SV.db_path(), current_user=getattr(db, "current_user", "admin"))
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 10, 12, 10)
+        head = QLabel(
+            "📈  <b>Analytics</b> — separate transferred-material visibility for Tools Station, "
+            "showing where every 2nd Type item currently is by site, location and live quantity."
+        )
+        head.setWordWrap(True)
+        v.addWidget(head)
+        self.analytics = AnalyticsTab(self.sdb)
+        v.addWidget(self.analytics, 1)
+
+    def refresh(self):
+        self.sdb.current_user = getattr(self.db, "current_user", "admin")
+        self.analytics.reload()
+
+
 class SurveyorToolsPage(QWidget):
     dataChanged = Signal()
 

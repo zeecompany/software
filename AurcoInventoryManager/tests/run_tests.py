@@ -4290,6 +4290,7 @@ def main() -> int:
     for _k in ("confirm", "info_box", "error_box", "toast"):
         setattr(_svp_mod.W, _k, getattr(W, _k))
     check("Tools Station" in win.pages, "Tools Station page is available")
+    check("Analytics" in win.pages, "the separate Analytics module is available")
     _sv_root = _cfg.get_storage_root()
     _sv_legacy_root = root / "SURVEYOR_TOOLS_RENAME"
     shutil.rmtree(_sv_legacy_root, ignore_errors=True)
@@ -4479,8 +4480,18 @@ def main() -> int:
     svp.analytics.f_site.setCurrentText("Jafura")
     svp.analytics.reload()
     check(svp.analytics.cards["qty"].lbl_value.text() == "8" and svp.analytics.table.rowCount() == 1,
-          "the Analytics dashboard shows 8 gas testers currently at Jafura under Device")
+          "the embedded Analytics dashboard shows 8 gas testers currently at Jafura under Device")
     svp.analytics.reset_filters()
+    win.go("Analytics")
+    win.page_analytics.refresh()
+    app.processEvents()
+    win.page_analytics.analytics.f_type2.setCurrentText("Device")
+    win.page_analytics.analytics.f_site.setCurrentText("Jafura")
+    win.page_analytics.analytics.reload()
+    check(win.page_analytics.analytics.cards["qty"].lbl_value.text() == "8"
+          and win.page_analytics.analytics.table.rowCount() == 1,
+          "the separate Analytics module shows 8 gas testers currently at Jafura under Device")
+    win.page_analytics.analytics.reset_filters()
     svp.register.export_pdf()
     _ts_reg_pdf = svp.register.last_file
     check(_ts_reg_pdf and _ts_reg_pdf.exists() and _ts_reg_pdf.suffix.lower() == ".pdf",

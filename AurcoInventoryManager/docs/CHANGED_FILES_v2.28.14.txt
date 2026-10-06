@@ -1,0 +1,23 @@
+AURCO Inventory Manager 2.28.14
+Package: software v 38.zip
+Compared against: software v 37.zip
+
+Modified files (8):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/ui/main_window.py
+- AurcoInventoryManager/aurco/ui/surveyor_tools_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.14.txt
+
+Main changes
+- Added a separate top-level Analytics module in the main navigation for Tools Station transferred-material visibility.
+- The Analytics module shows all 2nd Type items by current site, current location, grouped quantity and custody details.
+- Example scenarios such as 8 Gas Tester devices currently at Jafura now appear in the separate Analytics dashboard/module.
+- Tools Station keeps the embedded analytics tab as well, so users can access the same view from either place.
+- Regression coverage was extended to verify the separate Analytics module and its grouped Jafura/device example.
+
+Validation
+- Headless regression suite: ALL 1394 CHECKS PASSED

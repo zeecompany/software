@@ -28,7 +28,7 @@ from .workspace_page import WorkspacePage
 from .admin_station import AdminStationPage
 from .cable_records import CableRecordsPage
 from .tool_station import ToolStationPage
-from .surveyor_tools_page import SurveyorToolsPage
+from .surveyor_tools_page import AnalyticsPage, SurveyorToolsPage
 from .general_dn import GeneralDNPage
 from .issuance_page import IssuancePage
 from .employee_ppe_page import EmployeePPEPage
@@ -73,6 +73,7 @@ NAV = [
     ("Admin Station", "🏢", "Ctrl+Shift+A"),
     ("Tools, Instruments & Devices", "🔧", "Ctrl+Shift+T"),
     ("Tools Station", "🧭", "Ctrl+Shift+Y"),
+    ("Analytics", "📈", None),
     ("Cable Records", "🧵", "Ctrl+Shift+B"),
     ("General DN Maker", "🧾", "Ctrl+G"),
     ("Company Issuance", "🏢", "Ctrl+Shift+O"),
@@ -296,6 +297,7 @@ class MainWindow(QMainWindow):
         self.page_admin = AdminStationPage(db)
         self.page_tools = ToolStationPage(db)
         self.page_survey = SurveyorToolsPage(db)
+        self.page_analytics = AnalyticsPage(db)
         self.page_cables = CableRecordsPage(db)
         self.page_gdn = GeneralDNPage(db)
         self.page_issuance = IssuancePage(db)
@@ -317,6 +319,7 @@ class MainWindow(QMainWindow):
                            ("Admin Station", self.page_admin),
                            ("Tools, Instruments & Devices", self.page_tools),
                            ("Tools Station", self.page_survey),
+                           ("Analytics", self.page_analytics),
                            ("Cable Records", self.page_cables),
                            ("General DN Maker", self.page_gdn),
                            ("Company Issuance", self.page_issuance),
@@ -441,8 +444,10 @@ class MainWindow(QMainWindow):
                             "return. Its own database; no stock effect.",
             "Tools Station": "Separate register for survey instruments and other tools — "
                              "serial numbers, 2nd type classification, person/site transfer history, pictures, "
-                             "location summary sheet and analytics dashboard. Its own database; "
+                             "location summary sheet and live tracking. Its own database; "
                              "no stock effect.",
+            "Analytics": "Separate analytics module for transferred Tools Station items — "
+                         "2nd type, current site, current location and grouped live quantities.",
             "Cable Records": "Separate cable drum register — length left on every "
                              "drum, every cut, the cable schedule and its megger "
                              "tests. Its own database; no stock effect.",
@@ -523,6 +528,7 @@ class MainWindow(QMainWindow):
             self.page_ppe.refresh_all()
             self.page_employees.reload()
             self.page_survey.refresh()
+            self.page_analytics.refresh()
             d = S.dashboard_data(self.db)
             cur = self.db.get_setting("currency", "")
             self.status_lbl.setText(
