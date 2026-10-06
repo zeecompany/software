@@ -4337,34 +4337,38 @@ def main() -> int:
     _sv_img = _SVImg(120, 90, _SVImg.Format_RGB32)
     _sv_img.fill(_SVColor("#dbeafe"))
     _sv_img.save(str(_sv_photo))
-    SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "serial_no": "AL-001",
+    SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "second_type": "Instrument", "serial_no": "AL-001",
                              "make_model": "Leica", "location": "Warehouse",
                              "qty": 2, "status": SV.ST_ACTIVE,
                              "remarks": "", "picture_path": str(_sv_photo),
                              "issued_by": "Store Officer"})
-    SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "serial_no": "AL-002",
+    SV.save_record(svp.sdb, {"instrument_desc": "Auto Level", "second_type": "Instrument", "serial_no": "AL-002",
                              "make_model": "Leica", "location": "Hajar",
                              "qty": 1, "status": SV.ST_OUT_OF_ORDER,
                              "remarks": "ordered for repair", "picture_path": "",
                              "issued_by": "Store Officer"})
-    SV.save_record(svp.sdb, {"instrument_desc": "Total Station", "serial_no": "TS-001",
+    SV.save_record(svp.sdb, {"instrument_desc": "Total Station", "second_type": "Instrument", "serial_no": "TS-001",
                              "make_model": "Trimble", "location": "Zuluf",
                              "qty": 1, "status": SV.ST_IN_USE, "remarks": "", "picture_path": "",
                              "issued_to": "Ahmed Salem", "employee_code": "EMP-100",
                              "iqama_id": "2456677889", "designation": "Surveyor",
                              "division": "Survey", "current_project": "Hajar",
                              "issued_by": "Store Officer"})
-    SV.save_record(svp.sdb, {"instrument_desc": "GPS", "serial_no": "GPS-001",
+    SV.save_record(svp.sdb, {"instrument_desc": "GPS", "second_type": "Device", "serial_no": "GPS-001",
                              "make_model": "Garmin", "location": "Yanbu",
                              "qty": 1, "status": SV.ST_ACTIVE, "remarks": "", "picture_path": "",
                              "issued_by": "Store Officer"})
-    SV.save_record(svp.sdb, {"instrument_desc": "Reflector pole", "serial_no": "",
+    SV.save_record(svp.sdb, {"instrument_desc": "Reflector pole", "second_type": "Tool", "serial_no": "",
                              "make_model": "", "location": "Noor",
                              "qty": 1, "status": SV.ST_ACTIVE, "remarks": "", "picture_path": "",
                              "issued_by": "Store Officer"})
+    SV.save_record(svp.sdb, {"instrument_desc": "Gas Tester", "second_type": "Device", "serial_no": "GT-001",
+                             "make_model": "Drager", "location": "Jafura",
+                             "qty": 8, "status": SV.ST_ACTIVE, "remarks": "Transferred to Jafura site", "picture_path": "",
+                             "current_project": "Jafura", "issued_by": "Store Officer"})
     _auto = [r for r in SV.summary_rows(svp.sdb) if r["instrument_desc"] == "Auto Level"][0]
-    check(_auto["Warehouse"] == 2 and _auto["Hajar"] == 1 and _auto["total_qty"] == 3,
-          "the summary sheet groups instrument quantities by the sheet locations")
+    check(_auto["Warehouse"] == 2 and _auto["Hajar"] == 1 and _auto["total_qty"] == 3 and _auto["second_type"] == "Instrument",
+          "the summary sheet groups instrument quantities by the sheet locations and keeps the 2nd type")
     check("out of order" in _auto["remarks"].lower(),
           "the summary remarks carry the instrument condition note forward")
     _pic = Path(SV.list_records(svp.sdb, text="AL-001")[0]["picture_path"])
@@ -4389,11 +4393,11 @@ def main() -> int:
     check(_dlg_sv.e_issued_to.text() == "Ahmed Salem" and _dlg_sv.e_iqama.text() == "2456677889",
           "typing an employee code can fill the employee name and Iqama from the master list")
     _sv_cols, _sv_sample = SV.template_rows()
-    check("Issued By" in _sv_cols and "Employee Code" in _sv_cols,
-          "the Tools Station template includes issuer and employee identity columns")
+    check("2nd Type" in _sv_cols and "Issued By" in _sv_cols and "Employee Code" in _sv_cols,
+          "the Tools Station template includes 2nd type plus issuer and employee identity columns")
     _sv_head, _sv_rows = SV.sniff(
-        "Instrument Description\tSerial No.\tMake / Model\tLocation\tQuantity\tStatus\tIssued To / Employee Name\tEmployee Code\tIqama ID\tDesignation\tDivision/Department\tCurrent Project\tIssued By\tRemarks\n"
-        "Prism Pole\tPR-100\tSeco\tWarehouse\t1\tIn Use\tAhmed Salem\tEMP-100\t2456677889\tSurveyor\tSurvey\tHajar\tStore Officer\tImported from template\n")
+        "Instrument Description\t2nd Type\tSerial No.\tMake / Model\tLocation\tQuantity\tStatus\tIssued To / Employee Name\tEmployee Code\tIqama ID\tDesignation\tDivision/Department\tCurrent Project\tIssued By\tRemarks\n"
+        "Prism Pole\tTool\tPR-100\tSeco\tWarehouse\t1\tIn Use\tAhmed Salem\tEMP-100\t2456677889\tSurveyor\tSurvey\tHajar\tStore Officer\tImported from template\n")
     _sv_map = SV.auto_map(_sv_head)
     _sv_preview = SV.preview(_sv_head, _sv_rows, _sv_map)
     _sv_ins, _sv_sk = SV.import_records(svp.sdb, _sv_preview, "pasted rows")
@@ -4446,25 +4450,37 @@ def main() -> int:
           and _ts_store["status"] == SV.ST_ACTIVE,
           "a tool can be transferred back from a person to store custody")
     _dash_sv = SV.dashboard_data(svp.sdb)
-    check(_dash_sv["total_qty"] == 7 and _dash_sv["out_of_order_qty"] == 1,
+    check(_dash_sv["total_qty"] == 15 and _dash_sv["out_of_order_qty"] == 1,
           "the dashboard totals the tracked quantity and the out-of-order quantity")
+    _an_sv = SV.analytics_data(svp.sdb)
+    check(any(r["second_type"] == "Device" and r["instrument_desc"] == "Gas Tester"
+              and r["site"] == "Jafura" and float(r["qty"]) == 8 for r in _an_sv["rows"]),
+          "analytics groups 2nd type items by their current site")
     check(any(k == "Warehouse" and v == 4 for k, v in _dash_sv["locations"]),
           "the dashboard breaks the data down by location")
     win.go("Tools Station")
     svp.refresh()
     app.processEvents()
-    check(svp.tabs.count() == 4, "the Tools Station page has dashboard, register, import and summary tabs")
-    check(svp.register.table.rowCount() == 6, "the register tab lists the saved and imported surveyor tool rows")
+    check(svp.tabs.count() == 5, "the Tools Station page has dashboard, register, import, summary and analytics tabs")
+    check(svp.register.table.rowCount() == 7, "the register tab lists the saved and imported surveyor tool rows")
     check(any(r.get("issued_to") == "Ahmed Salem" and r.get("employee_code") == "EMP-100" for r in SV.list_records(svp.sdb)),
           "the Tools Station register stores the employee issue details")
-    check(svp.summary.table.rowCount() == 5, "the summary tab collapses records into one row per instrument")
-    check(svp.dash.cards["qty"].lbl_value.text() == "7", "the dashboard card shows the total quantity")
+    check(svp.summary.table.rowCount() == 6 and "2nd Type" in svp.summary.table.headers(),
+          "the summary tab collapses records into one row per instrument and shows the 2nd type")
+    check(svp.dash.cards["qty"].lbl_value.text() == "15", "the dashboard card shows the total quantity")
     check(svp.register.table.currentRow() >= 0 and svp.register.lbl_pic.pixmap() is not None,
           "selecting a register row shows its picture preview")
     check(svp.register.t_history.rowCount() >= 1,
           "the Tools Station register shows movement history for the selected tool")
-    check("Employee Code" in svp.register.table.headers() and "Iqama ID" in svp.register.table.headers(),
-          "the Tools Station register shows employee code and Iqama columns")
+    check("2nd Type" in svp.register.table.headers() and "Employee Code" in svp.register.table.headers()
+          and "Iqama ID" in svp.register.table.headers(),
+          "the Tools Station register shows 2nd type plus employee code and Iqama columns")
+    svp.analytics.f_type2.setCurrentText("Device")
+    svp.analytics.f_site.setCurrentText("Jafura")
+    svp.analytics.reload()
+    check(svp.analytics.cards["qty"].lbl_value.text() == "8" and svp.analytics.table.rowCount() == 1,
+          "the Analytics dashboard shows 8 gas testers currently at Jafura under Device")
+    svp.analytics.reset_filters()
     svp.register.export_pdf()
     _ts_reg_pdf = svp.register.last_file
     check(_ts_reg_pdf and _ts_reg_pdf.exists() and _ts_reg_pdf.suffix.lower() == ".pdf",
@@ -4473,7 +4489,7 @@ def main() -> int:
     check("Pictures appendix" in _ts_reg_text and "Reference No." in _ts_reg_text and "AL-001" in _ts_reg_text,
           "the Tools Station register PDF appends tool pictures with reference and serial details")
     for _r in range(svp.register.table.rowCount()):
-        if svp.register.table.item(_r, 2).text() == "AL-001":
+        if svp.register.table.item(_r, 3).text() == "AL-001":
             svp.register.table.selectRow(_r)
             app.processEvents()
             break

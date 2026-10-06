@@ -31,7 +31,9 @@ MODULE_NAME = "Tools Station"
 FOLDER = MODULE_NAME
 LEGACY_FOLDERS = ("Surveyor Tools Record",)
 DB_NAME = "surveyor_tools.db"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+
+SECOND_TYPE_SUGGESTIONS = ["Tool", "Device", "Instrument"]
 
 LOC_WAREHOUSE = "Warehouse"
 LOC_HAJAR = "Hajar"
@@ -56,6 +58,7 @@ EVENT_TYPES = [EV_REGISTERED, EV_ISSUED, EV_TRANSFER]
 
 FIELDS = [
     ("instrument_desc", "Instrument Description"),
+    ("second_type", "2nd Type"),
     ("serial_no", "Serial No."),
     ("make_model", "Make / Model"),
     ("location", "Location"),
@@ -79,6 +82,14 @@ HEADER_MAP = {
     "description": "instrument_desc",
     "instrument": "instrument_desc",
     "tool": "instrument_desc",
+    "secondtype": "second_type",
+    "2ndtype": "second_type",
+    "type2": "second_type",
+    "itemtype2": "second_type",
+    "itemtype": "second_type",
+    "tooltype": "second_type",
+    "category": "second_type",
+    "subcategory": "second_type",
     "serialno": "serial_no",
     "serialnumber": "serial_no",
     "serial": "serial_no",
@@ -134,6 +145,7 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS records (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     instrument_desc   TEXT NOT NULL DEFAULT '',
+    second_type       TEXT DEFAULT '',
     serial_no         TEXT DEFAULT '',
     make_model        TEXT DEFAULT '',
     location          TEXT NOT NULL DEFAULT 'Warehouse',
@@ -153,6 +165,7 @@ CREATE TABLE IF NOT EXISTS records (
     updated_at        TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS ix_sv_desc     ON records(instrument_desc);
+CREATE INDEX IF NOT EXISTS ix_sv_type2    ON records(second_type);
 CREATE INDEX IF NOT EXISTS ix_sv_serial   ON records(serial_no);
 CREATE INDEX IF NOT EXISTS ix_sv_location ON records(location);
 CREATE INDEX IF NOT EXISTS ix_sv_status   ON records(status);
@@ -336,6 +349,7 @@ class SurveyorDB:
     def _apply_schema_fixes(self) -> None:
         cols = {str(r[1]) for r in self.query("PRAGMA table_info(records)")}
         for col, sql in (
+            ("second_type", "ALTER TABLE records ADD COLUMN second_type TEXT DEFAULT ''"),
             ("issued_to", "ALTER TABLE records ADD COLUMN issued_to TEXT DEFAULT ''"),
             ("employee_code", "ALTER TABLE records ADD COLUMN employee_code TEXT DEFAULT ''"),
             ("iqama_id", "ALTER TABLE records ADD COLUMN iqama_id TEXT DEFAULT ''"),
@@ -346,6 +360,7 @@ class SurveyorDB:
         ):
             if col not in cols:
                 self.execute(sql)
+        self.execute("CREATE INDEX IF NOT EXISTS ix_sv_type2 ON records(second_type)")
         self.execute("CREATE INDEX IF NOT EXISTS ix_sv_hist_record ON transfer_history(record_id, id)")
         self.execute("CREATE INDEX IF NOT EXISTS ix_sv_hist_date ON transfer_history(event_date)")
         self.commit()
@@ -509,6 +524,7 @@ def save_record(db: SurveyorDB, data: dict[str, Any], record_id: int | None = No
     desc = str(data.get("instrument_desc") or "").strip()
     if not desc:
         raise ValueError("Instrument description is required.")
+    second_type = str(data.get("second_type") or "").strip()
     serial = str(data.get("serial_no") or "").strip()
     make_model = str(data.get("make_model") or "").strip()
     location = str(data.get("location") or LOC_WAREHOUSE).strip() or LOC_WAREHOUSE
@@ -554,18 +570,18 @@ def save_record(db: SurveyorDB, data: dict[str, Any], record_id: int | None = No
     try:
         if record_id is None:
             cur = db.execute(
-                """INSERT INTO records(instrument_desc,serial_no,make_model,location,qty,status,
+                """INSERT INTO records(instrument_desc,second_type,serial_no,make_model,location,qty,status,
                      issued_to,employee_code,iqama_id,designation,division,current_project,
                      issued_by,remarks,picture_path,created_by,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (desc, serial, make_model, location, qty, status, issued_to, employee_code,
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (desc, second_type, serial, make_model, location, qty, status, issued_to, employee_code,
                  iqama_id, designation, division, current_project, issued_by, remarks,
                  final_picture, db.current_user, _now()),
             )
             rec_id = int(cur.lastrowid)
             _insert_history(db, rec_id, EV_ISSUED if (issued_to or employee_code or iqama_id or status == ST_IN_USE) else EV_REGISTERED,
                             today(), None, {
-                                "instrument_desc": desc, "serial_no": serial, "qty": qty, "issued_to": issued_to,
+                                "instrument_desc": desc, "second_type": second_type, "serial_no": serial, "qty": qty, "issued_to": issued_to,
                                 "employee_code": employee_code, "iqama_id": iqama_id, "designation": designation,
                                 "division": division, "current_project": current_project, "location": location, "status": status,
                             }, moved_by=issued_by or db.current_user, remarks=remarks)
@@ -573,11 +589,11 @@ def save_record(db: SurveyorDB, data: dict[str, Any], record_id: int | None = No
             db.audit("CREATED", "record", str(rec_id), desc)
             return rec_id
         db.execute(
-            """UPDATE records SET instrument_desc=?, serial_no=?, make_model=?, location=?, qty=?,
+            """UPDATE records SET instrument_desc=?, second_type=?, serial_no=?, make_model=?, location=?, qty=?,
                  status=?, issued_to=?, employee_code=?, iqama_id=?, designation=?,
                  division=?, current_project=?, issued_by=?, remarks=?, picture_path=?,
                  updated_at=? WHERE id=?""",
-            (desc, serial, make_model, location, qty, status, issued_to, employee_code,
+            (desc, second_type, serial, make_model, location, qty, status, issued_to, employee_code,
              iqama_id, designation, division, current_project, issued_by, remarks,
              final_picture, _now(), int(record_id)),
         )
@@ -659,7 +675,7 @@ def transfer_record(db: SurveyorDB, record_id: int, data: dict[str, Any]) -> int
 
 
 def distinct_values(db: SurveyorDB, field: str) -> list[str]:
-    if field not in {"instrument_desc", "location", "status", "make_model", "issued_to", "employee_code", "division", "current_project"}:
+    if field not in {"instrument_desc", "second_type", "location", "status", "make_model", "issued_to", "employee_code", "division", "current_project"}:
         return []
     rows = db.query(
         f"SELECT DISTINCT {field} FROM records WHERE COALESCE({field},'')<>'' ORDER BY {field}"
@@ -668,7 +684,7 @@ def distinct_values(db: SurveyorDB, field: str) -> list[str]:
 
 
 def list_records(db: SurveyorDB, text: str = "", location: str = "", status: str = "",
-                 instrument_desc: str = "") -> list[dict[str, Any]]:
+                 instrument_desc: str = "", second_type: str = "") -> list[dict[str, Any]]:
     sql = "SELECT * FROM records WHERE 1=1"
     p: list[Any] = []
     if location:
@@ -680,24 +696,30 @@ def list_records(db: SurveyorDB, text: str = "", location: str = "", status: str
     if instrument_desc:
         sql += " AND instrument_desc=?"
         p.append(instrument_desc)
+    if second_type:
+        sql += " AND second_type=?"
+        p.append(second_type)
     if text.strip():
         like = f"%{text.strip()}%"
-        sql += (" AND (instrument_desc LIKE ? OR serial_no LIKE ? OR make_model LIKE ? OR"
+        sql += (" AND (instrument_desc LIKE ? OR second_type LIKE ? OR serial_no LIKE ? OR make_model LIKE ? OR"
                 " location LIKE ? OR status LIKE ? OR remarks LIKE ? OR issued_to LIKE ? OR"
                 " employee_code LIKE ? OR iqama_id LIKE ? OR designation LIKE ? OR division LIKE ? OR current_project LIKE ? OR issued_by LIKE ?)")
-        p += [like] * 13
+        p += [like] * 14
     sql += " ORDER BY instrument_desc COLLATE NOCASE, id DESC"
     return [dict(r) for r in db.query(sql, p)]
 
 
 def summary_rows(db: SurveyorDB, records: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     rows = records if records is not None else list_records(db)
-    grouped: dict[str, dict[str, Any]] = {}
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
     for r in rows:
         if str(r.get("status") or "") == ST_DISPOSED:
             continue
         desc = str(r.get("instrument_desc") or "").strip() or "(Blank description)"
-        g = grouped.setdefault(desc, {
+        second_type = str(r.get("second_type") or "").strip() or "(Unspecified)"
+        key = (second_type, desc)
+        g = grouped.setdefault(key, {
+            "second_type": second_type,
             "instrument_desc": desc,
             "Warehouse": 0.0,
             "Hajar": 0.0,
@@ -729,8 +751,8 @@ def summary_rows(db: SurveyorDB, records: list[dict[str, Any]] | None = None) ->
         elif status == ST_MISSING:
             g["missing"] += qty
     out: list[dict[str, Any]] = []
-    for i, desc in enumerate(sorted(grouped, key=str.lower), start=1):
-        g = grouped[desc]
+    ordered = sorted(grouped.values(), key=lambda g: (str(g["second_type"]).lower(), str(g["instrument_desc"]).lower()))
+    for i, g in enumerate(ordered, start=1):
         remarks: list[str] = []
         if g["out_of_order"]:
             remarks.append(f"{g['out_of_order']:g} out of order")
@@ -744,6 +766,7 @@ def summary_rows(db: SurveyorDB, records: list[dict[str, Any]] | None = None) ->
         remarks.extend(g["remarks_list"])
         out.append({
             "sr": i,
+            "second_type": g["second_type"],
             "instrument_desc": g["instrument_desc"],
             "Warehouse": g["Warehouse"],
             "Hajar": g["Hajar"],
@@ -754,6 +777,106 @@ def summary_rows(db: SurveyorDB, records: list[dict[str, Any]] | None = None) ->
             "remarks": " · ".join(remarks),
         })
     return out
+
+
+def _site_name(rec: dict[str, Any] | sqlite3.Row) -> str:
+    row = dict(rec)
+    return (str(row.get("current_project") or "").strip()
+            or str(row.get("location") or "").strip()
+            or LOC_WAREHOUSE)
+
+
+def distinct_sites(db: SurveyorDB) -> list[str]:
+    vals = {str(r.get("current_project") or "").strip() for r in list_records(db)}
+    vals |= {str(r.get("location") or "").strip() for r in list_records(db)}
+    return sorted(v for v in vals if v)
+
+
+def analytics_rows(db: SurveyorDB, text: str = "", second_type: str = "", site: str = "",
+                   location: str = "", status: str = "") -> list[dict[str, Any]]:
+    rows = list_records(db, text=text, location=location, status=status, second_type=second_type)
+    grouped: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for r in rows:
+        row_status = str(r.get("status") or ST_ACTIVE).strip() or ST_ACTIVE
+        if row_status == ST_DISPOSED and status != ST_DISPOSED:
+            continue
+        row_site = _site_name(r)
+        if site and row_site != site:
+            continue
+        row_type = str(r.get("second_type") or "").strip() or "(Unspecified)"
+        desc = str(r.get("instrument_desc") or "").strip() or "(Blank description)"
+        loc = str(r.get("location") or LOC_WAREHOUSE).strip() or LOC_WAREHOUSE
+        key = (row_type, desc, row_site, loc, row_status)
+        g = grouped.setdefault(key, {
+            "second_type": row_type,
+            "instrument_desc": desc,
+            "site": row_site,
+            "location": loc,
+            "status": row_status,
+            "qty": 0.0,
+            "record_count": 0,
+            "custodians": set(),
+            "serials": set(),
+        })
+        g["qty"] += to_float(r.get("qty") or 0)
+        g["record_count"] += 1
+        holder = str(r.get("issued_to") or "").strip()
+        if holder:
+            g["custodians"].add(holder)
+        serial = str(r.get("serial_no") or "").strip()
+        if serial:
+            g["serials"].add(serial)
+    out: list[dict[str, Any]] = []
+    for g in grouped.values():
+        out.append({
+            "second_type": g["second_type"],
+            "instrument_desc": g["instrument_desc"],
+            "site": g["site"],
+            "location": g["location"],
+            "status": g["status"],
+            "qty": g["qty"],
+            "record_count": g["record_count"],
+            "custodians": ", ".join(sorted(g["custodians"])) or "Store custody",
+            "serials": ", ".join(sorted(g["serials"])) or "—",
+        })
+    return sorted(out, key=lambda r: (
+        str(r.get("site") or "").lower(),
+        str(r.get("second_type") or "").lower(),
+        -to_float(r.get("qty") or 0),
+        str(r.get("instrument_desc") or "").lower(),
+    ))
+
+
+def analytics_data(db: SurveyorDB, text: str = "", second_type: str = "", site: str = "",
+                   location: str = "", status: str = "") -> dict[str, Any]:
+    rows = analytics_rows(db, text=text, second_type=second_type, site=site, location=location, status=status)
+    by_site: dict[str, float] = {}
+    by_type: dict[str, float] = {}
+    by_item: dict[str, float] = {}
+    custodians: set[str] = set()
+    total_qty = 0.0
+    for r in rows:
+        qty = to_float(r.get("qty") or 0)
+        total_qty += qty
+        row_site = str(r.get("site") or "").strip() or LOC_WAREHOUSE
+        row_type = str(r.get("second_type") or "").strip() or "(Unspecified)"
+        item_label = f"{str(r.get('instrument_desc') or '').strip() or '(Blank description)'} @ {row_site}"
+        by_site[row_site] = by_site.get(row_site, 0.0) + qty
+        by_type[row_type] = by_type.get(row_type, 0.0) + qty
+        by_item[item_label] = by_item.get(item_label, 0.0) + qty
+        if str(r.get("custodians") or "") and str(r.get("custodians")) != "Store custody":
+            custodians.update([c.strip() for c in str(r.get("custodians")).split(",") if c.strip()])
+    return {
+        "rows": rows,
+        "row_count": len(rows),
+        "total_qty": total_qty,
+        "site_count": len(by_site),
+        "second_type_count": len(by_type),
+        "custodian_count": len(custodians),
+        "by_site": sorted(by_site.items(), key=lambda kv: (-kv[1], kv[0].lower())),
+        "by_second_type": sorted(by_type.items(), key=lambda kv: (-kv[1], kv[0].lower())),
+        "top_items": sorted(by_item.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:10],
+    }
 
 
 def sniff(text: str) -> tuple[list[str], list[list[str]]]:
@@ -819,6 +942,7 @@ def preview(headers: Sequence[str], rows: Sequence[Sequence[Any]],
             if i < len(row):
                 rec[field] = row[i]
         rec["instrument_desc"] = str(rec.get("instrument_desc") or "").strip()
+        rec["second_type"] = str(rec.get("second_type") or "").strip()
         rec["serial_no"] = str(rec.get("serial_no") or "").strip()
         rec["make_model"] = str(rec.get("make_model") or "").strip()
         rec["location"] = str(rec.get("location") or "").strip() or LOC_WAREHOUSE
@@ -854,6 +978,7 @@ def _import_key(rec: dict | sqlite3.Row) -> tuple:
     return (
         "row",
         norm_key(row.get("instrument_desc")),
+        norm_key(row.get("second_type")),
         norm_key(row.get("make_model")),
         norm_key(row.get("location")),
         round(to_float(row.get("qty")), 3),
@@ -869,7 +994,7 @@ def import_records(db: SurveyorDB, records: Sequence[dict[str, Any]], source: st
     existing: set[tuple] = set()
     if skip_duplicates:
         for row in db.query(
-                "SELECT instrument_desc, serial_no, make_model, location, qty, status, issued_to, employee_code, iqama_id FROM records"):
+                "SELECT instrument_desc, second_type, serial_no, make_model, location, qty, status, issued_to, employee_code, iqama_id FROM records"):
             existing.add(_import_key(row))
     inserted = skipped = 0
     for rec in records:
@@ -890,9 +1015,9 @@ def import_records(db: SurveyorDB, records: Sequence[dict[str, Any]], source: st
 def template_rows() -> tuple[list[str], list[list[Any]]]:
     cols = [lbl for _, lbl in FIELDS]
     return cols, [
-        ["Auto Level", "AL-100", "Leica", "Warehouse", 1, ST_ACTIVE, "", "", "", "", "", "", "Store Officer", "Ready stock", ""],
-        ["Total Station", "TS-205", "Trimble", "Hajar", 1, ST_IN_USE, "Ahmed Salem", "EMP-1001", "2456677889", "Surveyor", "Survey", "Hajar", "Store Officer", "Issued for field use", ""],
-        ["GPS", "GPS-310", "Garmin", "Yanbu", 1, ST_UNDER_REPAIR, "", "", "", "", "", "", "Store Officer", "Sent for repair", ""],
+        ["Auto Level", "Instrument", "AL-100", "Leica", "Warehouse", 1, ST_ACTIVE, "", "", "", "", "", "", "Store Officer", "Ready stock", ""],
+        ["Total Station", "Instrument", "TS-205", "Trimble", "Hajar", 1, ST_IN_USE, "Ahmed Salem", "EMP-1001", "2456677889", "Surveyor", "Survey", "Hajar", "Store Officer", "Issued for field use", ""],
+        ["GPS", "Device", "GPS-310", "Garmin", "Yanbu", 1, ST_UNDER_REPAIR, "", "", "", "", "", "", "Store Officer", "Sent for repair", ""],
     ]
 
 
@@ -978,6 +1103,7 @@ def _build_picture_appendix_pdf(db: SurveyorDB, title: str, subtitle: str,
             continue
         meta = [
             ("Reference No.", entry.get("ref_no", "") or f"REC-{int(rec.get('id') or 0):05d}"),
+            ("2nd Type", str(rec.get("second_type") or "") or "-"),
             ("Description", str(rec.get("instrument_desc") or "") or "-"),
             ("Serial No.", str(rec.get("serial_no") or "") or "-"),
             ("Make / Model", str(rec.get("make_model") or "") or "-"),
@@ -1051,10 +1177,10 @@ def export_register_pdf(db: SurveyorDB, records: Sequence[dict[str, Any]], out_p
                                            f"Tools_Station_Register_{_dt.datetime.now():%Y%m%d_%H%M%S}.pdf")
     tmp_main = out.with_name(out.stem + "__main.pdf")
     tmp_pic = out.with_name(out.stem + "__pictures.pdf")
-    cols = ["Description", "Serial No.", "Make / Model", "Location", "Issued To", "Employee Code",
+    cols = ["2nd Type", "Description", "Serial No.", "Make / Model", "Location", "Issued To", "Employee Code",
             "Iqama ID", "Designation", "Division/Department", "Project / Site", "Status", "Qty",
             "Issued By", "Remarks", "Updated"]
-    data = [[r.get("instrument_desc", ""), r.get("serial_no", ""), r.get("make_model", ""),
+    data = [[r.get("second_type", ""), r.get("instrument_desc", ""), r.get("serial_no", ""), r.get("make_model", ""),
              r.get("location", ""), r.get("issued_to", ""), r.get("employee_code", ""),
              r.get("iqama_id", ""), r.get("designation", ""), r.get("division", ""),
              r.get("current_project", ""), r.get("status", ""), float(r.get("qty") or 0),

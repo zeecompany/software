@@ -1,0 +1,25 @@
+AURCO Inventory Manager 2.28.13
+Package: software v 37.zip
+Compared against: software v 36.zip
+
+Modified files (9):
+- AurcoInventoryManager/aurco/core/config.py
+- AurcoInventoryManager/aurco/core/surveyor_tools.py
+- AurcoInventoryManager/aurco/ui/main_window.py
+- AurcoInventoryManager/aurco/ui/surveyor_tools_page.py
+- AurcoInventoryManager/docs/USER_GUIDE.md
+- AurcoInventoryManager/packaging/installer.iss
+- AurcoInventoryManager/packaging/version_info.txt
+- AurcoInventoryManager/tests/run_tests.py
+- AurcoInventoryManager/docs/CHANGED_FILES_v2.28.13.txt
+
+Main changes
+- Tools Station records now support a 2nd Type classification so items can be grouped as tools, devices, instruments or any other user-defined type.
+- The Summary Sheet (master sheet) now shows the 2nd Type column and groups records by both item description and 2nd Type.
+- Tools Station now includes a dedicated Analytics tab/module that shows where transferred items currently are by 2nd Type, item and site.
+- Analytics now highlights current site quantities such as devices at Jafura, based on the latest live register position.
+- Tools Station register, imports, templates and PDF export were updated to carry the 2nd Type field consistently.
+- Regression coverage was expanded for 2nd Type handling and the new Tools Station analytics view.
+
+Validation
+- Headless regression suite: ALL 1392 CHECKS PASSED

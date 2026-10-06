@@ -60,7 +60,7 @@ class RecordDialog(QDialog):
         self.resize(860, 560)
         v = QVBoxLayout(self)
 
-        note = QLabel("Enter the tool / instrument details here. When a tool is issued, record the employee name together with the employee code or Iqama ID. If that employee already exists in the Employee Master, the details fill automatically.")
+        note = QLabel("Enter the tool / instrument details here. Use 2nd Type to classify whether the item is a tool, device, instrument or another group. When a tool is issued, record the employee name together with the employee code or Iqama ID. If that employee already exists in the Employee Master, the details fill automatically.")
         note.setWordWrap(True)
         v.addWidget(note)
 
@@ -71,6 +71,8 @@ class RecordDialog(QDialog):
         form = QFormLayout(form_host)
         self.e_desc = QLineEdit(self.record.get("instrument_desc", ""))
         self.e_desc.setPlaceholderText("Auto Level / Total Station / GPS ...")
+        self.e_type2 = W.combo(SV.SECOND_TYPE_SUGGESTIONS, editable=True,
+                               current=self.record.get("second_type", ""))
         self.e_serial = QLineEdit(self.record.get("serial_no", ""))
         self.e_make = QLineEdit(self.record.get("make_model", ""))
         self.e_location = W.combo(SV.DEFAULT_LOCATIONS, editable=True,
@@ -103,6 +105,7 @@ class RecordDialog(QDialog):
         pic_holder.setLayout(pic_row)
 
         for lbl, wd in (("Instrument Description", self.e_desc),
+                        ("2nd Type", self.e_type2),
                         ("Serial No.", self.e_serial),
                         ("Make / Model", self.e_make),
                         ("Location", self.e_location),
@@ -182,6 +185,7 @@ class RecordDialog(QDialog):
     def data(self) -> dict:
         return {
             "instrument_desc": self.e_desc.text().strip(),
+            "second_type": self.e_type2.currentText().strip(),
             "serial_no": self.e_serial.text().strip(),
             "make_model": self.e_make.text().strip(),
             "location": self.e_location.currentText().strip(),
@@ -422,19 +426,21 @@ class RegisterTab(QWidget):
         bar.setObjectName("Card")
         bl = QGridLayout(bar)
         bl.setContentsMargins(10, 8, 10, 8)
-        self.f_text = W.SearchBox("Search description, serial no., employee code, Iqama, location, make/model, remarks ...")
+        self.f_text = W.SearchBox("Search description, 2nd type, serial no., employee code, Iqama, location, make/model, remarks ...")
         self.f_desc = W.combo(["All Instruments"], editable=False)
+        self.f_type2 = W.combo(["All 2nd Types"], editable=True)
         self.f_loc = W.combo(["All Locations"] + SV.DEFAULT_LOCATIONS, editable=True)
         self.f_status = W.combo(["All Status"] + SV.STATUSES)
-        for w in (self.f_text, self.f_desc, self.f_loc, self.f_status):
+        for w in (self.f_text, self.f_desc, self.f_type2, self.f_loc, self.f_status):
             if hasattr(w, "textChanged"):
                 w.textChanged.connect(self.reload)
             else:
                 w.currentTextChanged.connect(self.reload)
         bl.addWidget(self.f_text, 0, 0, 1, 3)
         bl.addWidget(self.f_desc, 0, 3)
-        bl.addWidget(self.f_loc, 0, 4)
-        bl.addWidget(self.f_status, 0, 5)
+        bl.addWidget(self.f_type2, 0, 4)
+        bl.addWidget(self.f_loc, 0, 5)
+        bl.addWidget(self.f_status, 0, 6)
         for i, (txt, slot) in enumerate((
                 ("Add", self.add_record),
                 ("Edit", self.edit_record),
@@ -445,7 +451,7 @@ class RegisterTab(QWidget):
                 ("PDF", self.export_pdf),
                 ("History PDF", self.export_history_pdf),
                 ("Reset", self.reset_filters),
-        ), start=6):
+        ), start=7):
             bl.addWidget(W.button(txt, "Accent" if txt == "Add" else "", slot=slot), 0, i)
         v.addWidget(bar)
 
@@ -456,7 +462,7 @@ class RegisterTab(QWidget):
         left = QWidget()
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
-        self.table = W.DataTable(["ID", "Instrument Description", "Serial No.", "Make / Model",
+        self.table = W.DataTable(["ID", "Instrument Description", "2nd Type", "Serial No.", "Make / Model",
                                   "Location", "Issued To", "Employee Code", "Iqama ID",
                                   "Status", "Qty", "Issued By", "Picture", "Remarks", "Updated"])
         self.table.itemSelectionChanged.connect(self._show_current)
@@ -480,25 +486,34 @@ class RegisterTab(QWidget):
 
     def _filters(self) -> dict:
         desc = self.f_desc.currentText().strip()
+        type2 = self.f_type2.currentText().strip()
         loc = self.f_loc.currentText().strip()
         stat = self.f_status.currentText().strip()
         return {
             "text": self.f_text.text().strip(),
             "instrument_desc": "" if desc == "All Instruments" else desc,
+            "second_type": "" if type2 == "All 2nd Types" else type2,
             "location": "" if loc == "All Locations" else loc,
             "status": "" if stat == "All Status" else stat,
         }
 
     def reload_filters(self):
         cur_desc = self.f_desc.currentText()
+        cur_type2 = self.f_type2.currentText()
         cur_loc = self.f_loc.currentText()
         descs = ["All Instruments"] + SV.distinct_values(self.sdb, "instrument_desc")
+        type2s = ["All 2nd Types"] + SV.distinct_values(self.sdb, "second_type")
         locs = ["All Locations"] + sorted({*SV.DEFAULT_LOCATIONS, *SV.distinct_values(self.sdb, 'location')})
         self.f_desc.blockSignals(True)
         self.f_desc.clear(); self.f_desc.addItems(descs)
         if cur_desc in descs:
             self.f_desc.setCurrentText(cur_desc)
         self.f_desc.blockSignals(False)
+        self.f_type2.blockSignals(True)
+        self.f_type2.clear(); self.f_type2.addItems(type2s)
+        if cur_type2 in type2s:
+            self.f_type2.setCurrentText(cur_type2)
+        self.f_type2.blockSignals(False)
         self.f_loc.blockSignals(True)
         self.f_loc.clear(); self.f_loc.addItems(locs)
         if cur_loc in locs:
@@ -508,6 +523,7 @@ class RegisterTab(QWidget):
     def reset_filters(self):
         self.f_text.clear()
         self.f_desc.setCurrentIndex(0)
+        self.f_type2.setCurrentIndex(0)
         self.f_loc.setCurrentIndex(0)
         self.f_status.setCurrentIndex(0)
         self.reload()
@@ -516,11 +532,11 @@ class RegisterTab(QWidget):
         self.reload_filters()
         self.records = SV.list_records(self.sdb, **self._filters())
         self.table.fill(
-            ["ID", "Instrument Description", "Serial No.", "Make / Model",
+            ["ID", "Instrument Description", "2nd Type", "Serial No.", "Make / Model",
              "Location", "Issued To", "Employee Code", "Iqama ID",
              "Status", "Qty", "Issued By", "Picture", "Remarks", "Updated"],
-            [[r["id"], r.get("instrument_desc", ""), r.get("serial_no", ""), r.get("make_model", ""),
-              r.get("location", ""), r.get("issued_to", ""), r.get("employee_code", ""),
+            [[r["id"], r.get("instrument_desc", ""), r.get("second_type", ""), r.get("serial_no", ""),
+              r.get("make_model", ""), r.get("location", ""), r.get("issued_to", ""), r.get("employee_code", ""),
               r.get("iqama_id", ""), r.get("status", ""), float(r.get("qty") or 0),
               r.get("issued_by", ""), ("Yes" if r.get("picture_path") else ""), r.get("remarks", ""),
               r.get("updated_at", "") or r.get("created_at", "")]
@@ -564,23 +580,25 @@ class RegisterTab(QWidget):
         )
         self.lbl_detail.setText(
             "<b>Description:</b> {0}<br>"
-            "<b>Serial No.:</b> {1}<br>"
-            "<b>Make / Model:</b> {2}<br>"
-            "<b>Location:</b> {3}<br>"
-            "<b>Issued To:</b> {4}<br>"
-            "<b>Employee Code:</b> {5}<br>"
-            "<b>Iqama ID:</b> {6}<br>"
-            "<b>Designation:</b> {7}<br>"
-            "<b>Division/Department:</b> {8}<br>"
-            "<b>Current Project:</b> {9}<br>"
-            "<b>Status:</b> {10}<br>"
-            "<b>Quantity:</b> {11}<br>"
-            "<b>Issued By:</b> {12}<br>"
-            "<b>Remarks:</b> {13}<br>"
-            "<b>Picture:</b> {14}<br>"
-            "<b>Updated:</b> {15}"
+            "<b>2nd Type:</b> {1}<br>"
+            "<b>Serial No.:</b> {2}<br>"
+            "<b>Make / Model:</b> {3}<br>"
+            "<b>Location:</b> {4}<br>"
+            "<b>Issued To:</b> {5}<br>"
+            "<b>Employee Code:</b> {6}<br>"
+            "<b>Iqama ID:</b> {7}<br>"
+            "<b>Designation:</b> {8}<br>"
+            "<b>Division/Department:</b> {9}<br>"
+            "<b>Current Project:</b> {10}<br>"
+            "<b>Status:</b> {11}<br>"
+            "<b>Quantity:</b> {12}<br>"
+            "<b>Issued By:</b> {13}<br>"
+            "<b>Remarks:</b> {14}<br>"
+            "<b>Picture:</b> {15}<br>"
+            "<b>Updated:</b> {16}"
             .format(
                 rec.get("instrument_desc", "") or "—",
+                rec.get("second_type", "") or "—",
                 rec.get("serial_no", "") or "—",
                 rec.get("make_model", "") or "—",
                 rec.get("location", "") or "—",
@@ -670,8 +688,8 @@ class RegisterTab(QWidget):
         f = D.export_excel(
             self.sdb,
             "Tools Station Register",
-            ["Instrument Description", "Serial No.", "Make / Model", "Location", "Issued To", "Employee Code", "Iqama ID", "Designation", "Division/Department", "Current Project", "Status", "Qty", "Issued By", "Picture", "Remarks", "Updated"],
-            [[r.get("instrument_desc", ""), r.get("serial_no", ""), r.get("make_model", ""),
+            ["Instrument Description", "2nd Type", "Serial No.", "Make / Model", "Location", "Issued To", "Employee Code", "Iqama ID", "Designation", "Division/Department", "Current Project", "Status", "Qty", "Issued By", "Picture", "Remarks", "Updated"],
+            [[r.get("instrument_desc", ""), r.get("second_type", ""), r.get("serial_no", ""), r.get("make_model", ""),
               r.get("location", ""), r.get("issued_to", ""), r.get("employee_code", ""), r.get("iqama_id", ""),
               r.get("designation", ""), r.get("division", ""), r.get("current_project", ""), r.get("status", ""), float(r.get("qty") or 0),
               r.get("issued_by", ""), r.get("picture_path", ""), r.get("remarks", ""),
@@ -717,7 +735,7 @@ class SurveyorImportTab(QWidget):
         card.add(t)
         note = QLabel(
             "Download the template, fill the tools / instruments rows in Excel, then import the file here. "
-            "AURCO also recognises common headings automatically — including Instrument Description, "
+            "AURCO also recognises common headings automatically — including Instrument Description, 2nd Type, "
             "Serial No., Make / Model, Location, Quantity, Status, Issued To, Employee Code, Iqama ID, "
             "Issued By, Remarks and Picture Path."
         )
@@ -737,7 +755,7 @@ class SurveyorImportTab(QWidget):
         self.paste.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.paste.setMinimumHeight(200)
         self.paste.setPlaceholderText(
-            "Instrument Description	Serial No.	Make / Model	Location	Quantity	Status	Issued To / Employee Name	Employee Code	Iqama ID	Designation	Division/Department	Current Project	Issued By	Remarks	Picture Path"
+            "Instrument Description	2nd Type	Serial No.	Make / Model	Location	Quantity	Status	Issued To / Employee Name	Employee Code	Iqama ID	Designation	Division/Department	Current Project	Issued By	Remarks	Picture Path"
         )
         pc.add(self.paste, 1)
         r2 = QHBoxLayout()
@@ -811,22 +829,22 @@ class SummaryTab(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         bar = QHBoxLayout()
-        bar.addWidget(QLabel("This sheet matches the supplied tools summary layout and is built automatically from the register."))
+        bar.addWidget(QLabel("This sheet matches the supplied tools summary layout, adds the 2nd Type classification, and is built automatically from the register."))
         bar.addStretch(1)
         bar.addWidget(W.button("Export", slot=self.export_excel))
         bar.addWidget(W.button("Refresh", slot=self.reload))
         v.addLayout(bar)
 
-        self.table = W.DataTable(["SR#", "Instrument Description", "Warehouse", "Hajar", "Zuluf",
+        self.table = W.DataTable(["SR#", "Instrument Description", "2nd Type", "Warehouse", "Hajar", "Zuluf",
                                   "Yanbu", "Noor", "Total Quantity", "Remarks"])
         v.addWidget(self.table, 1)
 
     def reload(self):
         self.rows = SV.summary_rows(self.sdb)
         self.table.fill(
-            ["SR#", "Instrument Description", "Warehouse", "Hajar", "Zuluf",
+            ["SR#", "Instrument Description", "2nd Type", "Warehouse", "Hajar", "Zuluf",
              "Yanbu", "Noor", "Total Quantity", "Remarks"],
-            [[r["sr"], r["instrument_desc"], float(r["Warehouse"]), float(r["Hajar"]),
+            [[r["sr"], r["instrument_desc"], r.get("second_type", ""), float(r["Warehouse"]), float(r["Hajar"]),
               float(r["Zuluf"]), float(r["Yanbu"]), float(r["Noor"]),
               float(r["total_qty"]), r["remarks"]]
              for r in self.rows],
@@ -836,13 +854,180 @@ class SummaryTab(QWidget):
         f = D.export_excel(
             self.sdb,
             "Tools Station",
-            ["SR#", "Instrument Description", "Warehouse", "Hajar", "Zuluf",
+            ["SR#", "Instrument Description", "2nd Type", "Warehouse", "Hajar", "Zuluf",
              "Yanbu", "Noor", "Total Quantity", "Remarks"],
-            [[r["sr"], r["instrument_desc"], float(r["Warehouse"]), float(r["Hajar"]),
+            [[r["sr"], r["instrument_desc"], r.get("second_type", ""), float(r["Warehouse"]), float(r["Hajar"]),
               float(r["Zuluf"]), float(r["Yanbu"]), float(r["Noor"]),
               float(r["total_qty"]), r["remarks"]]
              for r in self.rows],
         )
+        W.toast(self, f"Exported {f.name}")
+        D.open_path(f)
+
+
+class AnalyticsTab(QWidget):
+    def __init__(self, sdb: SV.SurveyorDB, parent=None):
+        super().__init__(parent)
+        self.sdb = sdb
+        self.rows: list[dict] = []
+        self.last_file: Path | None = None
+        self.cards: dict[str, W.StatCard] = {}
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        note = QLabel(
+            "This analytics module shows where each 2nd Type item currently is — for example tools, devices and instruments by site/location — based on the latest live Tools Station register."
+        )
+        note.setWordWrap(True)
+        v.addWidget(note)
+
+        bar = QWidget()
+        bar.setObjectName("Card")
+        gl = QGridLayout(bar)
+        gl.setContentsMargins(10, 8, 10, 8)
+        self.f_text = W.SearchBox("Search 2nd type, description, site, location, custodian or serial ...")
+        self.f_type2 = W.combo(["All 2nd Types"], editable=True)
+        self.f_site = W.combo(["All Sites"], editable=True)
+        self.f_loc = W.combo(["All Locations"] + SV.DEFAULT_LOCATIONS, editable=True)
+        self.f_status = W.combo(["All Status"] + SV.STATUSES)
+        for w in (self.f_text, self.f_type2, self.f_site, self.f_loc, self.f_status):
+            if hasattr(w, "textChanged"):
+                w.textChanged.connect(self.reload)
+            else:
+                w.currentTextChanged.connect(self.reload)
+        gl.addWidget(self.f_text, 0, 0, 1, 3)
+        gl.addWidget(self.f_type2, 0, 3)
+        gl.addWidget(self.f_site, 0, 4)
+        gl.addWidget(self.f_loc, 0, 5)
+        gl.addWidget(self.f_status, 0, 6)
+        gl.addWidget(W.button("Excel", slot=self.export_excel), 0, 7)
+        gl.addWidget(W.button("PDF", slot=self.export_pdf), 0, 8)
+        gl.addWidget(W.button("Reset", slot=self.reset_filters), 0, 9)
+        v.addWidget(bar)
+
+        cards = QGridLayout()
+        for i, (key, label, glyph, color) in enumerate((
+                ("rows", "Analytics Rows", "📋", W.NAVY),
+                ("qty", "Total Quantity", "Σ", "#0b6e83"),
+                ("sites", "Sites", "📍", "#7048e8"),
+                ("types", "2nd Types", "🧩", "#1a9c52"),
+        )):
+            c = W.StatCard(label, glyph=glyph, color=color)
+            self.cards[key] = c
+            cards.addWidget(c, 0, i)
+        v.addLayout(cards)
+
+        charts = QHBoxLayout()
+        left = W.Card("Quantity by current site")
+        self.c_site = W.BarChart([], color="#0b6e83")
+        left.add(self.c_site, 1)
+        charts.addWidget(left, 1)
+        mid = W.Card("2nd type mix")
+        self.c_type = W.DonutChart()
+        mid.add(self.c_type, 1)
+        charts.addWidget(mid, 1)
+        right = W.Card("Top items by site")
+        self.c_item = W.BarChart([], color="#1f6feb", horizontal=True)
+        right.add(self.c_item, 1)
+        charts.addWidget(right, 1)
+        v.addLayout(charts, 1)
+
+        tbl = W.Card("Current transferred-material analytics")
+        self.table = W.DataTable(["2nd Type", "Item Description", "Current Site", "Current Location",
+                                  "Status", "Qty", "Custodians", "Serials", "Rows"])
+        tbl.add(self.table, 1)
+        v.addWidget(tbl, 1)
+
+    def _filters(self) -> dict:
+        type2 = self.f_type2.currentText().strip()
+        site = self.f_site.currentText().strip()
+        loc = self.f_loc.currentText().strip()
+        stat = self.f_status.currentText().strip()
+        return {
+            "text": self.f_text.text().strip(),
+            "second_type": "" if type2 == "All 2nd Types" else type2,
+            "site": "" if site == "All Sites" else site,
+            "location": "" if loc == "All Locations" else loc,
+            "status": "" if stat == "All Status" else stat,
+        }
+
+    def reset_filters(self):
+        self.f_text.clear()
+        self.f_type2.setCurrentIndex(0)
+        self.f_site.setCurrentIndex(0)
+        self.f_loc.setCurrentIndex(0)
+        self.f_status.setCurrentIndex(0)
+        self.reload()
+
+    def reload_filters(self):
+        cur_type2 = self.f_type2.currentText()
+        cur_site = self.f_site.currentText()
+        cur_loc = self.f_loc.currentText()
+        type2s = ["All 2nd Types"] + SV.distinct_values(self.sdb, "second_type")
+        sites = ["All Sites"] + SV.distinct_sites(self.sdb)
+        locs = ["All Locations"] + sorted({*SV.DEFAULT_LOCATIONS, *SV.distinct_values(self.sdb, 'location')})
+        self.f_type2.blockSignals(True)
+        self.f_type2.clear(); self.f_type2.addItems(type2s)
+        if cur_type2 in type2s:
+            self.f_type2.setCurrentText(cur_type2)
+        self.f_type2.blockSignals(False)
+        self.f_site.blockSignals(True)
+        self.f_site.clear(); self.f_site.addItems(sites)
+        if cur_site in sites:
+            self.f_site.setCurrentText(cur_site)
+        self.f_site.blockSignals(False)
+        self.f_loc.blockSignals(True)
+        self.f_loc.clear(); self.f_loc.addItems(locs)
+        if cur_loc in locs:
+            self.f_loc.setCurrentText(cur_loc)
+        self.f_loc.blockSignals(False)
+
+    def reload(self):
+        self.reload_filters()
+        d = SV.analytics_data(self.sdb, **self._filters())
+        self.rows = d["rows"]
+        self.cards["rows"].set_value(f"{d['row_count']:,}", "grouped current position row(s)")
+        self.cards["qty"].set_value(_fmt_qty(d["total_qty"]), "quantity currently tracked")
+        self.cards["sites"].set_value(f"{d['site_count']:,}", "site / project footprint")
+        self.cards["types"].set_value(f"{d['second_type_count']:,}", "2nd type groups")
+        self.c_site.set_data(d["by_site"] or [("No data", 0)])
+        self.c_type.set_data([(k, v, _STATUS_COLORS.get(SV.ST_ACTIVE, W.NAVY) if i % 2 == 0 else "#7048e8")
+                              for i, (k, v) in enumerate(d["by_second_type"])])
+        self.c_item.set_data(d["top_items"] or [("No data", 0)])
+        self.table.fill(
+            ["2nd Type", "Item Description", "Current Site", "Current Location", "Status", "Qty", "Custodians", "Serials", "Rows"],
+            [[r.get("second_type", ""), r.get("instrument_desc", ""), r.get("site", ""), r.get("location", ""),
+              r.get("status", ""), float(r.get("qty") or 0), r.get("custodians", ""), r.get("serials", ""),
+              int(r.get("record_count") or 0)]
+             for r in self.rows],
+        )
+
+    def export_excel(self):
+        f = D.export_excel(
+            self.sdb,
+            "Tools Station Analytics",
+            ["2nd Type", "Item Description", "Current Site", "Current Location", "Status", "Qty", "Custodians", "Serials", "Rows"],
+            [[r.get("second_type", ""), r.get("instrument_desc", ""), r.get("site", ""), r.get("location", ""),
+              r.get("status", ""), float(r.get("qty") or 0), r.get("custodians", ""), r.get("serials", ""),
+              int(r.get("record_count") or 0)]
+             for r in self.rows],
+        )
+        self.last_file = f
+        W.toast(self, f"Exported {f.name}")
+        D.open_path(f)
+
+    def export_pdf(self):
+        f = D.report_pdf(
+            self.sdb,
+            "Tools Station Analytics",
+            ["2nd Type", "Item Description", "Current Site", "Current Location", "Status", "Qty", "Custodians", "Serials", "Rows"],
+            [[r.get("second_type", ""), r.get("instrument_desc", ""), r.get("site", ""), r.get("location", ""),
+              r.get("status", ""), float(r.get("qty") or 0), r.get("custodians", ""), r.get("serials", ""),
+              int(r.get("record_count") or 0)]
+             for r in self.rows],
+            subtitle="Current transferred-material view grouped by 2nd type, item and site",
+        )
+        self.last_file = f
         W.toast(self, f"Exported {f.name}")
         D.open_path(f)
 
@@ -858,8 +1043,8 @@ class SurveyorToolsPage(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(12, 10, 12, 10)
         head = QLabel(
-            "🧭  <b>Tools Station</b> — keep serial numbers, locations, custody transfers, status, "
-            "pictures and a sheet-style summary for Auto Levels, Total Stations, GPS units and other survey or site tools."
+            "🧭  <b>Tools Station</b> — keep serial numbers, 2nd type classification, locations, custody transfers, status, "
+            "pictures, analytics and a sheet-style summary for tools, devices, instruments and other survey or site assets."
         )
         head.setWordWrap(True)
         v.addWidget(head)
@@ -875,10 +1060,12 @@ class SurveyorToolsPage(QWidget):
         self.register = RegisterTab(self.sdb, db)
         self.importer = SurveyorImportTab(self.sdb, db)
         self.summary = SummaryTab(self.sdb)
+        self.analytics = AnalyticsTab(self.sdb)
         self.tabs.addTab(self.dash, "📊 Dashboard")
         self.tabs.addTab(self.register, "📋 Register")
         self.tabs.addTab(self.importer, "⬆ Import Sheet")
         self.tabs.addTab(self.summary, "🧾 Summary Sheet")
+        self.tabs.addTab(self.analytics, "📈 Analytics")
         v.addWidget(self.tabs, 1)
 
         self.register.dataChanged.connect(self._after_register_change)
@@ -897,4 +1084,5 @@ class SurveyorToolsPage(QWidget):
         self.sdb.current_user = getattr(self.db, "current_user", "admin")
         self.register.reload()
         self.summary.reload()
+        self.analytics.reload()
         self.dash.reload()
