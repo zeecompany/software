@@ -3835,202 +3835,214 @@ def main() -> int:
     check(ct.startswith("Material Availability Report"),
           "and keeps its original report name")
 
-    section("Instrument Station — the module")
+    section("Instrument Station — the register")
     from aurco.core import toolstation as TS
-    from aurco.ui.tool_station import (ToolStationPage, RegisterTab,
-                                       HandoverDialog, ReturnDialog,
-                                       TransferDialog)
+    from aurco.ui.tool_station import (ToolStationPage, RegisterTab, MovementTab,
+                                       InstrumentDialog, MovementDialog,
+                                       InstrumentDashboard, ExcelSyncTab,
+                                       REGISTER_COLS, GRID_COLS)
     import aurco.ui.tool_station as _ts
     for _k in ("confirm", "info_box", "error_box", "toast"):
         setattr(_ts.W, _k, getattr(W, _k))
 
     ts_root = Path("/tmp/AURCO_TEST_TOOLS")
     shutil.rmtree(ts_root, ignore_errors=True)
-    tdb = TS.ToolDB(ts_root / "tool_station.db")
+    ts_root.mkdir(parents=True, exist_ok=True)
+    tdb = TS.ToolDB(ts_root / "instrument_station.db")
     TS.set_tool_db(tdb)
 
-    # -- the reference number is self-describing
-    dec = TS.parse_ref("WH-087IS2308202601")
-    check(dec.get("txn_type") == TS.ISSUE and dec.get("doc_date") == "2026-08-23",
-          "THE HANDOVER REFERENCE DECODES TO TYPE AND DATE")
-    check(dec.get("project_id") == "PRJ000087" and dec.get("warehouse") == "WH",
-          "and to the project and warehouse")
-    check(TS.parse_ref("WH-091TL0108202601")["txn_type"] == TS.LOAN,
-          "a temporary-loan reference is recognised")
-    check(TS.parse_ref("not a reference") == {},
-          "junk text is rejected rather than guessed")
-    check(TS.make_ref("WH", "PRJ000087", TS.ISSUE, "2026-08-23", 1) ==
-          "WH-087IS2308202601", "and the same shape is generated back")
+    # -- the register is the Excel sheet, column for column
+    check([lbl for _k, lbl in TS.COLUMNS] == [
+        "Instrument Description", "Serial No.", "Make / Model", "Location",
+        "Quantity", "Status", "Issued To / Employee Name", "Employee Code",
+        "Iqama ID", "Designation", "Division/Department", "Current Project",
+        "Issued By", "Remarks"],
+        "THE REGISTER IS EXACTLY THE 14 EXCEL COLUMNS, IN THE EXCEL ORDER")
+    check(REGISTER_COLS == [lbl for _k, lbl in TS.COLUMNS] and GRID_COLS[1:15] == REGISTER_COLS,
+          "and the on-screen register shows the same columns in the same order")
 
-    # -- read the real signed form the user supplied
-    pdf = Path(__file__).resolve().parent / "fixtures" / \
-        "AURCO_Handover_WH-087IS2308202601.pdf"
-    check(pdf.exists(), "the sample handover PDF ships with the tests")
-    text = TS.read_pdf_text(pdf)
-    parsed = TS.parse_handover_text(text, source=str(pdf))
-    check(parsed is not None, "the PDF is readable")
-    ph, pl = parsed["head"], parsed["lines"]
-    check(ph["ref_no"] == "WH-087IS2308202601", "the reference is extracted")
-    check(ph["handed_to"] == "Mr. Habib" and ph["iqama_id"] == "100017",
-          "THE CUSTODIAN AND IQAMA ID ARE EXTRACTED")
-    check(ph["project_id"] == "PRJ000087" and ph["project_name"] == "Jafura L&T",
-          "the project id and name are extracted")
-    check(ph["mobile"] == "+966 59 436 8672", "the mobile number survives intact")
-    check(ph["doc_date"] == "2026-08-23" and ph["doc_time"] == "11:04",
-          "the date and time are extracted")
-    check(ph["issued_by"] == "Muhammad Ali Zain",
-          "the warehouse signatory is extracted")
-    check(str(ph.get("received_by", "")).startswith("Mr. Habib"),
-          "the custodian signatory is extracted")
-    check(ph.get("issued_at") == "2026-08-23 06:33",
-          f"the signature date-time is extracted (got {ph.get('issued_at')})")
-    check(len(pl) == 6, f"ALL 6 ITEM LINES ARE EXTRACTED (got {len(pl)})")
-    codes = [l["asset_id"] for l in pl]
-    check(codes == ["12000AL01", "12000RF01", "12000WT01", "12000AT01",
-                    "12000TS01", "12000LS01"],
-          f"every asset ID is read in order (got {codes})")
-    first = pl[0]
-    check(first["description"] == "Auto Level" and first["serial_no"] == "5778779",
-          "description and serial are split correctly")
-    check(first["make_model"] == "Leica" and first["condition"] == "A",
-          "make and condition grade are split correctly")
-    check(first["calib_due"] == "2026-08-25",
-          "the calibration date is converted to ISO")
-    check(pl[3]["serial_no"] == "" and pl[3]["description"] == "Aluminium Tripod",
-          "a missing serial ('-') becomes blank, not part of the description")
-    check(all(l["category"] == "Instrument" for l in pl),
-          "the category column is read")
+    # -- the Employee Master is the source of the employee details
+    emp_id = EMP.save_employee(db, {
+        "employee_id": "EMP-700", "name": "AHMED SURVEYOR",
+        "designation": "Surveyor", "iqama_id": "2482103955",
+        "division": "SURVEY", "current_project": "NOOR", "location": "NOOR"})
+    check(emp_id > 0, "an employee exists in the Employee Master to test the link")
 
-    # -- sync a folder of signed PDFs
-    sync_dir = ts_root / "sync"
-    sync_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(pdf, sync_dir)
-    fid = TS.add_folder(tdb, sync_dir, "Site Handovers")
-    res = TS.sync_folder(tdb, fid)
-    check(res["ok"] and res["imported"] == 1,
-          "THE SYNC FOLDER IMPORTS THE HANDOVER AUTOMATICALLY")
-    h1 = TS.by_ref(tdb, "WH-087IS2308202601")
-    check(h1 is not None and len(h1["lines"]) == 6,
-          "the handover and its 6 items are in the register")
-    check(h1["status"] == TS.OPEN, "a fresh issue is Open")
-    check(str(h1["source_file"]).endswith(".pdf"),
-          "the scanned file stays linked to the record")
-    again = TS.sync_folder(tdb, fid)
-    check(again["imported"] == 0 and TS.by_ref(tdb, "WH-087IS2308202601"),
-          "SYNCING TWICE NEVER DOUBLE-POSTS THE SAME FORM")
-    from openpyxl import Workbook
-    _wb_pdf = Workbook()
-    _ws_pdf = _wb_pdf.active
-    _ws_pdf.append(["Instrument Description", "Serial No.", "Make / Model", "Location", "Quantity", "Status", "Issued To / Employee Name", "Employee Code", "Iqama ID", "Designation", "Division/Department", "Current Project", "Issued By", "Remarks", "Picture Path"])
-    _ws_pdf.append(["TOTAL STATION", "1338275", "LEICA (TS02)", "NOOR", 1, "Issued", "ZOHAIB BILAL", "IDL-0040", "2482103955", "Surveyor", "SURVEY", "NOOR", "M. Ali Zain", "", ""])
-    _pdf_xlsx = sync_dir / "Instrument Station Template.xlsx"
-    _wb_pdf.save(_pdf_xlsx)
-    TS.sync_folder(tdb, fid)
-    check(not any(str(r["name"]).lower().endswith(".xlsx") for r in TS.scan_files(tdb)),
-          "Excel template files are ignored by the signed-PDF sync folder instead of being marked unreadable")
-    check(len(TS.search(tdb)) == 1, "still exactly one document")
-    check(sync_dir.joinpath(pdf.name).exists(),
-          "the source file is left where it was — never moved or deleted")
+    # -- manual entry, picture proof and the employee auto-fill
+    shot = ts_root / "total_station.png"
+    shot.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+        b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+    row1 = TS.save_instrument(tdb, {
+        "instrument_desc": "TOTAL STATION", "serial_no": "1338275",
+        "make_model": "LEICA (TS02)", "location": "NOOR", "quantity": 1,
+        "status": "Issued", "employee_code": "EMP-700", "issued_by": "M. Ali Zain",
+        "remarks": "With all accessories", "picture_path": TS.store_picture(shot, "ts02"),
+    }, db_main=db)
+    check(row1["instrument_desc"] == "TOTAL STATION" and row1["serial_no"] == "1338275",
+          "a manual entry is stored exactly as typed")
+    check(Path(row1["picture_path"]).exists() and
+          Path(row1["picture_path"]).parent.name == "Pictures",
+          "the picture is copied into the module's own Pictures folder")
+    check(shot.exists(), "and the original picture the user picked is left alone")
+    check(row1["issued_to"] == "AHMED SURVEYOR" and row1["iqama_id"] == "2482103955",
+          "TYPING THE EMPLOYEE CODE FILLS IN THE EMPLOYEE'S NAME")
+    check(row1["designation"] == "Surveyor" and row1["division"] == "SURVEY"
+          and row1["current_project"] == "NOOR",
+          "and the designation, division and current project with it")
+    check(len(TS.instrument_history(tdb, row1["id"])) == 1
+          and TS.instrument_history(tdb, row1["id"])[0]["movement_type"] == TS.MV_REGISTERED,
+          "a new instrument starts its own movement track with a Registered entry")
 
-    # -- the asset register answers 'where is it now'
-    assets = TS.search_assets(tdb)
-    check(len(assets) == 6, "an asset row is built for every tool")
-    al = [a for a in assets if a["asset_id"] == "12000AL01"][0]
-    check(al["holder"] == "Mr. Habib" and al["status"] == "Issued Out",
-          "WHERE IS IT NOW -> with the custodian")
-    check(al["last_ref"] == "WH-087IS2308202601", "and under which reference")
-
-    # -- partial return
-    ln0 = h1["lines"][0]
-    TS.post_return(tdb, "WH-087IS2308202601",
-                   [{"line_id": ln0["id"], "qty": 1, "condition": "B"}])
-    h2 = TS.by_ref(tdb, "WH-087IS2308202601")
-    check(h2["status"] == TS.PART_RETURNED,
-          "returning one of six lines is PARTIALLY RETURNED, not closed")
-    back = [a for a in TS.search_assets(tdb) if a["asset_id"] == "12000AL01"][0]
-    check(back["status"] == "In Store" and not back["holder"],
-          "the returned tool goes back to In Store")
-    check(any(r["txn_type"] == TS.RETURN for r in TS.search(tdb)),
-          "a Return document is created in its own right")
+    # -- the register column set, values and lookups
+    row2 = TS.save_instrument(tdb, {
+        "instrument_desc": "AUTO LEVEL", "serial_no": "2205565", "make_model": "LEICA",
+        "location": "Warehouse", "quantity": 2, "status": "Available",
+        "issued_by": "M. Ali Zain", "remarks": "Ready", "picture_path": "",
+    })
+    check(row2["status"] == "Available" and not row2["issued_to"],
+          "an instrument in store is Available and has no holder")
+    check(TS.find_instrument(tdb, serial="2205565")["id"] == row2["id"],
+          "an instrument is found again by its serial number")
+    check(TS.find_by_key(tdb, {"serial_no": "1338275"})["id"] == row1["id"],
+          "and by its register key")
+    check(len(TS.search_instruments(tdb)) == 2, "the register holds both rows")
+    check(len(TS.search_instruments(tdb, text="LEICA")) == 2,
+          "free-text search looks across every column")
+    check(len(TS.search_instruments(tdb, location="NOOR")) == 1,
+          "the register filters by location")
+    check(len(TS.search_instruments(tdb, issued_only=True)) == 1,
+          "and by 'issued out only'")
+    check(len(TS.search_instruments(tdb, available_only=True)) == 1,
+          "and by 'in store only'")
+    check(TS.distinct_values(tdb, "location") == ["NOOR", "Warehouse"],
+          "the filter lists come from the register itself")
     try:
-        TS.post_return(tdb, "WH-087IS2308202601",
-                       [{"line_id": ln0["id"], "qty": 5}])
-        check(False, "over-returning is blocked")
+        TS.save_instrument(tdb, {"instrument_desc": "", "serial_no": ""})
+        check(False, "a row without a description or serial is refused")
     except ValueError:
-        check(True, "OVER-RETURNING MORE THAN IS OUTSTANDING IS BLOCKED")
+        check(True, "A ROW WITHOUT A DESCRIPTION OR SERIAL IS REFUSED")
 
-    # -- transfer is not a return
-    TS.post_transfer(tdb, "WH-087IS2308202601", {"handed_to": "Mr. Khan",
-                                                 "iqama_id": "200018"})
-    h3 = TS.by_ref(tdb, "WH-087IS2308202601")
-    check(h3["status"] == TS.TRANSFERRED,
-          "A TRANSFER CLOSES THE SOURCE AS 'Transferred Out', NOT 'Returned'")
-    holders = {c["handed_to"] for c in TS.custody_by_person(tdb)}
-    check("Mr. Khan" in holders and "Mr. Habib" not in holders,
-          f"custody really moved to the new holder (got {holders})")
-    moved = [a for a in TS.search_assets(tdb) if a["asset_id"] == "12000TS01"][0]
-    check(moved["holder"] == "Mr. Khan", "the asset register follows the transfer")
+    # -- editor changes are tracked
+    TS.save_instrument(tdb, {**row2, "remarks": "Serviced and re-checked"},
+                       instrument_id=row2["id"])
+    row2b = TS.get_instrument(tdb, row2["id"])
+    hist2 = TS.instrument_history(tdb, row2["id"])
+    check(row2b["remarks"] == "Serviced and re-checked",
+          "editing a register row saves the change")
+    check(any(h["movement_type"] == TS.MV_UPDATED and "Remarks" in h["details"]
+              for h in hist2),
+          "AND THE EDIT IS WRITTEN INTO THE MOVEMENT TRACK WITH WHAT CHANGED")
 
-    # -- temporary loan and the overdue engine
-    loan_id = TS.save_handover(tdb, {
-        "txn_type": TS.LOAN, "warehouse": "WH", "project_id": "PRJ000091",
-        "doc_date": "2026-08-01", "expected_return": "2026-08-05",
-        "handed_to": "Mr. Bilal"},
-        [{"asset_id": "13000TW01", "description": "Torque Wrench", "qty": 2}])
-    check(tdb.scalar("SELECT status FROM handovers WHERE id=?", (loan_id,))
-          == TS.OVERDUE, "A LOAN PAST ITS RETURN DATE IS AUTOMATICALLY OVERDUE")
-    od = [r for r in TS.search(tdb, overdue_only=True)]
-    check(od and od[0]["days_late"] > 0,
-          f"and it reports how many days late (got {od[0]['days_late'] if od else 0})")
-    fut = TS.save_handover(tdb, {
-        "txn_type": TS.LOAN, "warehouse": "WH", "project_id": "PRJ000092",
-        "doc_date": TS.today(), "expected_return": "2099-01-01",
-        "handed_to": "Mr. Future"},
-        [{"asset_id": "13000XX01", "description": "Laser Level", "qty": 1}])
-    check(tdb.scalar("SELECT status FROM handovers WHERE id=?", (fut,)) == TS.OPEN,
-          "a loan still within its date is Open, not overdue")
+    # -- issue / transfer / return, the custody track
+    issued = TS.issue_instrument(tdb, row2["id"], movement_date="2026-09-01",
+                                 to_employee_code="EMP-700", db_main=db,
+                                 remarks="Handed over at NOOR store")
+    check(issued["movement_type"] == TS.MV_ISSUED and issued["ref_no"].startswith("IS-"),
+          "an Issue gets its own movement reference")
+    check(issued["to_holder"] == "AHMED SURVEYOR" and issued["to_employee_code"] == "EMP-700",
+          "the issue names the employee taking the instrument")
+    check(issued["iqama_id"] == "2482103955" and issued["division"] == "SURVEY",
+          "and stamps the employee's Iqama and division onto the movement")
+    live2 = TS.get_instrument(tdb, row2["id"])
+    check(live2["issued_to"] == "AHMED SURVEYOR" and live2["status"] == TS.ST_ISSUED,
+          "the register row now shows the holder and the Issued status")
+    check(live2["last_movement"] == TS.MV_ISSUED and live2["last_movement_at"] == "2026-09-01",
+          "THE DATE OF THE HANDOVER IS KEPT ON THE ROW")
 
-    # -- the unified filter
-    check(len(TS.search(tdb, txn_type=TS.ISSUE)) == 1, "filter by type works")
-    check(len(TS.search(tdb, txn_type=TS.LOAN)) == 2, "two loans are on file")
-    check(len(TS.search(tdb, holder="Mr. Bilal")) == 1, "filter by custodian works")
-    check(len(TS.search(tdb, text="12000TS01")) >= 1,
-          "SEARCHING BY ASSET ID FINDS THE DOCUMENT HOLDING IT")
-    check(len(TS.search(tdb, text="5778779")) >= 1, "searching by serial works")
-    check(len(TS.search(tdb, text="Jafura")) >= 1, "searching by project works")
-    check(len(TS.search(tdb, date_from="2026-08-20", date_to="2026-08-31")) >= 1,
-          "filter by date range works")
-    check(TS.search(tdb, text="zzz-not-here") == [],
-          "a search that matches nothing returns nothing")
-    every = TS.search(tdb)
-    shapes = {tuple(sorted(r.keys())) for r in every}
-    check(len(shapes) == 1,
-          "EVERY DOCUMENT TYPE COMES BACK IN ONE UNIFIED SHAPE")
-    check(all("outstanding" in r and "days_late" in r for r in every),
-          "with the derived custody figures on every row")
-    lines_view = TS.search_lines(tdb, txn_type=TS.ISSUE)
-    check(lines_view and all("asset_id" in l and "ref_no" in l for l in lines_view),
-          "the same filter can explode to one row per item")
+    moved = TS.transfer_instrument(tdb, row2["id"], movement_date="2026-09-10",
+                                   to_holder="ZOHAIB BILAL", to_employee_code="IDL-0040",
+                                   current_project="ZULUF", db_main=db)
+    check(moved["movement_type"] == TS.MV_TRANSFERRED and moved["from_holder"] == "AHMED SURVEYOR"
+          and moved["to_holder"] == "ZOHAIB BILAL",
+          "A TRANSFER KEEPS BOTH THE PERSON HANDING OVER AND THE ONE TAKING OVER")
+    check(TS.get_instrument(tdb, row2["id"])["issued_to"] == "ZOHAIB BILAL",
+          "and the register follows the transfer")
+    back = TS.return_instrument(tdb, row2["id"], movement_date="2026-09-20",
+                                remarks="Returned in good condition")
+    check(back["movement_type"] == TS.MV_RETURNED
+          and TS.get_instrument(tdb, row2["id"])["issued_to"] == "",
+          "A RETURN CLEARS THE HOLDER")
+    check(TS.get_instrument(tdb, row2["id"])["status"] == TS.ST_AVAILABLE,
+          "and puts the instrument back to Available")
+    check(back["from_holder"] == "ZOHAIB BILAL",
+          "the return still records who brought it back")
+    hist2 = TS.instrument_history(tdb, row2["id"])
+    kinds = [h["movement_type"] for h in hist2]
+    check({"Registered", "Updated", "Issued", "Transferred", "Returned"}.issubset(set(kinds)),
+          f"THE WHOLE TRACK RECORD IS KEPT ({kinds})")
+    check(all(h["movement_date"] for h in hist2),
+          "every movement carries its date")
+    again = TS.transfer_instrument(tdb, row2["id"], to_holder="Someone Else")
+    check(again["movement_type"] == TS.MV_ISSUED,
+          "transferring an in-store instrument is treated as a fresh issue")
+    TS.return_instrument(tdb, row2["id"])
+    try:
+        TS.issue_instrument(tdb, row2["id"], to_holder="")
+        check(False, "issuing without naming the employee is refused")
+    except ValueError:
+        check(True, "ISSUING WITHOUT NAMING THE EMPLOYEE IS REFUSED")
+    try:
+        TS.post_movement(tdb, 999999, TS.MV_ISSUED, to_holder="Ghost")
+        check(False, "a movement cannot be posted to an instrument that is not there")
+    except ValueError:
+        check(True, "a movement cannot be posted to an instrument that is not there")
+
+    # -- the movement register
+    all_m = TS.all_movements(tdb)
+    check(len(all_m) >= 7, "the movement register lists every action")
+    check(len(TS.all_movements(tdb, movement_type=TS.MV_RETURNED)) >= 2,
+          "and filters by movement type")
+    check(len(TS.all_movements(tdb, employee_code="EMP-700")) >= 1,
+          "and by employee code")
+    check(len(TS.all_movements(tdb, date_from="2026-09-05", date_to="2026-09-30")) >= 2,
+          "and by date range")
+    check(len({m["ref_no"] for m in all_m}) == len(all_m),
+          "every movement reference is unique")
+    people = TS.custody_by_person(tdb)
+    check(any(p.get("issued_to") == "AHMED SURVEYOR" for p in people) or people == [],
+          "the custody view names who is holding what")
+
+    # -- dashboard
+    dash = TS.dashboard(tdb)
+    check(dash["rows"] == 2 and dash["quantity"] == 3,
+          "the dashboard counts the register rows and the total quantity")
+    check(dash["movements"] == len(TS.all_movements(tdb)),
+          "and counts the movements")
+    check(sum(v for _k, v in dash["by_status"]) == 2,
+          "the status chart covers every row")
+    check(any(k == "NOOR" for k, _v in dash["by_location"]),
+          "the location chart is built from the Location column")
+    check(any(k == "AHMED SURVEYOR" for k, _v in dash["by_employee"]),
+          "and the employee chart from Issued To")
+    check(len(dash["monthly"]) == 12, "the monthly trend has twelve buckets")
+    check(len(dash["recent"]) >= 1, "the recent-movements panel fills")
+    filtered = TS.dashboard(tdb, {"issued_only": True})
+    check(filtered["rows"] == 1, "a dashboard filter narrows the register")
 
     # -- reports
     for rname in TS.REPORT_LIST:
         rt, rc, rr = TS.build_report(tdb, rname)
-        check(isinstance(rc, list) and len(rc) > 0, f"report runs: {rname}")
-    _t, _c, miss = TS.build_report(tdb, "Missing Documents & Signatures")
-    check(any("signature" in str(r[-1]) for r in miss),
-          "the governance report names what is missing")
-    _t, _c, cal = TS.build_report(tdb, "Calibration Due Report")
-    check(any("EXPIRED" in str(r[6]) for r in cal),
-          "expired calibration is called out explicitly")
+        check(isinstance(rc, list) and len(rc) > 0 and isinstance(rr, list),
+              f"report runs: {rname}")
+    _t, cols_reg, rows_reg = TS.build_report(tdb, TS.REPORT_LIST[0])
+    check(cols_reg[:14] == [lbl for _k, lbl in TS.COLUMNS],
+          "THE REGISTER REPORT PRINTS THE EXCEL COLUMNS IN ORDER")
+    check(len(rows_reg) == 2, "with one line per instrument")
 
-    # -- the printed controlled form
-    form = D.handover_pdf(db, tdb, h3["id"])
-    check(form.exists() and form.stat().st_size > 3000,
-          "the controlled handover form prints")
-    raw_form = form.read_bytes()
-    check(b"WH-087IS2308202601" in raw_form, "the reference is on the form")
-    check(b"\x00" not in raw_form[:4] and raw_form[:4] == b"%PDF",
-          "and it is a real PDF")
+    # -- the printed slip for a movement
+    mv = TS.all_movements(tdb)[0]
+    slip = D.instrument_slip_pdf(db, tdb, mv["id"])
+    check(slip.exists() and slip.stat().st_size > 2000 and slip.read_bytes()[:4] == b"%PDF",
+          "the handover / transfer / return slip prints as a real PDF")
+    check(mv["ref_no"].encode() in slip.read_bytes(),
+          "and carries the movement reference")
+
+    # -- the Excel sync engine
+    check(len(TS.EXCEL_SUFFIXES) == 4, "the sync accepts Excel and CSV files")
+    check(TS.excel_template_rows()[0] == [lbl for _k, lbl in TS.COLUMNS],
+          "THE DOWNLOADED TEMPLATE USES THE EXACT REGISTER HEADINGS")
 
     # -- separation from stock is physical, not conventional
     check(str(tdb.path) != str(db.path), "the Instrument Station module has its own database")
@@ -4044,8 +4056,7 @@ def main() -> int:
                  if isinstance(n, _ast.Import) for a in n.names}
     _banned = {"services", "database", ".services", ".database"}
     check(not (_imports & _banned),
-          f"TOOL STATION NEVER IMPORTS THE STOCK ENGINE (imports: {sorted(_imports)})")
-    # docstrings describe the rule, so exclude them and test only real strings
+          f"INSTRUMENT STATION NEVER IMPORTS THE STOCK ENGINE (imports: {sorted(_imports)})")
     _docs = set()
     for _n in _ast.walk(_tree):
         if isinstance(_n, (_ast.Module, _ast.ClassDef, _ast.FunctionDef)):
@@ -4059,59 +4070,125 @@ def main() -> int:
                   for q in _sql),
           "and never queries the stock tables")
     bal_before = db.scalar("SELECT COALESCE(SUM(balance),0) FROM items")
-    TS.save_handover(tdb, {"txn_type": TS.ISSUE, "warehouse": "WH",
-                           "handed_to": "Nobody"},
-                     [{"asset_id": "ZZ-1", "description": "Test", "qty": 9}])
+    TS.save_instrument(tdb, {"instrument_desc": "STEP LADDER", "serial_no": "SL-1",
+                             "quantity": 9})
+    TS.issue_instrument(tdb, TS.find_instrument(tdb, serial="SL-1")["id"],
+                        to_holder="Nobody")
     check(db.scalar("SELECT COALESCE(SUM(balance),0) FROM items") == bal_before,
-          "posting a handover moves no inventory stock at all")
+          "posting an instrument movement moves no inventory stock at all")
 
     # -- the UI
     tsp = ToolStationPage(db)
     check(tsp.tabs.count() == 5, "the page has all five tabs")
     names = [tsp.tabs.tabText(i) for i in range(tsp.tabs.count())]
-    check(any("Register" in n for n in names) and any("Sync" in n for n in names),
-          f"including the register and the sync folder ({names})")
+    check(any("Register" in n or "Instrument" in n for n in names)
+          and any("Movement" in n for n in names)
+          and any("Excel" in n for n in names)
+          and any("Dashboard" in n for n in names),
+          f"dashboard, register, movements, Excel sync and reports ({names})")
+    check("Instrument Description" in tsp.banner.text()
+          and "Division/Department" in tsp.banner.text(),
+          "the page banner spells out the sheet columns it follows")
+
     tsp.tabs.setCurrentIndex(1)
     tsp.refresh()
-    check(tsp.register.table.rowCount() > 0, "the register grid fills")
-    check(tsp.register.table.currentRow() >= 0,
-          "a row is auto-selected so the detail pane is never blank")
-    check(tsp.register.t_lines.rowCount() > 0, "and the item lines are shown")
-    tsp.register.chk_items.setChecked(True)
-    check("Asset / Tool ID" in tsp.register.table.headers(),
-          "the item view switches the grid to one row per tool")
-    tsp.register.chk_items.setChecked(False)
-    tsp.register.apply_filter({"txn_type": TS.LOAN})
-    check(tsp.register.f_type.currentText() == TS.LOAN,
-          "a dashboard tile drills into the register with its filter")
+    check(tsp.register.table.headers() == GRID_COLS,
+          "THE REGISTER GRID SHOWS THE EXCEL COLUMNS, IN ORDER")
+    check(tsp.register.table.rowCount() >= 3, "the register grid fills")
+    tsp.register.table.selectRow(0)
+    check(tsp.register.details.text() != "" and tsp.register.t_history.rowCount() >= 1,
+          "and the detail pane shows the selected instrument's track record")
+    tsp.register.apply_filter({"issued_only": True})
+    check(all(str(r.get("issued_to") or "").strip() for r in tsp.register.rows),
+          "the register's Issued-only filter works from the screen")
     tsp.register.clear_filters()
-    tsp.tabs.setCurrentIndex(2)
-    tsp.refresh()
-    check(tsp.assets.table.rowCount() > 0, "the asset register fills")
-    check(tsp.assets.t_hist.rowCount() > 0, "and shows that asset's history")
+    tsp.register.apply_filter({"status": TS.ST_AVAILABLE})
+    check(all(r["status"] == TS.ST_AVAILABLE for r in tsp.register.rows),
+          "and the status filter follows the Status column")
+    tsp.register.clear_filters()
+
+    # -- manual entry through the dialog, with a picture
+    dlg = InstrumentDialog(db, tdb, None)
+    dlg.e_desc.setText("GNSS RECEIVER")
+    dlg.e_serial.setText("GNSS-001")
+    dlg.e_make.setText("Leica GS18")
+    dlg.c_location.setCurrentText("Warehouse")
+    dlg.employee.e_code.setText("EMP-700")
+    dlg.employee.fill_from_master()
+    check(dlg.employee.e_name.currentText() == "AHMED SURVEYOR"
+          and dlg.employee.e_iqama.text() == "2482103955",
+          "TYPING THE CODE IN THE ENTRY FORM FILLS THE EMPLOYEE'S DETAILS")
+    dlg.picture.path = TS.store_picture(shot, "gnss")
+    dlg._save()
+    gnss = TS.find_instrument(tdb, serial="GNSS-001")
+    check(gnss is not None and gnss["instrument_desc"] == "GNSS RECEIVER",
+          "the entry dialog saves the new instrument")
+    check(bool(gnss["picture_path"]), "with its picture proof")
+    check(gnss["designation"] == "Surveyor" and gnss["current_project"] == "NOOR",
+          "and the employee columns came from the Employee Master")
+
+    # -- issue through the dialog, then return
+    dlg2 = MovementDialog(db, tdb, gnss, TS.ACTION_ISSUE)
+    dlg2.employee.e_code.setText("EMP-700")
+    dlg2.employee.fill_from_master()
+    dlg2.e_remarks.setText("Issued for NOOR survey works")
+    dlg2._save()
+    after_issue = TS.get_instrument(tdb, gnss["id"])
+    check(after_issue["issued_to"] == "AHMED SURVEYOR" and after_issue["status"] == TS.ST_ISSUED,
+          "the Issue dialog hands the instrument over")
+    check(after_issue["last_movement"] == TS.MV_ISSUED
+          and TS.instrument_history(tdb, gnss["id"])[0]["remarks"] ==
+          "Issued for NOOR survey works",
+          "and the movement is dated and stamped in the track record")
+    mvs = TS.instrument_history(tdb, gnss["id"])
+    check(any(m["movement_type"] == TS.MV_ISSUED for m in mvs),
+          "the handover appears in the instrument's own history")
+    dlg3 = MovementDialog(db, tdb, TS.get_instrument(tdb, gnss["id"]), TS.ACTION_RETURN)
+    dlg3._save()
+    check(TS.get_instrument(tdb, gnss["id"])["issued_to"] == "",
+          "the Return dialog takes it back into store")
+    check(any(m["movement_type"] == TS.MV_RETURNED
+              for m in TS.instrument_history(tdb, gnss["id"])),
+          "and the return is written to the track record")
+
     tsp.tabs.setCurrentIndex(0)
     tsp.refresh()
-    check(tsp.dash.tiles["documents"].lbl_value.text() != "0",
-          "the dashboard counts documents")
-    check(len(tsp.dash.c_status.data) > 0 and len(tsp.dash.c_status.data[0]) == 3,
+    check(tsp.dashboard.cards["rows"].lbl_value.text() != "0",
+          "the dashboard counts the instruments")
+    check(tsp.dashboard.c_status.data and len(tsp.dashboard.c_status.data[0]) == 3,
           "THE DONUT GETS (label, value, colour) TRIPLES, NOT EMPTY PAIRS")
-    tsp.tabs.setCurrentIndex(3)
+    check(len(tsp.dashboard.c_month.data) == 12, "the monthly chart is filled in")
+    drilled: dict = {}
+    tsp.dashboard.openRegister.connect(lambda f: drilled.update(f))
+    tsp.dashboard._drill("location", {"location": "NOOR"})
+    check(drilled.get("location") == "NOOR",
+          "a dashboard chart drills into the register with its own filter")
+    tsp.tabs.setCurrentWidget(tsp.register)
+    check(tsp.register.f_location.currentText() == "NOOR",
+          "and the register really receives the filter")
+
+    tsp.tabs.setCurrentIndex(2)
     tsp.refresh()
-    check(tsp.sync.table.rowCount() > 0, "the sync folder lists its files")
-    tsp.tabs.setCurrentIndex(4)
-    tsp.refresh()
-    check(tsp.reports.table.rowCount() >= 0, "the reports tab runs a report")
+    check(tsp.movements.table.rowCount() >= 7, "the movement register fills on screen")
+    check(tsp.movements.table.headers()[0] == "Date"
+          and "Employee Code" in tsp.movements.table.headers(),
+          "with the date and the employee code on every line")
+    tsp.movements.f_type.setCurrentText(TS.MV_TRANSFERRED)
+    tsp.movements.reload()
+    check(all(m["movement_type"] == TS.MV_TRANSFERRED for m in tsp.movements.rows),
+          "the movement register filters by movement type")
+    tsp.movements.clear_filters()
 
     # -- backup / restore round trip
     bk = tdb.backup(note="test")
     check(bk.exists(), "the Instrument Station module backs itself up")
-    n_before = len(TS.search(tdb))
-    TS.delete_handovers(tdb, [h3["id"]])
-    check(len(TS.search(tdb)) == n_before - 1, "a handover can be deleted")
+    n_before = len(TS.search_instruments(tdb))
+    TS.delete_instruments(tdb, [row2["id"]])
+    check(len(TS.search_instruments(tdb)) == n_before - 1, "an instrument can be deleted")
     tdb.restore(bk)
-    check(len(TS.search(tdb)) == n_before, "and a restore brings it back")
+    check(len(TS.search_instruments(tdb)) == n_before,
+          "and a restore brings it back with its movement track")
 
-    # ================================================ draft editing (stock out)
     section("Editing a DRAFT Delivery Note")
     it2 = dict(db.one("SELECT * FROM items WHERE balance>40 LIMIT 1"))
     bal0 = it2["balance"]
@@ -4223,54 +4300,51 @@ def main() -> int:
     pi.lines.clear_lines()
 
     # ============================ the tools dashboard: filters and configuration
-    section("Instrument Station — dashboard")
-    dash = tsp.dash
-    dash.reset_filters()
-    total_docs = dash.tiles["documents"].lbl_value.text()
-    check(total_docs not in ("", "0"), "the dashboard counts the filtered register")
-    dash.f_type.setCurrentText(TS.ISSUE)
+    section("Instrument Station — dashboard and movement track")
+    dash = tsp.dashboard
+    dash.clear_filters()
+    total_rows = dash.cards["rows"].lbl_value.text()
+    check(total_rows not in ("", "0"), "the dashboard counts the filtered register")
+    check(total_rows == f"{len(TS.search_instruments(tdb)):,}",
+          "the tile matches the register exactly")
+    dash.f_status.setCurrentText(TS.ST_AVAILABLE)
     dash.reload()
-    check(dash.tiles["documents"].lbl_value.text() ==
-          f"{len(TS.search(tdb, txn_type=TS.ISSUE)):,.0f}",
-          "a filter changes every tile on the dashboard")
-    dash.f_measure.setCurrentText("Measure: Quantity")
-    dash.reload()
-    check(sum(v for _k, v in dash.c_type.data) ==
-          sum(l["qty"] for l in TS.search_lines(tdb, txn_type=TS.ISSUE)),
-          "the Measure selector switches the charts to quantity")
+    n_avail = len(TS.search_instruments(tdb, status=TS.ST_AVAILABLE))
+    check(dash.cards["rows"].lbl_value.text() == f"{n_avail:,}",
+          "a filter re-counts every tile on the dashboard")
+    _avail_qty = sum(TS.to_float(r.get("quantity"), 0)
+                     for r in TS.search_instruments(tdb, status=TS.ST_AVAILABLE))
+    check(sum(v for _k, v in dash.c_location.data) == _avail_qty,
+          "the location chart follows the same filter")
     drilled = {}
     dash.openRegister.connect(lambda f: drilled.update(f))
-    dash._drill("overdue")
-    check(drilled.get("txn_type") == TS.ISSUE and drilled.get("overdue_only"),
-          "a tile drills through carrying the dashboard's own filters")
-    dash.reset_filters()
-    check(dash.tiles["documents"].lbl_value.text() == total_docs,
+    dash._drill("rows", {})
+    check(drilled.get("status") == TS.ST_AVAILABLE,
+          "a tile drill carries the dashboard's own filter into the register")
+    dash.clear_filters()
+    check(dash.cards["rows"].lbl_value.text() == total_rows,
           "Reset puts every filter back")
-    check(len(TS.ageing(tdb)) == len(TS.AGE_BUCKETS), "ageing buckets are built")
-    check(all(len(r) == 3 for r in TS.monthly_split(tdb)),
-          "handed-over vs returned is a two-series set")
+    check(len(dash.c_month.data) == 12 and all(len(p) == 2 for p in dash.c_month.data),
+          "the handover trend is a twelve-point series")
+    check(dash.t_recent.rowCount() >= 1 and len(dash.t_recent.headers()) >= 5,
+          "the recent-movements table is filled from the movement track")
+    check(len(dash.cards) >= 6, "the dashboard shows its KPI tiles")
+    check(dash.cards["movements_30"].lbl_value.text() != "",
+          "including the movements of the last 30 days")
 
-    dash.tile_cfg = ["documents", "overdue"]
-    dash.panel_cfg = ["status", "recent"]
-    dash.cols_cfg = 3
-    dash._save_config()
-    dash._build_body()
-    dash.reload()
-    check(set(dash.tiles) == {"documents", "overdue"} and
-          set(dash.panels) == {"status", "recent"},
-          "the dashboard shows only the tiles and panels that were chosen")
-    from aurco.ui.tool_station import ToolDashboard as _TD
-    check(_TD(tdb, db).tile_cfg == ["documents", "overdue"],
-          "AND THE CHOSEN LAYOUT SURVIVES A RESTART")
-    dash.tile_cfg = list(_dash_defaults := __import__(
-        "aurco.ui.tool_station", fromlist=["x"]).DEFAULT_TILES)
-    dash.panel_cfg = list(__import__(
-        "aurco.ui.tool_station", fromlist=["x"]).DEFAULT_PANELS)
-    dash.cols_cfg = 4
-    dash._save_config()
-    dash._build_body()
-    dash.reload()
-    check(len(dash.tiles) == len(_dash_defaults), "restoring the default layout works")
+    # the movement tab narrows to one instrument
+    mov = tsp.movements
+    gnss_id = int(gnss["id"])
+    mov.show_instrument(gnss_id)
+    check(bool(mov.rows) and all(m["instrument_id"] == gnss_id for m in mov.rows),
+          "the movement register can be narrowed to one instrument")
+    check({m["movement_type"] for m in mov.rows} >= {TS.MV_ISSUED, TS.MV_RETURNED},
+          "and shows that instrument's issue and return")
+    mov.f_text.setText("zzz-not-here")
+    mov.reload()
+    check(mov.rows == [], "a search that matches nothing returns nothing")
+    mov.clear_filters()
+    check(len(mov.rows) >= 7, "clearing the filters brings the whole track back")
 
     # ---- the module folder was renamed, with the old one migrated
     from aurco.core import config as _cfg
@@ -4278,16 +4352,15 @@ def main() -> int:
           "the module folder carries the new name")
     legacy_root = Path("/tmp/AURCO_TEST_RENAME")
     shutil.rmtree(legacy_root, ignore_errors=True)
-    (legacy_root / TS.LEGACY_FOLDERS[1]).mkdir(parents=True)
-    (legacy_root / TS.LEGACY_FOLDERS[1] / "tool_station.db").write_text("x")
+    (legacy_root / TS.LEGACY_FOLDERS[2]).mkdir(parents=True)
+    (legacy_root / TS.LEGACY_FOLDERS[2] / "tool_station.db").write_text("x")
     _old_root = _cfg.get_storage_root()
     _cfg.set_storage_root(legacy_root)
     TS._migrate_legacy_folder()
     check((legacy_root / TS.FOLDER / "tool_station.db").exists(),
-          "an existing legacy Instrument / Tool Station folder is migrated, not abandoned")
+          "an existing legacy Tool/Instrument Station folder is migrated, not abandoned")
     _cfg.set_storage_root(_old_root)
 
-    # ================= Excel paste / export + inline stock adjustment ======
     section("Delivery Note — Excel paste, export and inline stock adjustment")
     from aurco.ui import common as _C
     pa = win.page_out
@@ -4432,22 +4505,23 @@ def main() -> int:
           "re-importing the same employee code updates the existing employee master row")
 
     # ==================== Instrument Station + Analytics site sync
-    section("Instrument Station — Excel folder sync and Analytics")
+    section("Instrument Station — Excel sync and Analytics")
     from aurco.core import toolstation as T
-    from aurco.ui.tool_station import ToolStationPage
     import aurco.ui.tool_station as _tsp_mod
     for _k in ("confirm", "info_box", "error_box", "toast"):
         setattr(_tsp_mod.W, _k, getattr(W, _k))
     check("Instrument Station" in win.pages, "the Instrument Station page is available")
     check("Analytics" in win.pages, "the separate Analytics module is available")
-    check("Instrument Station" in _cfg.SUBFOLDERS and "Tools Station" not in _cfg.SUBFOLDERS and "Tools, Instruments & Devices" not in _cfg.SUBFOLDERS,
+    check("Instrument Station" in _cfg.SUBFOLDERS and "Tools Station" not in _cfg.SUBFOLDERS
+          and "Tools, Instruments & Devices" not in _cfg.SUBFOLDERS,
           "the standard storage structure now uses the Instrument Station folder only")
 
     tpage = win.page_tools
-    tdb = tpage.tdb
-    for _tbl in ("site_asset_events", "site_sync_runs", "site_inventory", "site_sync_files", "site_sync_folders"):
-        tdb.execute(f"DELETE FROM {_tbl}")
-    tdb.commit()
+    st_db = tpage.tdb
+    T.set_tool_db(st_db)
+    for _tbl in ("movements", "instruments", "sync_runs", "sync_files", "sync_folders"):
+        st_db.execute(f"DELETE FROM {_tbl}")
+    st_db.commit()
 
     _sync_dir = root / "site_sync_folder"
     shutil.rmtree(_sync_dir, ignore_errors=True)
@@ -4456,11 +4530,17 @@ def main() -> int:
     _csv.write_text(
         "ATTIQ UR REHMAN CONT. CO.\n"
         "Instrument Station Template\n"
-        "Instrument Description|Serial No.|Make / Model|Location|Quantity|Status|Issued To / Employee Name|Employee Code|Iqama ID|Designation|Division/Department|Current Project|Issued By|Remarks|Picture Path\n"
-        "TOTAL STATION|1338275|LEICA (TS02)|NOOR|1|Issued|ZOHAIB BILAL|IDL-0040|2482103955|Surveyor|SURVEY|NOOR|M. Ali Zain||\n"
-        "AUTO LEVEL|2205565|LEICA|WAREHOUSE|1|Available||||Surveyor|SURVEY|WAREHOUSE|M. Ali Zain|Ready|\n",
+        "Instrument Description|Serial No.|Make / Model|Location|Quantity|Status|"
+        "Issued To / Employee Name|Employee Code|Iqama ID|Designation|"
+        "Division/Department|Current Project|Issued By|Remarks|Picture Path\n"
+        "TOTAL STATION|1338275|LEICA (TS02)|NOOR|1|Issued|ZOHAIB BILAL|IDL-0040|"
+        "2482103955|Surveyor|SURVEY|NOOR|M. Ali Zain||\n"
+        "AUTO LEVEL|2205565|LEICA|WAREHOUSE|1|Available||||Surveyor|SURVEY|"
+        "WAREHOUSE|M. Ali Zain|Ready|\n",
         encoding="utf-8")
-    _xlsx_map = root / "instrument_sync_mapping.xlsx"
+    # a workbook whose first sheet is a cover: the real data is on sheet 2
+    from openpyxl import Workbook
+    _xlsx_map = _sync_dir / "instrument_sync_mapping.xlsx"
     _wb = Workbook()
     _cover = _wb.active
     _cover.title = "Cover"
@@ -4469,101 +4549,96 @@ def main() -> int:
     _ws = _wb.create_sheet("Allocation")
     _ws.append(["ATTIQ UR REHMAN CONT. CO."])
     _ws.append(["Instrument Station Template"])
-    _ws.append(["Instrument Description", "Serial No.", "Make / Model", "Location", "Quantity", "Status", "Issued To / Employee Name", "Employee Code", "Iqama ID", "Designation", "Division/Department", "Current Project", "Issued By", "Remarks", "Picture Path"])
-    _ws.append(["TOTAL STATION", "1338275", "LEICA (TS02)", "NOOR", 1, "Issued", "ZOHAIB BILAL", "IDL-0040", "2482103955", "Surveyor", "SURVEY", "NOOR", "M. Ali Zain", "", ""])
+    _ws.append(["Instrument Description", "Serial No.", "Make / Model", "Location",
+                "Quantity", "Status", "Issued To / Employee Name", "Employee Code",
+                "Iqama ID", "Designation", "Division/Department", "Current Project",
+                "Issued By", "Remarks", "Picture Path"])
+    _ws.append(["TOTAL STATION", "1338275", "LEICA (TS02)", "NOOR", 1, "Issued",
+                "ZOHAIB BILAL", "IDL-0040", "2482103955", "Surveyor", "SURVEY",
+                "NOOR", "M. Ali Zain", "", ""])
     _wb.save(_xlsx_map)
-    _headers_xlsx, _rows_xlsx = T.site_sync_read_table(_xlsx_map)
-    _map_xlsx = T.site_sync_auto_map(_headers_xlsx)
-    check(_headers_xlsx[:5] == ["Instrument Description", "Serial No.", "Make / Model", "Location", "Quantity"],
-          "the Excel sync reader detects the real instrument header row even when title rows come first")
-    check(set(_map_xlsx.values()) >= {"description", "serial_no", "make_model", "location", "qty", "status", "holder", "employee_code", "iqama_id", "designation", "department", "project_id", "issued_by", "remarks", "picture_path"},
-          "the mapping engine recognises the exact instrument sheet column names")
-    check(len(T.site_sync_preview(_headers_xlsx, _rows_xlsx, _map_xlsx)) == 1,
-          "the mapping preview builds usable instrument records from that Excel template")
-    _fid = T.save_site_sync_folder(tdb, _sync_dir, "Main Site Sync", "", True, 1)
-    _sync_res = T.sync_site_sync_folder(tdb, _fid, force=True)
-    check(_sync_res["synced"] >= 1 and _sync_res["failed"] == 0,
-          "the Instrument Station module can sync a site-wise Excel/CSV folder without errors")
-    _inv = T.search_site_inventory(tdb, site_name="NOOR")
-    check(any(r["description"] == "TOTAL STATION" and r["holder"] == "ZOHAIB BILAL" and r["employee_code"] == "IDL-0040" for r in _inv),
-          "the synced inventory clearly shows which site currently has which tool and employee")
-    _dash_sync = T.site_inventory_dashboard(tdb)
-    check(_dash_sync["site_count"] >= 1 and _dash_sync["file_count"] >= 1 and _dash_sync["issued_qty"] >= 1,
-          "the site-sync dashboard summarises sites, synced files and issued quantities")
-    check(any(k == "NOOR" and float(v) >= 1 for k, v in _dash_sync["by_site"]),
-          "the site-sync dashboard includes a site-wise quantity breakdown")
-    check(any(r["status"] == "Synced" for r in T.site_sync_scan_files(tdb)),
-          "file-wise sync history is stored for synced files")
-    check(any(e["movement_type"] == "Imported" for e in T.site_asset_events(tdb)),
-          "site-sync movements create an event history for the tool")
-    _manual = T.manual_site_inventory_save(tdb, {
-        "description": "GNSS Receiver",
-        "serial_no": "GNSS-001",
-        "make_model": "Leica GS18",
-        "qty": 1,
-        "status": "Available",
-        "site_name": "Warehouse",
-        "location": "Warehouse Rack 3",
-        "issued_by": "M. Ali Zain",
-        "picture_path": "/tmp/manual_gnss.jpg",
-        "remarks": "Manual proof row",
-    }, movement_type="Manual Added", source_ref="Manual Add")
-    _manual_row = T.site_inventory_record(tdb, _manual["asset_key"])
-    check(_manual_row is not None and _manual_row["picture_path"] == "/tmp/manual_gnss.jpg",
-          "manual instrument rows can be added with picture proof")
-    _moved = T.manual_site_inventory_save(tdb, {
-        **_manual_row,
-        "site_name": "NOOR",
-        "location": "NOOR Survey Store",
-        "holder": "AHMED SURVEYOR",
-        "employee_code": "EMP-700",
-        "status": "Issued",
-    }, previous_asset_key=_manual["asset_key"], movement_type="Transferred", source_ref="Manual Transfer")
-    _returned = T.manual_site_inventory_save(tdb, {
-        **T.site_inventory_record(tdb, _moved["asset_key"]),
-        "site_name": "Warehouse",
-        "location": "Warehouse Rack 3",
-        "holder": "",
-        "employee_code": "",
-        "status": "Available",
-    }, previous_asset_key=_moved["asset_key"], movement_type="Returned", source_ref="Manual Return")
-    _manual_back = T.site_inventory_record(tdb, _returned["asset_key"])
-    check(_manual_back and _manual_back["site_name"] == "Warehouse" and not _manual_back["holder"],
-          "manual rows can be transferred and returned again")
-    _manual_moves = {e["movement_type"] for e in T.site_asset_events(tdb)}
-    check({"Manual Added", "Transferred", "Returned"}.issubset(_manual_moves),
-          "manual instrument actions keep a movement track record")
-    tpage.sync.reload()
-    tpage.sync.site_excel.reload()
-    app.processEvents()
-    check(hasattr(tpage.sync, "site_excel") and tpage.sync.site_excel.t_folders.rowCount() >= 1
-          and len(T.search_site_inventory(tdb)) >= 1,
-          "the Instrument Station module shows the embedded site Excel sync panel with inventory preview")
 
+    _headers_x, _rows_x = T.excel_read_table(_xlsx_map)
+    check(_headers_x[:5] == ["Instrument Description", "Serial No.", "Make / Model",
+                             "Location", "Quantity"],
+          "the Excel reader finds the real header row behind a cover sheet and title rows")
+    _map_x = T.excel_auto_map(_headers_x)
+    check(set(_map_x.values()) == {k for k, _ in T.COLUMNS} | {"picture_path"},
+          "the mapping engine recognises every instrument sheet column, including Picture Path")
+    _preview = T.excel_preview(_headers_x, _rows_x, _map_x)
+    check(len(_preview) == 1 and _preview[0]["instrument_desc"] == "TOTAL STATION"
+          and _preview[0]["serial_no"] == "1338275",
+          "the mapping preview builds a usable instrument row from that template")
+
+    _fid = T.save_sync_folder(st_db, _sync_dir, "Main Site Sync", "", True, 1)
+    _sync_res = T.sync_folder(st_db, _fid, force=True, db_main=db)
+    check(_sync_res["failed"] == 0 and _sync_res["created"] >= 2,
+          "the Instrument Station reads a site-wise Excel/CSV folder without errors")
+    check(not any("mapped" in str(e).lower() for e in _sync_res["errors"]),
+          "AND NOTHING IS REPORTED AS 'NOTHING MAPPED' FOR THE SHEET THE USER SUPPLIED")
+    _reg = T.search_instruments(st_db)
+    check(any(r["instrument_desc"] == "TOTAL STATION" and r["issued_to"] == "ZOHAIB BILAL"
+              and r["employee_code"] == "IDL-0040" and r["location"] == "NOOR"
+              for r in _reg),
+          "the synced register shows which location has which instrument and employee")
+    check(any(r["instrument_desc"] == "AUTO LEVEL" and r["serial_no"] == "2205565"
+              for r in _reg),
+          "every row of the sheet lands in the register")
+    check(len(T.scan_sync_files(st_db)) >= 2,
+          "each file read is recorded in the file history")
+    check(all(f["status"].startswith("Imported") for f in T.scan_sync_files(st_db)),
+          "with its import result kept as file-wise history")
+    check(len(T.sync_runs(st_db)) >= 2, "and a run-by-run sync history")
+    check(any(m["source"] == "Excel Sync" for m in T.all_movements(st_db)),
+          "the sync writes its own movement lines")
+    _d = T.dashboard(st_db)
+    check(_d["rows"] >= 2 and _d["sites"] >= 1,
+          "the dashboard summarises the synced register")
+    check(any(k == "NOOR" for k, _v in _d["by_location"]),
+          "with a location-wise quantity breakdown")
+
+    _before_rows = len(T.search_instruments(st_db))
+    T.sync_folder(st_db, _fid, force=True, db_main=db)
+    check(len(T.search_instruments(st_db)) == _before_rows,
+          "RE-READING THE SAME SHEET UPDATES THE ROWS INSTEAD OF DUPLICATING THEM")
+    _csv.write_text(_csv.read_text(encoding="utf-8").replace("ZOHAIB BILAL", "FARHAN ALI"),
+                    encoding="utf-8")
+    T.sync_folder(st_db, _fid, force=True, db_main=db)
+    check(any(m["movement_type"] == T.MV_TRANSFERRED and m["to_holder"] == "FARHAN ALI"
+              for m in T.all_movements(st_db)),
+          "AND A CHANGED HOLDER IN THE SHEET BECOMES A TRANSFER IN THE TRACK RECORD")
+    check(T.get_instrument(st_db, [r for r in T.search_instruments(st_db)
+                                   if r["serial_no"] == "1338275"][0]["id"])["issued_to"]
+          == "FARHAN ALI",
+          "the register itself follows the sheet")
+
+    # ---- the Excel Sync tab and its mapping dialog
+    tpage.tabs.setCurrentWidget(tpage.sync)
+    tpage.refresh()
+    check(tpage.sync.t_folders.rowCount() >= 1, "the Excel Sync tab lists the folders")
+    check(tpage.sync.t_files.rowCount() >= 2, "and every file it has read")
+    check(tpage.sync.t_runs.rowCount() >= 2, "and the sync history")
+    _dlg = _tsp_mod.SyncMappingDialog(st_db, db, _headers_x, _rows_x, str(_xlsx_map))
+    check(len(_dlg._mapping()) >= 14,
+          "the mapping dialog maps the sheet onto all the register columns")
+    check(len(_dlg.records) >= 1, "and previews the rows it will import")
+    _dlg.reject()
+
+    # ---- Analytics reads the same register
     win.go("Analytics")
     win.page_analytics.refresh()
     app.processEvents()
-    win.page_analytics.site_sync.f_site.setCurrentText("NOOR")
-    win.page_analytics.site_sync.f_type.setCurrentText("Instrument")
-    win.page_analytics.site_sync.reload()
-    check(win.page_analytics.site_sync.cards["qty"].lbl_value.text() == "1"
-          and win.page_analytics.site_sync.table.rowCount() >= 1,
-          "the Analytics module shows the NOOR instrument quantity from the synced site folder")
-    win.page_analytics.site_sync.reset_filters()
+    an = win.page_analytics.site_sync
+    an.reload_filters()
+    an.f_site.setCurrentText("NOOR")
+    an.reload()
+    check(an.cards["rows"].lbl_value.text() != "0" and an.table.rowCount() >= 1,
+          "the Analytics module shows the synced NOOR instruments")
+    check("Instrument Description" in an.table.headers()
+          and "Issued To / Employee Name" in an.table.headers(),
+          "in the same register columns as the Excel sheet")
+    an.reset_filters()
 
-    _item_a = S.save_item(db, {"code": "BULK-001", "description": "Bulk Normal 1", "uom": "EA", "warehouse": "Main"})
-    _item_b = S.save_item(db, {"code": "BULK-002", "description": "Bulk Normal 2", "uom": "EA", "warehouse": "Main"})
-    check(S.bulk_set_second_type(db, [_item_a, _item_b], "Device") == 2,
-          "Item Master supports bulk marking items as a 2nd Type")
-    check(len(S.search_items(db, second_type_filter="2nd Type Items")) >= 2,
-          "Item Master data can be filtered to only 2nd Type items")
-    check(any(r["id"] == _item_a for r in S.search_items(db, second_type_filter="Normal Items")) is False,
-          "Item Master Normal Items filtering excludes items already marked as 2nd Type")
-    S.bulk_set_second_type(db, [_item_a, _item_b], "")
-    check(any(r["id"] == _item_a for r in S.search_items(db, second_type_filter="Normal Items")),
-          "bulk removal of the 2nd Type returns items to the normal-items filter")
-
-    # ============================================ Cable Records — the module
     section("Cable Records — drums, cutting log and cable schedule")
     from aurco.core import cables as CBL
     from aurco.ui.cable_records import (CableRecordsPage, CableDashboard,

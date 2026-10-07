@@ -1,55 +1,33 @@
-"""TOOLS, INSTRUMENTS & DEVICES — the custody register module.
+"""INSTRUMENT STATION — the instrument register, exactly as the site Excel sheet.
 
-(Historically called the "Tool Station"; the data folder is migrated
-automatically, see `_migrate_legacy_folder`.)
+The register is deliberately shaped like the sheet the sites already fill in, so
+nothing has to be translated on the way in or on the way out:
 
-A separate station in the same spirit as the Admin Station: it tracks **who is
-holding which tool**, not how much stock exists. Enforced physically, not by
-convention:
+    Instrument Description · Serial No. · Make / Model · Location · Quantity ·
+    Status · Issued To / Employee Name · Employee Code · Iqama ID ·
+    Designation · Division/Department · Current Project · Issued By · Remarks
 
-    ·  its own SQLite file        <storage>/Instrument Station/
-                                  tool_station.db
-    ·  its own schema, numbering, audit trail and backups
+On top of that single table the module keeps **the movement track** — every
+handover, transfer and return with who held the instrument, when it moved and
+who signed it out — so the question "who has this instrument now, and since
+when?" always has an answer.
+
+Enforced physically, not by convention:
+
+    ·  its own SQLite file        <storage>/Instrument Station/instrument_station.db
+    ·  its own schema, numbering, audit trail, backups and pictures folder
     ·  no foreign key, join or import from items / stock_ledger / documents
     ·  nothing here ever posts a stock movement
 
-Record shape follows the controlled form the user supplied
-(``WH-FRM-001 Rev 00``, "TOOLS, DEVICES & INSTRUMENTS HANDOVER FORM"):
-
-    A — HANDOVER DETAILS      form no · reference · date · time · type ·
-                              expected return · project id / name / location
-    B — RECIPIENT / CUSTODIAN handed to · iqama · job title · mobile ·
-                              company · email · supervisor · cost code
-    C — ITEM DETAILS          asset id · category · description · make/model ·
-                              serial · qty · accessories · condition ·
-                              calibration due · remarks
-    D — ACKNOWLEDGEMENT       issued by / received by, names + date-time
-    E — ITEM PHOTOGRAPHS      evidence per item
-
-The four transaction types on the form drive the whole custody engine:
-
-    Issue          tool leaves the warehouse, open-ended custody
-    Transfer       custody moves from one holder to another
-    Temporary Loan tool must come back by the expected return date
-    Return         tool comes back to the warehouse (closes an earlier record)
-
-The reference number the form generates is self-describing and is decoded on
-sight, so a folder full of signed PDFs can be filed without typing anything:
-
-    WH-087IS2308202601
-    ^^ ^^^ ^^ ^^^^^^^^ ^^
-    |  |   |  |        `- sequence within that day
-    |  |   |  `---------- date 23/08/2026
-    |  |   `------------- transaction type (IS/TR/TL/RT)
-    |  `----------------- project 087  ->  PRJ000087
-    `-------------------- originating warehouse
+Everything the user types goes through one place (`save_instrument`) and every
+custody change goes through one place (`post_movement`), so a movement can never
+exist without the instrument row agreeing with it.
 """
 from __future__ import annotations
 
 import csv
 import datetime as _dt
 import io
-import json
 import os
 import re
 import shutil
@@ -62,174 +40,101 @@ from . import config
 MODULE_NAME = "Instrument Station"
 FOLDER = MODULE_NAME
 LEGACY_FOLDERS = ("Tools Station", "Tools, Instruments & Devices", "Tool Station")
-DB_NAME = "tool_station.db"
+DB_NAME = "instrument_station.db"
+LEGACY_DB_NAMES = ("tool_station.db", "tools_station.db", "surveyor_tools.db")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
-# ------------------------------------------------------------------ vocabulary
-ISSUE = "Issue"
-TRANSFER = "Transfer"
-LOAN = "Temporary Loan"
-RETURN = "Return"
-TXN_TYPES = (ISSUE, TRANSFER, LOAN, RETURN)
+# =========================================================== the register shape
+# The single source of truth for the register: column key + printed heading.
+# The UI grid, the Excel template, the importer and the reports all read this
+# list, so the screen, the sheet and the PDF can never drift apart.
+COLUMNS: list[tuple[str, str]] = [
+    ("instrument_desc", "Instrument Description"),
+    ("serial_no", "Serial No."),
+    ("make_model", "Make / Model"),
+    ("location", "Location"),
+    ("quantity", "Quantity"),
+    ("status", "Status"),
+    ("issued_to", "Issued To / Employee Name"),
+    ("employee_code", "Employee Code"),
+    ("iqama_id", "Iqama ID"),
+    ("designation", "Designation"),
+    ("division", "Division/Department"),
+    ("current_project", "Current Project"),
+    ("issued_by", "Issued By"),
+    ("remarks", "Remarks"),
+]
+COLUMN_KEYS: list[str] = [k for k, _ in COLUMNS]
+COLUMN_LABELS: dict[str, str] = dict(COLUMNS)
+LABELS = COLUMN_LABELS
 
-# short codes as they appear inside the handover reference number
-TXN_CODES = {"IS": ISSUE, "TR": TRANSFER, "TL": LOAN, "RT": RETURN}
-CODE_OF = {v: k for k, v in TXN_CODES.items()}
+# Kept alongside the sheet columns: not typed by hand every day, but exported,
+# imported and searched like the rest.
+EXTRA_COLUMNS: list[tuple[str, str]] = [
+    ("site_name", "Site Name"),
+    ("picture_path", "Picture Path"),
+]
+ALL_FIELDS: list[tuple[str, str]] = COLUMNS + EXTRA_COLUMNS
+ALL_KEYS: list[str] = [k for k, _ in ALL_FIELDS]
 
-TXN_COLORS = {
-    ISSUE: "#1098ad",
-    TRANSFER: "#7048e8",
-    LOAN: "#e8590c",
-    RETURN: "#1a9c52",
-}
+# Columns that name a person — filled from the Employee Master when the code is
+# typed, and written onto every movement so the history keeps the details of
+# the day the instrument moved.
+PERSON_FIELDS = ("issued_to", "employee_code", "iqama_id", "designation",
+                 "division", "current_project")
 
-# custody state of a handover
-OPEN = "Open"                 # tool is out with the custodian
-PART_RETURNED = "Partially Returned"
-CLOSED = "Returned"
-TRANSFERRED = "Transferred Out"
-OVERDUE = "Overdue"
-CANCELLED = "Cancelled"
+# ---------------------------------------------------------------- status words
+ST_AVAILABLE = "Available"
+ST_ISSUED = "Issued"
+ST_AT_SITE = "At Site"
+ST_UNDER_REPAIR = "Under Repair"
+ST_DAMAGED = "Damaged"
+ST_LOST = "Lost"
+ST_RETIRED = "Retired"
 
+STATUSES = [ST_AVAILABLE, ST_ISSUED, ST_AT_SITE, ST_UNDER_REPAIR,
+            ST_DAMAGED, ST_LOST, ST_RETIRED]
 STATUS_COLORS = {
-    OPEN: "#1098ad",
-    PART_RETURNED: "#e8590c",
-    CLOSED: "#1a9c52",
-    TRANSFERRED: "#7048e8",
-    OVERDUE: "#c92a2a",
-    CANCELLED: "#6b7c8f",
+    ST_AVAILABLE: "#1a9c52",
+    ST_ISSUED: "#1098ad",
+    ST_AT_SITE: "#14538f",
+    ST_UNDER_REPAIR: "#e8590c",
+    ST_DAMAGED: "#c92a2a",
+    ST_LOST: "#7048e8",
+    ST_RETIRED: "#6b7c8f",
+}
+# A row with a holder is "out"; these statuses mean "not usable right now".
+NOT_AVAILABLE = {ST_UNDER_REPAIR, ST_DAMAGED, ST_LOST, ST_RETIRED}
+OUT_STATUSES = {ST_ISSUED, ST_AT_SITE}
+
+# ------------------------------------------------------------- movement words
+MV_REGISTERED = "Registered"
+MV_ISSUED = "Issued"
+MV_TRANSFERRED = "Transferred"
+MV_RETURNED = "Returned"
+MV_UPDATED = "Updated"
+
+MOVEMENTS = [MV_REGISTERED, MV_ISSUED, MV_TRANSFERRED, MV_RETURNED, MV_UPDATED]
+MOVEMENT_CODES = {MV_REGISTERED: "RG", MV_ISSUED: "IS",
+                  MV_TRANSFERRED: "TR", MV_RETURNED: "RT", MV_UPDATED: "UP"}
+MOVEMENT_COLORS = {
+    MV_REGISTERED: "#6b7c8f",
+    MV_ISSUED: "#1098ad",
+    MV_TRANSFERRED: "#7048e8",
+    MV_RETURNED: "#1a9c52",
+    MV_UPDATED: "#e8590c",
 }
 
-# condition grades exactly as printed on the form
-CONDITIONS = {
-    "A": "A – New / Excellent",
-    "B": "B – Good",
-    "C": "C – Fair / Usable",
-    "D": "D – Damaged / Not Usable",
-}
+ACTION_ISSUE = "Issue"
+ACTION_TRANSFER = "Transfer"
+ACTION_RETURN = "Return"
 
+# --------------------------------------------------------------------- schema
 DDL = """
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
-);
-
-CREATE TABLE IF NOT EXISTS handovers (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    ref_no         TEXT UNIQUE NOT NULL,
-    form_no        TEXT DEFAULT '',
-    txn_type       TEXT NOT NULL DEFAULT 'Issue',
-    doc_date       TEXT DEFAULT '',
-    doc_time       TEXT DEFAULT '',
-    expected_return TEXT DEFAULT '',
-    warehouse      TEXT DEFAULT '',
-    project_id     TEXT DEFAULT '',
-    project_name   TEXT DEFAULT '',
-    location       TEXT DEFAULT '',
-    -- section B
-    handed_to      TEXT DEFAULT '',
-    iqama_id       TEXT DEFAULT '',
-    job_title      TEXT DEFAULT '',
-    mobile         TEXT DEFAULT '',
-    company        TEXT DEFAULT '',
-    email          TEXT DEFAULT '',
-    supervisor     TEXT DEFAULT '',
-    cost_code      TEXT DEFAULT '',
-    -- section D
-    issued_by      TEXT DEFAULT '',
-    issued_at      TEXT DEFAULT '',
-    received_by    TEXT DEFAULT '',
-    received_at    TEXT DEFAULT '',
-    -- verification ticks
-    v_serial       INTEGER NOT NULL DEFAULT 0,
-    v_accessories  INTEGER NOT NULL DEFAULT 0,
-    v_calibration  INTEGER NOT NULL DEFAULT 0,
-    v_photos       INTEGER NOT NULL DEFAULT 0,
-    -- custody bookkeeping
-    status         TEXT NOT NULL DEFAULT 'Open',
-    closed_by_ref  TEXT DEFAULT '',
-    parent_ref     TEXT DEFAULT '',
-    remarks        TEXT DEFAULT '',
-    source_file    TEXT DEFAULT '',
-    file_hash      TEXT DEFAULT '',
-    created_by     TEXT DEFAULT '',
-    created_at     TEXT DEFAULT (datetime('now','localtime')),
-    updated_at     TEXT DEFAULT (datetime('now','localtime'))
-);
-CREATE INDEX IF NOT EXISTS ix_th_type    ON handovers(txn_type);
-CREATE INDEX IF NOT EXISTS ix_th_status  ON handovers(status);
-CREATE INDEX IF NOT EXISTS ix_th_date    ON handovers(doc_date);
-CREATE INDEX IF NOT EXISTS ix_th_project ON handovers(project_id);
-CREATE INDEX IF NOT EXISTS ix_th_holder  ON handovers(handed_to);
-
-CREATE TABLE IF NOT EXISTS handover_lines (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    handover_id  INTEGER NOT NULL,
-    line_no      INTEGER NOT NULL DEFAULT 0,
-    asset_id     TEXT DEFAULT '',
-    category     TEXT DEFAULT '',
-    description  TEXT DEFAULT '',
-    make_model   TEXT DEFAULT '',
-    serial_no    TEXT DEFAULT '',
-    qty          REAL NOT NULL DEFAULT 1,
-    qty_returned REAL NOT NULL DEFAULT 0,
-    accessories  TEXT DEFAULT '',
-    condition    TEXT DEFAULT '',
-    calib_due    TEXT DEFAULT '',
-    remarks      TEXT DEFAULT '',
-    photo        TEXT DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS ix_tl_ho     ON handover_lines(handover_id);
-CREATE INDEX IF NOT EXISTS ix_tl_asset  ON handover_lines(asset_id);
-CREATE INDEX IF NOT EXISTS ix_tl_serial ON handover_lines(serial_no);
-
-CREATE TABLE IF NOT EXISTS assets (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset_id      TEXT UNIQUE NOT NULL,
-    category      TEXT DEFAULT '',
-    description   TEXT DEFAULT '',
-    make_model    TEXT DEFAULT '',
-    serial_no     TEXT DEFAULT '',
-    condition     TEXT DEFAULT '',
-    calib_due     TEXT DEFAULT '',
-    holder        TEXT DEFAULT '',
-    holder_iqama  TEXT DEFAULT '',
-    project_id    TEXT DEFAULT '',
-    location      TEXT DEFAULT '',
-    status        TEXT DEFAULT 'In Store',
-    last_ref      TEXT DEFAULT '',
-    last_date     TEXT DEFAULT '',
-    notes         TEXT DEFAULT '',
-    created_at    TEXT DEFAULT (datetime('now','localtime')),
-    updated_at    TEXT DEFAULT (datetime('now','localtime'))
-);
-CREATE INDEX IF NOT EXISTS ix_as_holder ON assets(holder);
-CREATE INDEX IF NOT EXISTS ix_as_status ON assets(status);
-
-CREATE TABLE IF NOT EXISTS files (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    path        TEXT UNIQUE NOT NULL,
-    name        TEXT DEFAULT '',
-    ref_no      TEXT DEFAULT '',
-    handover_id INTEGER,
-    size_kb     REAL DEFAULT 0,
-    modified    TEXT DEFAULT '',
-    file_hash   TEXT DEFAULT '',
-    pages       INTEGER DEFAULT 0,
-    status      TEXT DEFAULT 'New',
-    note        TEXT DEFAULT '',
-    seen_at     TEXT DEFAULT (datetime('now','localtime'))
-);
-CREATE INDEX IF NOT EXISTS ix_tf_ref ON files(ref_no);
-
-CREATE TABLE IF NOT EXISTS folders (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    path     TEXT UNIQUE NOT NULL,
-    label    TEXT DEFAULT '',
-    active   INTEGER NOT NULL DEFAULT 1,
-    added_at TEXT DEFAULT (datetime('now','localtime')),
-    last_scan TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS audit (
@@ -241,10 +146,72 @@ CREATE TABLE IF NOT EXISTS audit (
     entity_id TEXT DEFAULT '',
     details   TEXT DEFAULT ''
 );
-"""
 
-DDL_SYNC = """
-CREATE TABLE IF NOT EXISTS site_sync_folders (
+CREATE TABLE IF NOT EXISTS instruments (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    instrument_desc  TEXT DEFAULT '',
+    serial_no        TEXT DEFAULT '',
+    make_model       TEXT DEFAULT '',
+    location         TEXT DEFAULT '',
+    quantity         REAL NOT NULL DEFAULT 1,
+    status           TEXT DEFAULT 'Available',
+    issued_to        TEXT DEFAULT '',
+    employee_code    TEXT DEFAULT '',
+    iqama_id         TEXT DEFAULT '',
+    designation      TEXT DEFAULT '',
+    division         TEXT DEFAULT '',
+    current_project  TEXT DEFAULT '',
+    issued_by        TEXT DEFAULT '',
+    remarks          TEXT DEFAULT '',
+    site_name        TEXT DEFAULT '',
+    picture_path     TEXT DEFAULT '',
+    key_value        TEXT DEFAULT '',
+    source           TEXT DEFAULT 'Manual Entry',
+    source_file      TEXT DEFAULT '',
+    file_hash        TEXT DEFAULT '',
+    last_movement    TEXT DEFAULT '',
+    last_movement_at TEXT DEFAULT '',
+    created_at       TEXT DEFAULT (datetime('now','localtime')),
+    updated_at       TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS ix_inst_serial   ON instruments(serial_no);
+CREATE INDEX IF NOT EXISTS ix_inst_desc     ON instruments(instrument_desc);
+CREATE INDEX IF NOT EXISTS ix_inst_status   ON instruments(status);
+CREATE INDEX IF NOT EXISTS ix_inst_location ON instruments(location);
+CREATE INDEX IF NOT EXISTS ix_inst_employee ON instruments(employee_code);
+
+CREATE TABLE IF NOT EXISTS movements (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    ref_no             TEXT DEFAULT '',
+    instrument_id      INTEGER NOT NULL,
+    movement_type      TEXT DEFAULT '',
+    movement_date      TEXT DEFAULT '',
+    from_holder        TEXT DEFAULT '',
+    from_employee_code TEXT DEFAULT '',
+    to_holder          TEXT DEFAULT '',
+    to_employee_code   TEXT DEFAULT '',
+    iqama_id           TEXT DEFAULT '',
+    designation        TEXT DEFAULT '',
+    division           TEXT DEFAULT '',
+    current_project    TEXT DEFAULT '',
+    location           TEXT DEFAULT '',
+    quantity           REAL DEFAULT 0,
+    status_after       TEXT DEFAULT '',
+    issued_by          TEXT DEFAULT '',
+    remarks            TEXT DEFAULT '',
+    details            TEXT DEFAULT '',
+    picture_path       TEXT DEFAULT '',
+    source             TEXT DEFAULT 'Manual Entry',
+    source_file        TEXT DEFAULT '',
+    created_by         TEXT DEFAULT '',
+    created_at         TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS ix_mov_inst  ON movements(instrument_id);
+CREATE INDEX IF NOT EXISTS ix_mov_type  ON movements(movement_type);
+CREATE INDEX IF NOT EXISTS ix_mov_date  ON movements(movement_date);
+CREATE INDEX IF NOT EXISTS ix_mov_emp   ON movements(to_employee_code);
+
+CREATE TABLE IF NOT EXISTS sync_folders (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     path          TEXT UNIQUE NOT NULL,
     label         TEXT DEFAULT '',
@@ -258,13 +225,12 @@ CREATE TABLE IF NOT EXISTS site_sync_folders (
     last_error    TEXT DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS site_sync_files (
+CREATE TABLE IF NOT EXISTS sync_files (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     folder_id     INTEGER DEFAULT 0,
     path          TEXT UNIQUE NOT NULL,
     name          TEXT DEFAULT '',
-    assigned_site TEXT DEFAULT '',
-    detected_site TEXT DEFAULT '',
+    site_name     TEXT DEFAULT '',
     size_kb       REAL DEFAULT 0,
     modified      TEXT DEFAULT '',
     file_hash     TEXT DEFAULT '',
@@ -277,83 +243,10 @@ CREATE TABLE IF NOT EXISTS site_sync_files (
     note          TEXT DEFAULT '',
     seen_at       TEXT DEFAULT (datetime('now','localtime'))
 );
-CREATE INDEX IF NOT EXISTS ix_ssf_status ON site_sync_files(status);
-CREATE INDEX IF NOT EXISTS ix_ssf_folder ON site_sync_files(folder_id);
+CREATE INDEX IF NOT EXISTS ix_sf_status ON sync_files(status);
+CREATE INDEX IF NOT EXISTS ix_sf_folder ON sync_files(folder_id);
 
-CREATE TABLE IF NOT EXISTS site_inventory (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset_key     TEXT UNIQUE NOT NULL,
-    file_id       INTEGER DEFAULT 0,
-    folder_id     INTEGER DEFAULT 0,
-    item_code     TEXT DEFAULT '',
-    description   TEXT DEFAULT '',
-    item_type     TEXT DEFAULT '',
-    category      TEXT DEFAULT '',
-    make_model    TEXT DEFAULT '',
-    serial_no     TEXT DEFAULT '',
-    qty           REAL DEFAULT 1,
-    status        TEXT DEFAULT '',
-    condition     TEXT DEFAULT '',
-    holder        TEXT DEFAULT '',
-    employee_code TEXT DEFAULT '',
-    iqama_id      TEXT DEFAULT '',
-    designation   TEXT DEFAULT '',
-    department    TEXT DEFAULT '',
-    project_id    TEXT DEFAULT '',
-    site_name     TEXT DEFAULT '',
-    location      TEXT DEFAULT '',
-    issued_by     TEXT DEFAULT '',
-    remarks       TEXT DEFAULT '',
-    picture_path  TEXT DEFAULT '',
-    source_file   TEXT DEFAULT '',
-    file_hash     TEXT DEFAULT '',
-    last_updated  TEXT DEFAULT '',
-    last_sync     TEXT DEFAULT '',
-    created_at    TEXT DEFAULT (datetime('now','localtime')),
-    updated_at    TEXT DEFAULT (datetime('now','localtime'))
-);
-CREATE INDEX IF NOT EXISTS ix_sinv_site ON site_inventory(site_name);
-CREATE INDEX IF NOT EXISTS ix_sinv_type ON site_inventory(item_type);
-CREATE INDEX IF NOT EXISTS ix_sinv_status ON site_inventory(status);
-CREATE INDEX IF NOT EXISTS ix_sinv_serial ON site_inventory(serial_no);
-
-CREATE TABLE IF NOT EXISTS site_asset_events (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset_key         TEXT DEFAULT '',
-    item_code         TEXT DEFAULT '',
-    description       TEXT DEFAULT '',
-    serial_no         TEXT DEFAULT '',
-    qty_before        REAL DEFAULT 0,
-    qty_after         REAL DEFAULT 0,
-    movement_type     TEXT DEFAULT '',
-    source_kind       TEXT DEFAULT 'Excel Sync',
-    source_ref        TEXT DEFAULT '',
-    source_file       TEXT DEFAULT '',
-    file_id           INTEGER DEFAULT 0,
-    folder_id         INTEGER DEFAULT 0,
-    event_date        TEXT DEFAULT '',
-    site_before       TEXT DEFAULT '',
-    site_after        TEXT DEFAULT '',
-    holder_before     TEXT DEFAULT '',
-    holder_after      TEXT DEFAULT '',
-    employee_before   TEXT DEFAULT '',
-    employee_after    TEXT DEFAULT '',
-    location_before   TEXT DEFAULT '',
-    location_after    TEXT DEFAULT '',
-    status_before     TEXT DEFAULT '',
-    status_after      TEXT DEFAULT '',
-    condition_before  TEXT DEFAULT '',
-    condition_after   TEXT DEFAULT '',
-    responsible_person TEXT DEFAULT '',
-    remarks           TEXT DEFAULT '',
-    before_photo      TEXT DEFAULT '',
-    after_photo       TEXT DEFAULT '',
-    created_at        TEXT DEFAULT (datetime('now','localtime'))
-);
-CREATE INDEX IF NOT EXISTS ix_ss_events_asset ON site_asset_events(asset_key);
-CREATE INDEX IF NOT EXISTS ix_ss_events_date ON site_asset_events(event_date);
-
-CREATE TABLE IF NOT EXISTS site_sync_runs (
+CREATE TABLE IF NOT EXISTS sync_runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     ts            TEXT DEFAULT (datetime('now','localtime')),
     folder_id     INTEGER DEFAULT 0,
@@ -367,10 +260,11 @@ CREATE TABLE IF NOT EXISTS site_sync_runs (
     failed_rows   INTEGER DEFAULT 0,
     details       TEXT DEFAULT ''
 );
-CREATE INDEX IF NOT EXISTS ix_ss_runs_file ON site_sync_runs(file_id);
+CREATE INDEX IF NOT EXISTS ix_sr_file ON sync_runs(file_id);
 """
 
 
+# ------------------------------------------------------------------ smalltalk
 def _now() -> str:
     return _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -380,11 +274,70 @@ def today() -> str:
 
 
 def norm(s: Any) -> str:
+    """Lower-case, letters and digits only — the key for every heading match."""
     return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
 
 
+def to_float(v: Any, default: float = 0.0) -> float:
+    if v in (None, ""):
+        return default
+    if isinstance(v, (int, float)):
+        return float(v)
+    t = re.sub(r"[^\d.\-]", "", str(v))
+    try:
+        return float(t) if t not in ("", "-", ".", "-.") else default
+    except ValueError:
+        return default
+
+
+def fmt_qty(v: Any) -> str:
+    n = to_float(v, 0)
+    return f"{int(n)}" if abs(n - int(n)) < 1e-9 else f"{n:g}"
+
+
+_DATE_PATTERNS = (
+    "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y-%m-%d", "%Y/%m/%d",
+    "%d/%m/%y", "%d-%m-%y", "%d-%b-%Y", "%d %b %Y", "%d-%b-%y",
+    "%b %d, %Y", "%d %B %Y", "%m/%d/%Y",
+)
+
+
+def to_date(v: Any) -> str:
+    """Best-effort conversion of anything date-like to ISO yyyy-mm-dd."""
+    if v in (None, ""):
+        return ""
+    if isinstance(v, _dt.datetime):
+        return v.date().isoformat()
+    if isinstance(v, _dt.date):
+        return v.isoformat()
+    t = str(v).strip()
+    if not t or t == "-":
+        return ""
+    for f in _DATE_PATTERNS:
+        try:
+            return _dt.datetime.strptime(t, f).date().isoformat()
+        except ValueError:
+            continue
+    try:
+        n = float(t)
+        if 20000 < n < 60000:
+            return (_dt.date(1899, 12, 30) + _dt.timedelta(days=int(n))).isoformat()
+    except ValueError:
+        pass
+    return t
+
+
+def fmt_date(iso: str) -> str:
+    """ISO -> dd/mm/yyyy for screens and print."""
+    try:
+        return _dt.date.fromisoformat(str(iso)[:10]).strftime("%d/%m/%Y")
+    except Exception:          # noqa: BLE001
+        return str(iso or "")
+
+
+# ------------------------------------------------------------------- storage
 def _migrate_legacy_folder() -> None:
-    """Move older Tool/Instrument Station data folders into the new module name."""
+    """Move older Tool/Instrument Station data folders into the new name."""
     root = config.get_storage_root() or config.default_storage_root()
     new = Path(root) / FOLDER
     for legacy_name in LEGACY_FOLDERS:
@@ -415,128 +368,132 @@ def db_path() -> Path:
     return module_folder() / DB_NAME
 
 
-def evidence_dir() -> Path:
-    return module_folder() / "Evidence"
+def pictures_dir() -> Path:
+    p = module_folder() / "Pictures"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
-# --------------------------------------------------------------- value parsing
-_DATE_PATTERNS = (
-    "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y-%m-%d", "%Y/%m/%d",
-    "%d/%m/%y", "%d-%m-%y", "%d-%b-%Y", "%d %b %Y", "%d-%b-%y",
-    "%b %d, %Y", "%d %B %Y", "%m/%d/%Y",
-)
+def evidence_dir() -> Path:          # old name, still the pictures folder
+    return pictures_dir()
 
 
-def to_float(v: Any, default: float = 0.0) -> float:
-    if v in (None, ""):
-        return default
-    if isinstance(v, (int, float)):
-        return float(v)
-    t = re.sub(r"[^\d.\-]", "", str(v))
-    try:
-        return float(t) if t not in ("", "-", ".") else default
-    except ValueError:
-        return default
+def backups_dir() -> Path:
+    p = module_folder() / "Backups"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
-def to_date(v: Any) -> str:
-    """Best-effort conversion of anything date-like to ISO yyyy-mm-dd."""
-    if v in (None, ""):
-        return ""
-    if isinstance(v, _dt.datetime):
-        return v.date().isoformat()
-    if isinstance(v, _dt.date):
-        return v.isoformat()
-    t = str(v).strip()
-    if not t or t == "-":
-        return ""
-    for f in _DATE_PATTERNS:
-        try:
-            return _dt.datetime.strptime(t, f).date().isoformat()
-        except ValueError:
-            continue
-    try:
-        n = float(t)
-        if 20000 < n < 60000:
-            return (_dt.date(1899, 12, 30) + _dt.timedelta(days=int(n))).isoformat()
-    except ValueError:
-        pass
-    return t
+def store_picture(src: str | Path, hint: str = "instrument") -> str:
+    """Copy a picture into the module's own Pictures folder.
 
-
-def fmt_date(iso: str) -> str:
-    """ISO -> dd/mm/yyyy for printing on the controlled form."""
-    try:
-        return _dt.date.fromisoformat(str(iso)[:10]).strftime("%d/%m/%Y")
-    except Exception:          # noqa: BLE001
-        return str(iso or "")
-
-
-# ------------------------------------------------------- reference decoding
-# WH-087IS2308202601 -> warehouse WH · project 087 · Issue · 23/08/2026 · #01
-_REF_RE = re.compile(
-    r"^(?P<wh>[A-Z]{2,4})[- ]?(?P<proj>\d{2,4})(?P<code>IS|TR|TL|RT)"
-    r"(?P<d>\d{2})(?P<m>\d{2})(?P<y>\d{4})(?P<seq>\d{1,3})$", re.I)
-
-
-def parse_ref(ref: str) -> dict:
-    """Decode a handover reference number into its parts.
-
-    Returns {} when the text is not a reference, so callers can simply test the
-    result. Never raises — a badly typed reference must not stop an import.
+    The file is *copied* — the original the user picked is never moved or
+    renamed, so a photo on the desktop stays on the desktop.
     """
-    m = _REF_RE.match(str(ref or "").strip().replace(" ", ""))
-    if not m:
-        return {}
-    g = m.groupdict()
+    src = Path(src)
+    if not src.exists():
+        return ""
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", (hint or src.stem)).strip("_")[:40]
+    stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = pictures_dir() / f"{stem or 'instrument'}_{stamp}{src.suffix.lower()}"
+    n = 2
+    while dest.exists():
+        dest = pictures_dir() / f"{stem or 'instrument'}_{stamp}_{n}{src.suffix.lower()}"
+        n += 1
     try:
-        date = _dt.date(int(g["y"]), int(g["m"]), int(g["d"])).isoformat()
-    except ValueError:
-        date = ""
+        shutil.copy2(src, dest)
+    except OSError:
+        return ""
+    return str(dest)
+
+
+# -------------------------------------------------------------- employee link
+def employee_lookup(db_main: Any, employee_code: str = "", iqama_id: str = "",
+                    name: str = "") -> dict[str, str]:
+    """Read the Employee Master (read-only) for one person.
+
+    Returns {} when the person is not registered yet — that is not an error, the
+    operator can still type the name and code by hand.
+    """
+    code = str(employee_code or "").strip()
+    iqama = str(iqama_id or "").strip()
+    nm = str(name or "").strip()
+    if db_main is None or not (code or iqama or nm):
+        return {}
+    try:
+        from . import employees as EMP
+        row = EMP.find_employee(db_main, employee_id=code, iqama_id=iqama, name=nm)
+    except Exception:          # noqa: BLE001 - a lookup must never break a form
+        return {}
+    if not row:
+        return {}
     return {
-        "ref_no": str(ref).strip(),
-        "warehouse": g["wh"].upper(),
-        "project_no": g["proj"],
-        "project_id": f"PRJ{int(g['proj']):06d}",
-        "txn_type": TXN_CODES[g["code"].upper()],
-        "doc_date": date,
-        "seq": int(g["seq"]),
+        "employee_code": str(row.get("employee_id") or code).strip(),
+        "issued_to": str(row.get("name") or nm).strip(),
+        "iqama_id": str(row.get("iqama_id") or iqama).strip(),
+        "designation": str(row.get("designation") or "").strip(),
+        "division": str(row.get("division") or "").strip(),
+        "current_project": str(row.get("current_project") or "").strip(),
+        "location": str(row.get("location") or "").strip(),
     }
 
 
-def make_ref(warehouse: str, project_id: str, txn_type: str,
-             date: str, seq: int) -> str:
-    """Build a reference in the same shape the paper form produces."""
-    wh = re.sub(r"[^A-Z]", "", str(warehouse or "WH").upper())[:4] or "WH"
-    digits = re.sub(r"\D", "", str(project_id or ""))
-    proj = f"{int(digits) % 1000:03d}" if digits else "000"
-    code = CODE_OF.get(txn_type, "IS")
-    d = to_date(date) or today()
+def apply_employee_defaults(record: dict[str, Any], db_main: Any) -> dict[str, Any]:
+    """Fill the person columns from the Employee Master where they are blank."""
+    out = dict(record or {})
+    if db_main is None:
+        return out
+    if not any(str(out.get(f) or "").strip()
+               for f in ("employee_code", "iqama_id", "issued_to")):
+        return out
+    # Only look the person up when the form clearly names them but the details
+    # are still missing, so a deliberate override is never overwritten.
+    if all(str(out.get(f) or "").strip()
+           for f in ("designation", "division", "current_project")):
+        return out
+    found = employee_lookup(db_main, out.get("employee_code", ""),
+                            out.get("iqama_id", ""), out.get("issued_to", ""))
+    for key, val in found.items():
+        if not str(out.get(key) or "").strip():
+            out[key] = val
+    return out
+
+
+def employee_choices(db_main: Any) -> list[dict[str, str]]:
+    """The Employee Master as a list of {code, name, iqama, ...} for pickers."""
+    out: list[dict[str, str]] = []
+    if db_main is None:
+        return out
     try:
-        dt = _dt.date.fromisoformat(d)
-    except ValueError:
-        dt = _dt.date.today()
-    return f"{wh}-{proj}{code}{dt:%d%m%Y}{int(seq):02d}"
+        rows = db_main.query(
+            "SELECT employee_id, name, iqama_id, designation, division, "
+            "current_project, location FROM employees "
+            "WHERE COALESCE(employee_id,'')<>'' OR COALESCE(name,'')<>'' "
+            "ORDER BY name")
+    except Exception:          # noqa: BLE001
+        return out
+    for r in rows:
+        d = dict(r)
+        out.append({
+            "employee_code": str(d.get("employee_id") or "").strip(),
+            "issued_to": str(d.get("name") or "").strip(),
+            "iqama_id": str(d.get("iqama_id") or "").strip(),
+            "designation": str(d.get("designation") or "").strip(),
+            "division": str(d.get("division") or "").strip(),
+            "current_project": str(d.get("current_project") or "").strip(),
+            "location": str(d.get("location") or "").strip(),
+        })
+    return out
 
 
-def next_ref(db: "ToolDB", warehouse: str, project_id: str, txn_type: str,
-             date: str = "") -> str:
-    """Next free reference for that warehouse / project / type / day."""
-    d = to_date(date) or today()
-    for seq in range(1, 100):
-        ref = make_ref(warehouse, project_id, txn_type, d, seq)
-        if not db.one("SELECT 1 FROM handovers WHERE ref_no=?", (ref,)):
-            return ref
-    return make_ref(warehouse, project_id, txn_type, d, 99)
-
-
-# ------------------------------------------------------------------- database
+# ------------------------------------------------------------------ database
 class ToolDB:
     """Standalone database for the Instrument Station module."""
 
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path or db_path())
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._adopt_legacy_database()
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout=15000")
@@ -545,107 +502,144 @@ class ToolDB:
         self._init()
 
     # ------------------------------------------------------------- schema
+    def _adopt_legacy_database(self) -> None:
+        """Keep the data of the older Tool/Instrument Station file.
+
+        The register lives in the same shape either way, so the old file is
+        copied (never moved — it stays as the customer's own safety copy) and
+        the synced rows are carried over on first open.
+        """
+        if self.path.exists():
+            return
+        for legacy in LEGACY_DB_NAMES:
+            old = self.path.parent / legacy
+            if not old.exists():
+                continue
+            try:
+                shutil.copy2(old, self.path)
+            except OSError:
+                continue
+            self._legacy_source = old
+            return
+
+    def _journal_mode(self) -> str:
+        p = str(self.path)
+        networked = p.startswith("\\\\") or p.startswith("//")
+        return "TRUNCATE" if networked else "WAL"
+
     def _init(self) -> None:
-        # journal mode is chosen for where the file actually lives: WAL needs
-        # real shared memory and is unsafe on an SMB share, so a networked
-        # install falls back to TRUNCATE rather than risking corruption.
         try:
             self.conn.execute(f"PRAGMA journal_mode={self._journal_mode()}")
         except sqlite3.Error:
             pass
         self.conn.executescript(DDL)
-        self.conn.executescript(DDL_SYNC)
         self.conn.commit()
         self._migrate()
-
-    def _journal_mode(self) -> str:
-        p = str(self.path)
-        networked = p.startswith("\\\\") or p.startswith("//")
-        if not networked and os.name != "nt":
-            try:
-                import subprocess  # noqa: S404 - read-only mount check
-                networked = False
-            except Exception:      # noqa: BLE001
-                networked = False
-        return "TRUNCATE" if networked else "WAL"
+        self._import_legacy_rows()
 
     def _migrate(self) -> None:
         """Additive migrations only — a column is added, never dropped."""
-        wanted_by_table = {
-            "handovers": {
-                "employee_code": "TEXT DEFAULT ''",
-                "department": "TEXT DEFAULT ''",
+        wanted = {
+            "instruments": {
+                "site_name": "TEXT DEFAULT ''",
+                "picture_path": "TEXT DEFAULT ''",
+                "key_value": "TEXT DEFAULT ''",
+                "source": "TEXT DEFAULT 'Manual Entry'",
+                "source_file": "TEXT DEFAULT ''",
+                "file_hash": "TEXT DEFAULT ''",
+                "last_movement": "TEXT DEFAULT ''",
+                "last_movement_at": "TEXT DEFAULT ''",
             },
-            "handover_lines": {},
-            "assets": {},
-            "files": {},
-            "site_sync_folders": {
+            "movements": {
+                "details": "TEXT DEFAULT ''",
+                "picture_path": "TEXT DEFAULT ''",
+                "source": "TEXT DEFAULT 'Manual Entry'",
+                "source_file": "TEXT DEFAULT ''",
+                "created_by": "TEXT DEFAULT ''",
+            },
+            "sync_files": {
+                "site_name": "TEXT DEFAULT ''",
+                "rows_total": "INTEGER DEFAULT 0",
+                "rows_created": "INTEGER DEFAULT 0",
+                "rows_updated": "INTEGER DEFAULT 0",
+                "rows_failed": "INTEGER DEFAULT 0",
+            },
+            "sync_folders": {
                 "site_name": "TEXT DEFAULT ''",
                 "auto_sync": "INTEGER NOT NULL DEFAULT 0",
                 "sync_interval": "INTEGER NOT NULL DEFAULT 15",
                 "last_success": "TEXT DEFAULT ''",
                 "last_error": "TEXT DEFAULT ''",
             },
-            "site_sync_files": {
-                "assigned_site": "TEXT DEFAULT ''",
-                "detected_site": "TEXT DEFAULT ''",
-                "last_sync": "TEXT DEFAULT ''",
-                "rows_total": "INTEGER DEFAULT 0",
-                "rows_created": "INTEGER DEFAULT 0",
-                "rows_updated": "INTEGER DEFAULT 0",
-                "rows_failed": "INTEGER DEFAULT 0",
-            },
-            "site_inventory": {
-                "asset_key": "TEXT DEFAULT ''",
-                "item_code": "TEXT DEFAULT ''",
-                "description": "TEXT DEFAULT ''",
-                "item_type": "TEXT DEFAULT ''",
-                "category": "TEXT DEFAULT ''",
-                "make_model": "TEXT DEFAULT ''",
-                "condition": "TEXT DEFAULT ''",
-                "holder": "TEXT DEFAULT ''",
-                "employee_code": "TEXT DEFAULT ''",
-                "iqama_id": "TEXT DEFAULT ''",
-                "designation": "TEXT DEFAULT ''",
-                "department": "TEXT DEFAULT ''",
-                "project_id": "TEXT DEFAULT ''",
-                "site_name": "TEXT DEFAULT ''",
-                "issued_by": "TEXT DEFAULT ''",
-                "remarks": "TEXT DEFAULT ''",
-                "picture_path": "TEXT DEFAULT ''",
-                "source_file": "TEXT DEFAULT ''",
-                "file_hash": "TEXT DEFAULT ''",
-                "last_updated": "TEXT DEFAULT ''",
-                "last_sync": "TEXT DEFAULT ''",
-            },
-            "site_asset_events": {},
-            "site_sync_runs": {},
         }
-        for table, wanted in wanted_by_table.items():
+        for table, cols in wanted.items():
             have = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
-            for col, ddl in wanted.items():
+            for col, ddl in cols.items():
                 if col not in have:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
-
-        # Backfill old site-sync schemas into the richer Instrument Station shape.
-        try:
-            cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(site_inventory)")}
-            if "source_key" in cols and "asset_key" in cols:
-                self.conn.execute("UPDATE site_inventory SET asset_key=COALESCE(NULLIF(asset_key,''), source_key)")
-            if "item_name" in cols and "description" in cols:
-                self.conn.execute("UPDATE site_inventory SET description=COALESCE(NULLIF(description,''), item_name)")
-            if "brand" in cols and "model" in cols and "make_model" in cols:
-                self.conn.execute("UPDATE site_inventory SET make_model=COALESCE(NULLIF(make_model,''), trim(COALESCE(brand,'') || CASE WHEN COALESCE(model,'')<>'' AND COALESCE(brand,'')<>'' THEN ' / ' ELSE '' END || COALESCE(model,'')))")
-            if "site_name" in cols and "project_id" in cols:
-                self.conn.execute("UPDATE site_inventory SET project_id=COALESCE(NULLIF(project_id,''), site_name)")
-            if "site_name" in cols and "location" in cols:
-                self.conn.execute("UPDATE site_inventory SET location=COALESCE(NULLIF(location,''), site_name)")
-            self.conn.execute("CREATE INDEX IF NOT EXISTS ix_sinv_asset_key ON site_inventory(asset_key)")
-            self.conn.execute("CREATE INDEX IF NOT EXISTS ix_sinv_project ON site_inventory(project_id)")
-        except sqlite3.Error:
-            pass
         self.conn.commit()
         self.set_setting("schema_version", str(SCHEMA_VERSION))
+
+    def _import_legacy_rows(self) -> None:
+        """Carry the old tool_station.db site_inventory rows into the register."""
+        if getattr(self, "_legacy_done", False):
+            return
+        self._legacy_done = True
+        # Carry the old tool_station.db site_inventory rows into the register.
+        if not getattr(self, "_legacy_source", None):
+            return
+        if self.scalar("SELECT COUNT(*) FROM instruments") > 0:
+            return
+        try:
+            src = sqlite3.connect(str(self._legacy_source))
+        except sqlite3.Error:
+            return
+        try:
+            src.row_factory = sqlite3.Row
+            tables = {r[0] for r in src.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if "site_inventory" not in tables:
+                return
+            rows = src.execute("SELECT * FROM site_inventory").fetchall()
+        except sqlite3.Error:
+            return
+        finally:
+            src.close()
+        moved = 0
+        for r in rows:
+            d = dict(r)
+            rec = {
+                "instrument_desc": d.get("description", ""),
+                "serial_no": d.get("serial_no", ""),
+                "make_model": d.get("make_model", ""),
+                "location": d.get("location", ""),
+                "quantity": d.get("qty", 1),
+                "status": d.get("status", "") or ST_AVAILABLE,
+                "issued_to": d.get("holder", ""),
+                "employee_code": d.get("employee_code", ""),
+                "iqama_id": d.get("iqama_id", ""),
+                "designation": d.get("designation", ""),
+                "division": d.get("department", ""),
+                "current_project": d.get("project_id", ""),
+                "issued_by": d.get("issued_by", ""),
+                "remarks": d.get("remarks", ""),
+                "site_name": d.get("site_name", ""),
+                "picture_path": d.get("picture_path", ""),
+                "source": "Excel Sync",
+                "source_file": d.get("source_file", ""),
+                "file_hash": d.get("file_hash", ""),
+            }
+            if not (str(rec["instrument_desc"]).strip() or str(rec["serial_no"]).strip()):
+                continue
+            try:
+                save_instrument(self, rec, movement_type=MV_REGISTERED,
+                                source="Excel Sync",
+                                source_file=str(rec["source_file"] or "legacy import"))
+                moved += 1
+            except (ValueError, sqlite3.Error):
+                continue
+        if moved:
+            self.audit("IMPORTED", "register", "", f"{moved} row(s) from the previous register file")
 
     # --------------------------------------------------------- primitives
     def execute(self, sql: str, params: Sequence = ()) -> sqlite3.Cursor:
@@ -657,7 +651,7 @@ class ToolDB:
     def one(self, sql: str, params: Sequence = ()):
         return self.conn.execute(sql, params).fetchone()
 
-    def scalar(self, sql: str, params: Sequence = (), default=0):
+    def scalar(self, sql: str, params: Sequence = (), default: Any = 0) -> Any:
         r = self.conn.execute(sql, params).fetchone()
         return default if r is None or r[0] is None else r[0]
 
@@ -692,16 +686,13 @@ class ToolDB:
 
     # ------------------------------------------------------------ backups
     def backup(self, dest_folder: str | Path | None = None, note: str = "") -> Path:
-        dest = Path(dest_folder or config.folder(FOLDER) / "Backups")
+        dest = Path(dest_folder or backups_dir())
         dest.mkdir(parents=True, exist_ok=True)
-        out = dest / f"tool_station_{_dt.datetime.now():%Y%m%d_%H%M%S}.db"
-        # two backups inside the same second must not collide -- the safety
-        # copy taken by restore() would otherwise overwrite the very file it
-        # is about to restore from, silently wiping it.
+        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = dest / f"instrument_station_{stamp}.db"
         n = 2
         while out.exists():
-            out = dest / (f"tool_station_{_dt.datetime.now():%Y%m%d_%H%M%S}"
-                          f"_{n}.db")
+            out = dest / f"instrument_station_{stamp}_{n}.db"
             n += 1
         self.conn.commit()
         tgt = sqlite3.connect(str(out))
@@ -718,1898 +709,760 @@ class ToolDB:
         safety = self.backup(note=f"safety copy before restoring {src.name}")
         if safety.resolve() == src.resolve():
             raise ValueError("Refusing to restore a file over itself.")
+        incoming = sqlite3.connect(str(src))
         try:
-            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except sqlite3.Error:
-            pass
-        self.conn.close()
-        # A stale -wal / -shm sidecar is replayed the moment the file is
-        # reopened, which silently undid the restore. Remove them with the
-        # database itself so the backup really is what gets loaded.
-        for suffix in ("-wal", "-shm"):
-            side = Path(str(self.path) + suffix)
-            if side.exists():
-                try:
-                    side.unlink()
-                except OSError:
-                    pass
-        shutil.copy2(src, self.path)
-        self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA busy_timeout=15000")
-        self._init()
-        self.audit("RESTORE", "database", src.name)
+            with self.conn:
+                incoming.backup(self.conn)
+        finally:
+            incoming.close()
+        self.audit("RESTORE", "database", src.name, f"safety copy: {safety.name}")
 
 
-_tool_db: ToolDB | None = None
+_db: ToolDB | None = None
 
 
 def get_tool_db() -> ToolDB:
-    global _tool_db
-    if _tool_db is None:
-        _tool_db = ToolDB()
-    return _tool_db
+    """The one module connection the running application shares."""
+    global _db
+    if _db is None or not _db.path.exists():
+        _db = ToolDB()
+    return _db
 
 
 def set_tool_db(db: ToolDB | None) -> None:
-    global _tool_db
-    _tool_db = db
+    global _db
+    _db = db
 
 
 def reset_tool_db() -> None:
-    global _tool_db
-    if _tool_db is not None:
-        _tool_db.close()
-    _tool_db = None
+    global _db
+    if _db is not None:
+        _db.close()
+    _db = None
 
 
-# ----------------------------------------------------------------------- CRUD
-_HEAD_FIELDS = (
-    "ref_no", "form_no", "txn_type", "doc_date", "doc_time", "expected_return",
-    "warehouse", "project_id", "project_name", "location", "handed_to",
-    "employee_code", "iqama_id", "job_title", "department", "mobile", "company", "email", "supervisor",
-    "cost_code", "issued_by", "issued_at", "received_by", "received_at",
-    "v_serial", "v_accessories", "v_calibration", "v_photos",
-    "status", "closed_by_ref", "parent_ref", "remarks", "source_file",
-    "file_hash",
-)
+# ---------------------------------------------------------- record building
+def instrument_key(rec: dict[str, Any]) -> str:
+    """The identity of an instrument, as steady as the sheet allows.
 
-_LINE_FIELDS = (
-    "line_no", "asset_id", "category", "description", "make_model",
-    "serial_no", "qty", "qty_returned", "accessories", "condition",
-    "calib_due", "remarks", "photo",
-)
-
-
-def save_handover(db: ToolDB, head: dict, lines: Sequence[dict],
-                  handover_id: int | None = None) -> int:
-    """Insert or update one handover with all of its item lines.
-
-    The whole document is written in a single transaction: a half-saved
-    handover (header without lines) would misreport custody.
+    Serial number first — it is unique in the physical world — then the make /
+    model, then the description together with its location.
     """
-    data = {k: head.get(k, "") for k in _HEAD_FIELDS}
-    data["txn_type"] = data["txn_type"] or ISSUE
-    data["doc_date"] = to_date(data["doc_date"]) or today()
-    data["expected_return"] = to_date(data["expected_return"])
-    for k in ("v_serial", "v_accessories", "v_calibration", "v_photos"):
-        data[k] = 1 if head.get(k) else 0
-
-    if not str(data["ref_no"]).strip():
-        data["ref_no"] = next_ref(db, data["warehouse"], data["project_id"],
-                                  data["txn_type"], data["doc_date"])
-
-    # a reference decoded from the paper form fills in anything left blank
-    dec = parse_ref(data["ref_no"])
-    if dec:
-        data["warehouse"] = data["warehouse"] or dec["warehouse"]
-        data["project_id"] = data["project_id"] or dec["project_id"]
-        if not head.get("txn_type"):
-            data["txn_type"] = dec["txn_type"]
-        data["doc_date"] = data["doc_date"] or dec["doc_date"]
-
-    clash = db.one("SELECT id FROM handovers WHERE ref_no=? AND id<>?",
-                   (data["ref_no"], handover_id or -1))
-    if clash:
-        raise ValueError(f"Handover {data['ref_no']} already exists.")
-
-    if handover_id:
-        sets = ", ".join(f"{k}=?" for k in _HEAD_FIELDS)
-        db.execute(f"UPDATE handovers SET {sets}, updated_at=? WHERE id=?",
-                   [data[k] for k in _HEAD_FIELDS] + [_now(), handover_id])
-        db.execute("DELETE FROM handover_lines WHERE handover_id=?", (handover_id,))
-        hid = handover_id
-        action = "EDITED"
-    else:
-        data["created_by"] = db.current_user
-        cols = list(_HEAD_FIELDS) + ["created_by"]
-        qs = ", ".join("?" * len(cols))
-        cur = db.execute(f"INSERT INTO handovers({', '.join(cols)}) VALUES({qs})",
-                         [data[k] for k in cols])
-        hid = int(cur.lastrowid)
-        action = "CREATED"
-
-    for i, ln in enumerate(lines, 1):
-        row = {k: ln.get(k, "") for k in _LINE_FIELDS}
-        row["line_no"] = int(to_float(ln.get("line_no"), i) or i)
-        row["qty"] = to_float(ln.get("qty"), 1) or 1
-        row["qty_returned"] = to_float(ln.get("qty_returned"), 0)
-        row["calib_due"] = to_date(row["calib_due"])
-        cols = ["handover_id"] + list(_LINE_FIELDS)
-        qs = ", ".join("?" * len(cols))
-        db.execute(f"INSERT INTO handover_lines({', '.join(cols)}) VALUES({qs})",
-                   [hid] + [row[k] for k in _LINE_FIELDS])
-
-    _refresh_status(db, hid)
-    _sync_assets(db, hid)
-    db.commit()
-    db.audit(action, "handover", data["ref_no"],
-             f"{data['txn_type']} · {len(lines)} item(s) · {data['handed_to']}")
-    return hid
-
-
-def get_handover(db: ToolDB, handover_id: int) -> dict | None:
-    r = db.one("SELECT * FROM handovers WHERE id=?", (handover_id,))
-    if r is None:
-        return None
-    d = dict(r)
-    d["lines"] = handover_lines(db, handover_id)
-    return d
-
-
-def by_ref(db: ToolDB, ref: str) -> dict | None:
-    r = db.one("SELECT * FROM handovers WHERE ref_no=?", (str(ref).strip(),))
-    return get_handover(db, r["id"]) if r else None
-
-
-def handover_lines(db: ToolDB, handover_id: int) -> list[dict]:
-    return [dict(r) for r in db.query(
-        "SELECT * FROM handover_lines WHERE handover_id=? ORDER BY line_no, id",
-        (handover_id,))]
-
-
-def delete_handovers(db: ToolDB, ids: Iterable[int]) -> int:
-    ids = [int(i) for i in ids]
-    if not ids:
-        return 0
-    qs = ",".join("?" * len(ids))
-    refs = [r["ref_no"] for r in db.query(
-        f"SELECT ref_no FROM handovers WHERE id IN ({qs})", ids)]
-    db.execute(f"DELETE FROM handover_lines WHERE handover_id IN ({qs})", ids)
-    db.execute(f"DELETE FROM handovers WHERE id IN ({qs})", ids)
-    db.commit()
-    for ref in refs:
-        _recompute_asset_for_ref(db, ref)
-    db.audit("DELETED", "handover", ", ".join(refs), f"{len(ids)} record(s)")
-    return len(ids)
-
-
-def cancel_handover(db: ToolDB, handover_id: int, reason: str) -> None:
-    if not str(reason).strip():
-        raise ValueError("A reason is required to cancel a handover.")
-    h = db.one("SELECT ref_no, remarks FROM handovers WHERE id=?", (handover_id,))
-    if h is None:
-        raise ValueError("Handover not found.")
-    db.execute("UPDATE handovers SET status=?, remarks=?, updated_at=? WHERE id=?",
-               (CANCELLED, f"{h['remarks'] or ''} [cancelled: {reason}]".strip(),
-                _now(), handover_id))
-    db.commit()
-    _sync_assets(db, handover_id)
-    db.audit("CANCELLED", "handover", h["ref_no"], reason)
-
-
-# ------------------------------------------------------------ custody engine
-def _refresh_status(db: ToolDB, handover_id: int) -> None:
-    """Derive the custody state from the lines and the calendar."""
-    h = db.one("SELECT * FROM handovers WHERE id=?", (handover_id,))
-    if h is None or h["status"] in (CANCELLED, TRANSFERRED):
-        return
-    lines = db.query("SELECT qty, qty_returned FROM handover_lines"
-                     " WHERE handover_id=?", (handover_id,))
-    total = sum(float(r["qty"] or 0) for r in lines)
-    back = sum(float(r["qty_returned"] or 0) for r in lines)
-
-    if h["txn_type"] == RETURN:
-        status = CLOSED
-    elif total > 0 and back >= total - 1e-9:
-        status = CLOSED
-    elif back > 1e-9:
-        status = PART_RETURNED
-    else:
-        status = OPEN
-
-    # a temporary loan past its date is overdue until it comes back
-    if status in (OPEN, PART_RETURNED) and h["txn_type"] == LOAN:
-        due = to_date(h["expected_return"])
-        if due and due < today():
-            status = OVERDUE
-
-    if status != h["status"]:
-        db.execute("UPDATE handovers SET status=?, updated_at=? WHERE id=?",
-                   (status, _now(), handover_id))
-
-
-def refresh_all_statuses(db: ToolDB) -> int:
-    """Re-evaluate every open record — call on load so overdue is never stale."""
-    n = 0
-    for r in db.query("SELECT id, status FROM handovers"
-                      " WHERE status NOT IN (?,?,?)",
-                      (CLOSED, CANCELLED, TRANSFERRED)):
-        before = r["status"]
-        _refresh_status(db, r["id"])
-        after = db.scalar("SELECT status FROM handovers WHERE id=?", (r["id"],), "")
-        if after != before:
-            n += 1
-    if n:
-        db.commit()
-    return n
-
-
-def post_return(db: ToolDB, ref: str, returns: Sequence[dict],
-                head: dict | None = None) -> int:
-    """Register a Return against an earlier handover.
-
-    ``returns`` is [{line_id, qty, condition, remarks}, ...]. A Return document
-    is created in its own right (so the paperwork matches) and the original
-    handover's returned quantities are updated.
-    """
-    src = by_ref(db, ref)
-    if src is None:
-        raise ValueError(f"No handover found with reference {ref}.")
-    if src["status"] == CANCELLED:
-        raise ValueError(f"{ref} was cancelled — nothing to return.")
-
-    by_id = {l["id"]: l for l in src["lines"]}
-    moved: list[dict] = []
-    for r in returns:
-        ln = by_id.get(int(r.get("line_id", 0)))
-        if ln is None:
-            continue
-        qty = to_float(r.get("qty"), 0)
-        if qty <= 0:
-            continue
-        outstanding = float(ln["qty"] or 0) - float(ln["qty_returned"] or 0)
-        if qty > outstanding + 1e-9:
-            raise ValueError(
-                f"{ln['description'] or ln['asset_id']}: returning {qty:g} but "
-                f"only {outstanding:g} is outstanding.")
-        db.execute("UPDATE handover_lines SET qty_returned=qty_returned+?,"
-                   " condition=COALESCE(NULLIF(?,''), condition) WHERE id=?",
-                   (qty, str(r.get("condition") or ""), ln["id"]))
-        m = dict(ln)
-        m["qty"] = qty
-        m["qty_returned"] = qty
-        m["condition"] = r.get("condition") or ln["condition"]
-        m["remarks"] = r.get("remarks") or ""
-        m["photo"] = r.get("photo") or ln.get("photo") or ""
-        moved.append(m)
-
-    if not moved:
-        raise ValueError("Enter a quantity to return on at least one line.")
-
-    h = dict(head or {})
-    h.setdefault("txn_type", RETURN)
-    h.setdefault("warehouse", src["warehouse"])
-    h.setdefault("project_id", src["project_id"])
-    h.setdefault("project_name", src["project_name"])
-    h.setdefault("location", src["location"])
-    h.setdefault("handed_to", src["handed_to"])
-    h.setdefault("employee_code", src.get("employee_code", ""))
-    h.setdefault("iqama_id", src["iqama_id"])
-    h.setdefault("job_title", src["job_title"])
-    h.setdefault("department", src.get("department", ""))
-    h.setdefault("mobile", src["mobile"])
-    h.setdefault("company", src["company"])
-    h.setdefault("doc_date", today())
-    h["parent_ref"] = src["ref_no"]
-    h["ref_no"] = h.get("ref_no") or next_ref(
-        db, h["warehouse"], h["project_id"], RETURN, h["doc_date"])
-
-    new_id = save_handover(db, h, moved)
-    _refresh_status(db, src["id"])
-    db.execute("UPDATE handovers SET closed_by_ref=?, updated_at=? WHERE id=?",
-               (h["ref_no"], _now(), src["id"]))
-    db.commit()
-    _sync_assets(db, src["id"])
-    db.audit("RETURNED", "handover", src["ref_no"],
-             f"{len(moved)} line(s) returned via {h['ref_no']}")
-    return new_id
-
-
-def post_transfer(db: ToolDB, ref: str, to: dict,
-                  line_ids: Sequence[int] | None = None) -> int:
-    """Move custody of some/all items of a handover to another person."""
-    src = by_ref(db, ref)
-    if src is None:
-        raise ValueError(f"No handover found with reference {ref}.")
-    if not str(to.get("handed_to") or "").strip():
-        raise ValueError("Enter who is taking custody.")
-
-    keep = set(int(i) for i in (line_ids or []))
-    moving = [l for l in src["lines"]
-              if (not keep or l["id"] in keep)
-              and float(l["qty"] or 0) - float(l["qty_returned"] or 0) > 1e-9]
-    if not moving:
-        raise ValueError("Nothing is outstanding on that handover to transfer.")
-
-    h = dict(to)
-    h["txn_type"] = TRANSFER
-    h.setdefault("warehouse", src["warehouse"])
-    h.setdefault("project_id", src["project_id"])
-    h.setdefault("project_name", src["project_name"])
-    h.setdefault("doc_date", today())
-    h["parent_ref"] = src["ref_no"]
-    h["ref_no"] = h.get("ref_no") or next_ref(
-        db, h["warehouse"], h["project_id"], TRANSFER, h["doc_date"])
-
-    fresh = []
-    for l in moving:
-        d = dict(l)
-        d["qty"] = float(l["qty"] or 0) - float(l["qty_returned"] or 0)
-        d["qty_returned"] = 0
-        if to.get("photo"):
-            d["photo"] = to.get("photo")
-        fresh.append(d)
-    new_id = save_handover(db, h, fresh)
-
-    # the source lines leave the previous holder's custody
-    for l in moving:
-        db.execute("UPDATE handover_lines SET qty_returned=qty WHERE id=?", (l["id"],))
-    _refresh_status(db, src["id"])
-    # a transfer is NOT a return: the tools never came back to the warehouse,
-    # so the source is closed as Transferred Out and the audit stays honest.
-    db.execute("UPDATE handovers SET status=?, closed_by_ref=?, updated_at=?"
-               " WHERE id=?", (TRANSFERRED, h["ref_no"], _now(), src["id"]))
-    db.commit()
-    _sync_assets(db, new_id)
-    db.audit("TRANSFERRED", "handover", src["ref_no"],
-             f"{len(moving)} item(s) -> {h['handed_to']} via {h['ref_no']}")
-    return new_id
-
-
-# ------------------------------------------------------------- asset register
-def _sync_assets(db: ToolDB, handover_id: int) -> None:
-    """Keep the asset register in step with the latest handover.
-
-    The register answers "where is this tool right now?" — it is derived data,
-    always rebuilt from the handovers, never edited independently.
-    """
-    h = db.one("SELECT * FROM handovers WHERE id=?", (handover_id,))
-    if h is None:
-        return
-    for l in handover_lines(db, handover_id):
-        aid = str(l["asset_id"] or "").strip()
-        if not aid:
-            continue
-        _recompute_asset(db, aid)
-    db.commit()
-
-
-def _recompute_asset_for_ref(db: ToolDB, ref: str) -> None:
-    for r in db.query("SELECT DISTINCT asset_id FROM handover_lines l"
-                      " JOIN handovers h ON h.id=l.handover_id WHERE h.ref_no=?",
-                      (ref,)):
-        if r["asset_id"]:
-            _recompute_asset(db, r["asset_id"])
-    db.commit()
-
-
-def _recompute_asset(db: ToolDB, asset_id: str) -> None:
-    """Rebuild one asset row from its full handover history."""
-    rows = db.query(
-        """SELECT h.ref_no, h.txn_type, h.doc_date, h.doc_time, h.status,
-                  h.handed_to, h.iqama_id, h.project_id, h.location,
-                  l.category, l.description, l.make_model, l.serial_no,
-                  l.condition, l.calib_due, l.qty, l.qty_returned
-             FROM handover_lines l JOIN handovers h ON h.id = l.handover_id
-            WHERE l.asset_id = ? AND h.status <> ?
-            ORDER BY h.doc_date, h.doc_time, h.id""", (asset_id, CANCELLED))
-    if not rows:
-        db.execute("DELETE FROM assets WHERE asset_id=?", (asset_id,))
-        return
-
-    last = rows[-1]
-    holder, iqama, project, location = "", "", "", ""
-    status = "In Store"
-    for r in rows:
-        out = float(r["qty"] or 0) - float(r["qty_returned"] or 0)
-        if r["txn_type"] == RETURN:
-            holder, iqama, status = "", "", "In Store"
-        elif out > 1e-9:
-            holder = r["handed_to"] or holder
-            iqama = r["iqama_id"] or iqama
-            project = r["project_id"] or project
-            location = r["location"] or location
-            status = ("On Loan" if r["txn_type"] == LOAN else "Issued Out")
-            if r["status"] == OVERDUE:
-                status = "Overdue"
-        else:
-            holder, iqama, status = "", "", "In Store"
-
-    data = {
-        "asset_id": asset_id,
-        "category": last["category"] or "",
-        "description": last["description"] or "",
-        "make_model": last["make_model"] or "",
-        "serial_no": last["serial_no"] or "",
-        "condition": last["condition"] or "",
-        "calib_due": to_date(last["calib_due"]),
-        "holder": holder, "holder_iqama": iqama,
-        "project_id": project, "location": location,
-        "status": status,
-        "last_ref": last["ref_no"], "last_date": last["doc_date"],
-    }
-    if db.one("SELECT 1 FROM assets WHERE asset_id=?", (asset_id,)):
-        sets = ", ".join(f"{k}=?" for k in data if k != "asset_id")
-        db.execute(f"UPDATE assets SET {sets}, updated_at=? WHERE asset_id=?",
-                   [v for k, v in data.items() if k != "asset_id"]
-                   + [_now(), asset_id])
-    else:
-        cols = ", ".join(data)
-        qs = ", ".join("?" * len(data))
-        db.execute(f"INSERT INTO assets({cols}) VALUES({qs})", list(data.values()))
-
-
-def rebuild_assets(db: ToolDB) -> int:
-    """Rebuild the whole asset register from the handover history."""
-    ids = [r["asset_id"] for r in db.query(
-        "SELECT DISTINCT asset_id FROM handover_lines WHERE asset_id<>''")]
-    db.execute("DELETE FROM assets")
-    for aid in ids:
-        _recompute_asset(db, aid)
-    db.commit()
-    db.audit("REBUILT", "assets", "", f"{len(ids)} asset(s)")
-    return len(ids)
-
-
-# ---------------------------------------------------------------- the filter
-def search(db: ToolDB, text: str = "", txn_type: str = "", status: str = "",
-           project: str = "", holder: str = "", warehouse: str = "",
-           category: str = "", date_from: str = "", date_to: str = "",
-           overdue_only: bool = False, limit: int = 5000) -> list[dict]:
-    """The unified filter behind the register grid.
-
-    Every document type is returned in ONE shape, whatever it was originally,
-    which is what makes Issue / Transfer / Loan / Return comparable on screen.
-    """
-    sql = """SELECT h.*,
-                (SELECT COUNT(*) FROM handover_lines l WHERE l.handover_id=h.id) n_items,
-                (SELECT COALESCE(SUM(qty),0) FROM handover_lines l
-                  WHERE l.handover_id=h.id) qty,
-                (SELECT COALESCE(SUM(qty_returned),0) FROM handover_lines l
-                  WHERE l.handover_id=h.id) qty_back
-             FROM handovers h WHERE 1=1"""
-    p: list[Any] = []
-    if txn_type:
-        sql += " AND h.txn_type=?"
-        p.append(txn_type)
-    if status:
-        sql += " AND h.status=?"
-        p.append(status)
-    if project:
-        sql += " AND (h.project_id=? OR h.project_name=?)"
-        p += [project, project]
-    if holder:
-        sql += " AND h.handed_to=?"
-        p.append(holder)
-    if warehouse:
-        sql += " AND h.warehouse=?"
-        p.append(warehouse)
-    if category:
-        sql += (" AND h.id IN (SELECT handover_id FROM handover_lines"
-                " WHERE category=?)")
-        p.append(category)
-    if date_from:
-        sql += " AND h.doc_date>=?"
-        p.append(to_date(date_from))
-    if date_to:
-        sql += " AND h.doc_date<=?"
-        p.append(to_date(date_to))
-    if overdue_only:
-        sql += " AND h.status=?"
-        p.append(OVERDUE)
-    if text:
-        like = f"%{text.strip()}%"
-        sql += (" AND (h.ref_no LIKE ? OR h.handed_to LIKE ? OR h.employee_code LIKE ? OR h.iqama_id LIKE ?"
-                " OR h.project_id LIKE ? OR h.project_name LIKE ? OR h.department LIKE ?"
-                " OR h.location LIKE ? OR h.mobile LIKE ? OR h.issued_by LIKE ?"
-                " OR h.remarks LIKE ?"
-                " OR h.id IN (SELECT handover_id FROM handover_lines WHERE"
-                "     asset_id LIKE ? OR description LIKE ? OR serial_no LIKE ?"
-                "     OR make_model LIKE ? OR category LIKE ?))")
-        p += [like] * 16
-    sql += " ORDER BY h.doc_date DESC, h.id DESC LIMIT ?"
-    p.append(limit)
-
-    out = []
-    for r in db.query(sql, p):
-        d = dict(r)
-        d["outstanding"] = max(0.0, float(d["qty"] or 0) - float(d["qty_back"] or 0))
-        d["days_out"] = _days_since(d["doc_date"])
-        d["days_late"] = _days_late(d)
-        out.append(d)
-    return out
-
-
-def search_lines(db: ToolDB, **kw) -> list[dict]:
-    """The same filter, exploded to one row per item — for the item view."""
-    heads = {h["id"]: h for h in search(db, **kw)}
-    if not heads:
-        return []
-    qs = ",".join("?" * len(heads))
-    rows = db.query(
-        f"SELECT * FROM handover_lines WHERE handover_id IN ({qs})"
-        " ORDER BY handover_id DESC, line_no", list(heads))
-    out = []
-    for r in rows:
-        h = heads[r["handover_id"]]
-        d = dict(r)
-        d.update({k: h[k] for k in
-                  ("ref_no", "txn_type", "doc_date", "status", "handed_to",
-                   "employee_code", "iqama_id", "project_id", "project_name", "location",
-                   "warehouse", "expected_return", "issued_by")})
-        d["outstanding"] = max(0.0, float(d["qty"] or 0)
-                               - float(d["qty_returned"] or 0))
-        out.append(d)
-    return out
-
-
-def _days_since(date: str) -> int:
-    try:
-        return (_dt.date.today() - _dt.date.fromisoformat(str(date)[:10])).days
-    except Exception:          # noqa: BLE001
-        return 0
-
-
-def _days_late(h: dict) -> int:
-    if h.get("status") not in (OPEN, PART_RETURNED, OVERDUE):
-        return 0
-    due = to_date(h.get("expected_return"))
-    if not due:
-        return 0
-    try:
-        return max(0, (_dt.date.today() - _dt.date.fromisoformat(due)).days)
-    except Exception:          # noqa: BLE001
-        return 0
-
-
-def distinct(db: ToolDB, column: str) -> list[str]:
-    safe = {"txn_type", "status", "project_id", "project_name", "handed_to",
-            "warehouse", "location", "company", "issued_by"}
-    if column in safe:
-        return [r[0] for r in db.query(
-            f"SELECT DISTINCT {column} FROM handovers WHERE {column}<>''"
-            f" ORDER BY {column}")]
-    if column in ("category", "asset_id", "make_model"):
-        return [r[0] for r in db.query(
-            f"SELECT DISTINCT {column} FROM handover_lines WHERE {column}<>''"
-            f" ORDER BY {column}")]
-    return []
-
-
-def search_assets(db: ToolDB, text: str = "", status: str = "",
-                  holder: str = "", category: str = "") -> list[dict]:
-    sql = "SELECT * FROM assets WHERE 1=1"
-    p: list[Any] = []
-    if status:
-        sql += " AND status=?"
-        p.append(status)
-    if holder:
-        sql += " AND holder=?"
-        p.append(holder)
-    if category:
-        sql += " AND category=?"
-        p.append(category)
-    if text:
-        like = f"%{text.strip()}%"
-        sql += (" AND (asset_id LIKE ? OR description LIKE ? OR serial_no LIKE ?"
-                " OR make_model LIKE ? OR holder LIKE ? OR category LIKE ?)")
-        p += [like] * 6
-    sql += " ORDER BY asset_id"
-    out = []
-    for r in db.query(sql, p):
-        d = dict(r)
-        d["calib_days"] = _calib_days(d["calib_due"])
-        out.append(d)
-    return out
-
-
-def _calib_days(due: str) -> int | None:
-    d = to_date(due)
-    if not d:
-        return None
-    try:
-        return (_dt.date.fromisoformat(d) - _dt.date.today()).days
-    except Exception:          # noqa: BLE001
-        return None
-
-
-def asset_history(db: ToolDB, asset_id: str) -> list[dict]:
-    return [dict(r) for r in db.query(
-        """SELECT h.ref_no, h.txn_type, h.doc_date, h.doc_time, h.status,
-                  h.handed_to, h.iqama_id, h.project_id, h.location,
-                  h.issued_by, l.qty, l.qty_returned, l.condition, l.remarks
-             FROM handover_lines l JOIN handovers h ON h.id=l.handover_id
-            WHERE l.asset_id=? ORDER BY h.doc_date, h.doc_time, h.id""",
-        (asset_id,))]
-
-
-def custody_by_person(db: ToolDB, f: dict | None = None) -> list[dict]:
-    """Who is holding what, right now (honouring the dashboard filters)."""
-    if f:
-        lines = [l for l in search_lines(db, **f)
-                 if l["status"] in (OPEN, PART_RETURNED, OVERDUE)]
-        agg: dict[tuple, dict] = {}
-        for l in lines:
-            key = (l.get("handed_to") or "", l.get("iqama_id") or "")
-            if not key[0]:
-                continue
-            e = agg.setdefault(key, {"handed_to": key[0], "iqama_id": key[1],
-                                     "mobile": "", "project_id": l.get("project_id"),
-                                     "docs": set(), "outstanding": 0.0,
-                                     "since": l.get("doc_date"), "overdue": 0})
-            e["docs"].add(l.get("ref_no"))
-            e["outstanding"] += to_float(l.get("outstanding"))
-            if str(l.get("doc_date") or "") < str(e["since"] or "9999"):
-                e["since"] = l.get("doc_date")
-            if l.get("status") == OVERDUE:
-                e["overdue"] = 1
-        out = []
-        for e in agg.values():
-            if e["outstanding"] <= 0.0001:
-                continue
-            e["docs"] = len(e["docs"])
-            out.append(e)
-        return sorted(out, key=lambda d: -d["outstanding"])
-    rows = db.query(
-        """SELECT h.handed_to, h.iqama_id, h.mobile, h.project_id,
-                  COUNT(DISTINCT h.id) docs,
-                  SUM(l.qty - l.qty_returned) outstanding,
-                  MIN(h.doc_date) since,
-                  SUM(CASE WHEN h.status=? THEN 1 ELSE 0 END) overdue
-             FROM handovers h JOIN handover_lines l ON l.handover_id=h.id
-            WHERE h.status IN (?,?,?) AND h.handed_to<>''
-            GROUP BY h.handed_to, h.iqama_id
-            HAVING outstanding > 0.0001
-            ORDER BY outstanding DESC""",
-        (OVERDUE, OPEN, PART_RETURNED, OVERDUE))
-    return [dict(r) for r in rows]
-
-
-# ------------------------------------------------------------------ dashboard
-def dashboard(db: ToolDB, f: dict | None = None) -> dict:
-    f = f or {}
-    rows = search(db, **f) if f else search(db)
-    lines = search_lines(db, **f) if f else search_lines(db)
-    out_qty = sum(l["outstanding"] for l in lines)
-    people = {r["handed_to"] for r in rows
-              if r["status"] in (OPEN, PART_RETURNED, OVERDUE) and r["handed_to"]}
-    overdue = [r for r in rows if r["status"] == OVERDUE]
-    assets = search_assets(db)
-    calib_soon = [a for a in assets
-                  if a["calib_days"] is not None and 0 <= a["calib_days"] <= 30]
-    calib_exp = [a for a in assets
-                 if a["calib_days"] is not None and a["calib_days"] < 0]
-    site_dash = site_inventory_dashboard(db)
-    return {
-        "documents": len(rows),
-        "issues": sum(1 for r in rows if r["txn_type"] == ISSUE),
-        "transfers": sum(1 for r in rows if r["txn_type"] == TRANSFER),
-        "loans": sum(1 for r in rows if r["txn_type"] == LOAN),
-        "returns": sum(1 for r in rows if r["txn_type"] == RETURN),
-        "open": sum(1 for r in rows if r["status"] == OPEN),
-        "part": sum(1 for r in rows if r["status"] == PART_RETURNED),
-        "closed": sum(1 for r in rows if r["status"] == CLOSED),
-        "moved": sum(1 for r in rows if r["status"] == TRANSFERRED),
-        "overdue": len(overdue),
-        "overdue_days": max([r["days_late"] for r in overdue], default=0),
-        "items": len(lines),
-        "out_qty": out_qty,
-        "custodians": len(people),
-        "assets": len(assets),
-        "assets_out": sum(1 for a in assets if a["status"] != "In Store"),
-        "calib_soon": len(calib_soon),
-        "calib_expired": len(calib_exp),
-        "damaged": sum(1 for l in lines
-                       if str(l.get("condition") or "").upper().startswith("D")),
-        "photos": sum(1 for l in lines if l.get("photo")),
-        # Excel/site-sync KPI aliases for the rebuilt Instrument Station dashboard
-        "total_tools": site_dash.get("row_count", 0),
-        "available": site_dash.get("available_qty", 0),
-        "issued_site": site_dash.get("issued_qty", 0),
-        "transferred_site": site_dash.get("transferred_qty", 0),
-        "returned_site": site_dash.get("returned_events", 0),
-        "pending_items": site_dash.get("pending_qty", 0),
-        "site_files": site_dash.get("file_count", 0),
-        "sites_covered": site_dash.get("site_count", 0),
-    }
-
-
-#: columns that live on the item lines rather than on the document header
-LINE_COLUMNS = ("category", "description", "asset_id", "make_model", "condition")
-
-#: what a chart or tile counts — the dashboard's "Measure" selector
-MEASURES = {
-    "count": "Documents / lines",
-    "qty": "Quantity handed over",
-    "outstanding": "Quantity still out",
-}
-
-
-def _measure_value(row: dict, measure: str) -> float:
-    if measure == "qty":
-        return to_float(row.get("qty"))
-    if measure == "outstanding":
-        return to_float(row.get("outstanding"))
-    return 1.0
-
-
-def by_column(db: ToolDB, column: str, limit: int = 10,
-              measure: str = "count",
-              f: dict | None = None) -> list[tuple[str, float]]:
-    """Group the filtered register by any column, header-level or line-level."""
-    rows = (search_lines(db, **(f or {})) if column in LINE_COLUMNS
-            else search(db, **(f or {})))
-    agg: dict[str, float] = {}
-    for r in rows:
-        key = str(r.get(column) or "(blank)")
-        agg[key] = agg.get(key, 0) + _measure_value(r, measure)
-    return [kv for kv in sorted(agg.items(), key=lambda kv: -kv[1])[:limit] if kv[1]]
-
-
-#: outstanding-custody ageing buckets, in days
-AGE_BUCKETS = ((0, 7, "0-7 d"), (8, 30, "8-30 d"), (31, 60, "31-60 d"),
-               (61, 90, "61-90 d"), (91, 10 ** 6, "90+ d"))
-
-
-def ageing(db: ToolDB, f: dict | None = None,
-           measure: str = "count") -> list[tuple[str, float]]:
-    """How long the still-out documents have been out."""
-    rows = [r for r in search(db, **(f or {}))
-            if r["status"] in (OPEN, PART_RETURNED, OVERDUE)]
-    out = []
-    for lo, hi, label in AGE_BUCKETS:
-        total = sum(_measure_value(r, measure) for r in rows
-                    if lo <= int(r.get("days_out") or 0) <= hi)
-        out.append((label, total))
-    return out
-
-
-def monthly_split(db: ToolDB, months: int = 8,
-                  f: dict | None = None) -> list[tuple[str, float, float]]:
-    """(month, handed over, returned) — the two series of the grouped chart."""
-    rows = search_lines(db, **(f or {}))
-    agg: dict[str, list[float]] = {}
-    for r in rows:
-        key = str(r.get("doc_date") or "")[:7]
-        if not key:
-            continue
-        cell = agg.setdefault(key, [0.0, 0.0])
-        cell[0] += to_float(r.get("qty"))
-        cell[1] += to_float(r.get("qty_returned"))
-    return [(k, v[0], v[1]) for k, v in sorted(agg.items())[-months:]]
-
-
-def monthly(db: ToolDB, months: int = 12,
-            f: dict | None = None) -> list[tuple[str, float]]:
-    rows = search(db, **(f or {}))
-    agg: dict[str, float] = {}
-    for r in rows:
-        key = str(r.get("doc_date") or "")[:7]
-        if key:
-            agg[key] = agg.get(key, 0) + 1
-    return sorted(agg.items())[-months:]
-
-
-# -------------------------------------------------------------------- reports
-REPORT_LIST = [
-    "All Handover Documents",
-    "Issue Register",
-    "Transfer Register",
-    "Temporary Loan Register",
-    "Return Register",
-    "Outstanding Custody (Not Returned)",
-    "Overdue Loans",
-    "Custody by Person",
-    "Custody by Project",
-    "Item-wise Handover Detail",
-    "Asset Register (Where Is It Now)",
-    "Asset Movement History",
-    "Calibration Due Report",
-    "Damaged / Defective Items",
-    "Missing Documents & Signatures",
-    "Monthly Handover Summary",
-]
-
-Report = tuple[str, list[str], list[list[Any]]]
-
-
-def build_report(db: ToolDB, name: str, f: dict | None = None) -> Report:
-    f = dict(f or {})
-    title = name
-
-    if name in ("All Handover Documents", "Issue Register", "Transfer Register",
-                "Temporary Loan Register", "Return Register",
-                "Outstanding Custody (Not Returned)", "Overdue Loans"):
-        if name == "Issue Register":
-            f["txn_type"] = ISSUE
-        elif name == "Transfer Register":
-            f["txn_type"] = TRANSFER
-        elif name == "Temporary Loan Register":
-            f["txn_type"] = LOAN
-        elif name == "Return Register":
-            f["txn_type"] = RETURN
-        elif name == "Overdue Loans":
-            f["overdue_only"] = True
-        rows = search(db, **f)
-        if name == "Outstanding Custody (Not Returned)":
-            rows = [r for r in rows
-                    if r["status"] in (OPEN, PART_RETURNED, OVERDUE)]
-        cols = ["Reference", "Type", "Date", "Project", "Location",
-                "Handed To", "Iqama / ID", "Mobile", "Items", "Qty",
-                "Returned", "Outstanding", "Expected Return", "Days Late",
-                "Issued By", "Status"]
-        return title, cols, [
-            [r["ref_no"], r["txn_type"], fmt_date(r["doc_date"]),
-             r["project_id"] or r["project_name"], r["location"],
-             r["handed_to"], r["iqama_id"], r["mobile"], r["n_items"],
-             round(r["qty"], 2), round(r["qty_back"], 2),
-             round(r["outstanding"], 2), fmt_date(r["expected_return"]),
-             r["days_late"] or "", r["issued_by"], r["status"]] for r in rows]
-
-    if name == "Custody by Person":
-        cols = ["Custodian", "Iqama / ID", "Mobile", "Project", "Documents",
-                "Items Outstanding", "Holding Since", "Overdue Docs"]
-        return title, cols, [
-            [r["handed_to"], r["iqama_id"], r["mobile"], r["project_id"],
-             r["docs"], round(r["outstanding"] or 0, 2), fmt_date(r["since"]),
-             r["overdue"]] for r in custody_by_person(db)]
-
-    if name == "Custody by Project":
-        agg: dict[str, dict] = {}
-        for l in search_lines(db, **f):
-            key = l["project_id"] or l["project_name"] or "(unassigned)"
-            a = agg.setdefault(key, {"docs": set(), "items": 0, "out": 0.0,
-                                     "people": set()})
-            a["docs"].add(l["ref_no"])
-            a["items"] += 1
-            a["out"] += l["outstanding"]
-            if l["handed_to"]:
-                a["people"].add(l["handed_to"])
-        cols = ["Project", "Documents", "Item Lines", "Outstanding Qty",
-                "Custodians"]
-        return title, cols, [
-            [k, len(v["docs"]), v["items"], round(v["out"], 2),
-             len(v["people"])]
-            for k, v in sorted(agg.items(), key=lambda kv: -kv[1]["out"])]
-
-    if name == "Item-wise Handover Detail":
-        cols = ["Reference", "Type", "Date", "Asset / Tool ID", "Category",
-                "Description", "Make / Model", "Serial No.", "Qty", "Returned",
-                "Outstanding", "Cond.", "Calib. Due", "Handed To", "Project",
-                "Status", "Remarks"]
-        return title, cols, [
-            [l["ref_no"], l["txn_type"], fmt_date(l["doc_date"]), l["asset_id"],
-             l["category"], l["description"], l["make_model"], l["serial_no"],
-             round(float(l["qty"] or 0), 2), round(float(l["qty_returned"] or 0), 2),
-             round(l["outstanding"], 2), l["condition"], fmt_date(l["calib_due"]),
-             l["handed_to"], l["project_id"], l["status"], l["remarks"]]
-            for l in search_lines(db, **f)]
-
-    if name == "Asset Register (Where Is It Now)":
-        cols = ["Asset / Tool ID", "Category", "Description", "Make / Model",
-                "Serial No.", "Status", "Held By", "Iqama / ID", "Project",
-                "Location", "Cond.", "Calib. Due", "Days to Calib.",
-                "Last Reference", "Last Movement"]
-        return title, cols, [
-            [a["asset_id"], a["category"], a["description"], a["make_model"],
-             a["serial_no"], a["status"], a["holder"], a["holder_iqama"],
-             a["project_id"], a["location"], a["condition"],
-             fmt_date(a["calib_due"]),
-             "" if a["calib_days"] is None else a["calib_days"],
-             a["last_ref"], fmt_date(a["last_date"])]
-            for a in search_assets(db)]
-
-    if name == "Asset Movement History":
-        cols = ["Asset / Tool ID", "Reference", "Type", "Date", "Handed To",
-                "Iqama / ID", "Project", "Location", "Qty", "Returned",
-                "Cond.", "Issued By", "Status"]
-        rows = []
-        for a in search_assets(db):
-            for h in asset_history(db, a["asset_id"]):
-                rows.append([a["asset_id"], h["ref_no"], h["txn_type"],
-                             fmt_date(h["doc_date"]), h["handed_to"],
-                             h["iqama_id"], h["project_id"], h["location"],
-                             round(float(h["qty"] or 0), 2),
-                             round(float(h["qty_returned"] or 0), 2),
-                             h["condition"], h["issued_by"], h["status"]])
-        return title, cols, rows
-
-    if name == "Calibration Due Report":
-        cols = ["Asset / Tool ID", "Description", "Make / Model", "Serial No.",
-                "Calib. Due", "Days Remaining", "Verdict", "Status", "Held By",
-                "Project"]
-        rows = []
-        for a in sorted(search_assets(db),
-                        key=lambda x: (x["calib_days"] is None,
-                                       x["calib_days"] or 0)):
-            if a["calib_days"] is None:
-                verdict = "No date recorded"
-            elif a["calib_days"] < 0:
-                verdict = f"EXPIRED {abs(a['calib_days'])} day(s) ago"
-            elif a["calib_days"] <= 30:
-                verdict = "Due soon"
-            else:
-                verdict = "Valid"
-            rows.append([a["asset_id"], a["description"], a["make_model"],
-                         a["serial_no"], fmt_date(a["calib_due"]),
-                         "" if a["calib_days"] is None else a["calib_days"],
-                         verdict, a["status"], a["holder"], a["project_id"]])
-        return title, cols, rows
-
-    if name == "Damaged / Defective Items":
-        cols = ["Reference", "Date", "Asset / Tool ID", "Description",
-                "Serial No.", "Cond.", "Grade", "Handed To", "Project",
-                "Remarks / Defects"]
-        rows = []
-        for l in search_lines(db, **f):
-            c = str(l.get("condition") or "").strip().upper()[:1]
-            if c in ("C", "D"):
-                rows.append([l["ref_no"], fmt_date(l["doc_date"]), l["asset_id"],
-                             l["description"], l["serial_no"], c,
-                             CONDITIONS.get(c, c), l["handed_to"],
-                             l["project_id"], l["remarks"]])
-        return title, cols, rows
-
-    if name == "Missing Documents & Signatures":
-        # the governance report: which controlled forms are incomplete
-        cols = ["Reference", "Type", "Date", "Handed To", "Project",
-                "Signed by Warehouse", "Signed by Custodian", "Serial Checked",
-                "Accessories", "Calibration", "Photos", "Scanned File",
-                "What Is Missing"]
-        rows = []
-        for r in search(db, **f):
-            miss = []
-            if not str(r["issued_by"] or "").strip():
-                miss.append("warehouse signature")
-            if not str(r["received_by"] or "").strip():
-                miss.append("custodian signature")
-            if not r["v_serial"]:
-                miss.append("serial check")
-            if not r["v_accessories"]:
-                miss.append("accessories check")
-            if not r["v_calibration"]:
-                miss.append("calibration check")
-            if not r["v_photos"]:
-                miss.append("photos")
-            if not str(r["source_file"] or "").strip():
-                miss.append("scanned copy")
-            if not miss:
-                continue
-            tick = lambda b: "Yes" if b else "—"        # noqa: E731
-            rows.append([r["ref_no"], r["txn_type"], fmt_date(r["doc_date"]),
-                         r["handed_to"], r["project_id"],
-                         tick(str(r["issued_by"] or "").strip()),
-                         tick(str(r["received_by"] or "").strip()),
-                         tick(r["v_serial"]), tick(r["v_accessories"]),
-                         tick(r["v_calibration"]), tick(r["v_photos"]),
-                         tick(str(r["source_file"] or "").strip()),
-                         ", ".join(miss)])
-        return title, cols, rows
-
-    if name == "Monthly Handover Summary":
-        cols = ["Month", "Documents", "Issues", "Transfers", "Loans",
-                "Returns", "Item Lines", "Still Outstanding"]
-        agg: dict[str, dict] = {}
-        for r in search(db, **f):
-            key = str(r["doc_date"] or "")[:7]
-            if not key:
-                continue
-            a = agg.setdefault(key, {"docs": 0, ISSUE: 0, TRANSFER: 0,
-                                     LOAN: 0, RETURN: 0, "items": 0, "out": 0.0})
-            a["docs"] += 1
-            a[r["txn_type"]] = a.get(r["txn_type"], 0) + 1
-            a["items"] += r["n_items"]
-            a["out"] += r["outstanding"]
-        return title, cols, [
-            [k, v["docs"], v[ISSUE], v[TRANSFER], v[LOAN], v[RETURN],
-             v["items"], round(v["out"], 2)] for k, v in sorted(agg.items())]
-
-    return title, ["Report"], [[f"Unknown report: {name}"]]
-
-
-# ------------------------------------------------- synchronised drop folder
-HANDOVER_SUFFIXES = (".pdf",)
-SPREADSHEET_SUFFIXES = (".xlsx", ".xlsm", ".csv", ".txt")
-
-
-def folders(db: ToolDB, active_only: bool = False) -> list[dict]:
-    sql = "SELECT * FROM folders"
-    if active_only:
-        sql += " WHERE active=1"
-    sql += " ORDER BY id"
-    out = []
-    for r in db.query(sql):
-        d = dict(r)
-        ok, note = folder_status(d["path"])
-        d["online"] = ok
-        d["note"] = note
-        d["files"] = db.scalar("SELECT COUNT(*) FROM files WHERE path LIKE ?",
-                               (f"{d['path']}%",))
-        out.append(d)
-    return out
-
-
-def add_folder(db: ToolDB, path: str | Path, label: str = "") -> int:
-    p = str(Path(path))
-    ok, note = folder_status(p)
-    if not ok:
-        raise ValueError(note)
-    row = db.one("SELECT id FROM folders WHERE path=?", (p,))
-    if row:
-        db.execute("UPDATE folders SET active=1, label=? WHERE id=?",
-                   (label or Path(p).name, row["id"]))
-        db.commit()
-        return int(row["id"])
-    cur = db.execute("INSERT INTO folders(path,label) VALUES(?,?)",
-                     (p, label or Path(p).name))
-    db.commit()
-    db.audit("ADDED", "folder", p, label)
-    return int(cur.lastrowid)
-
-
-def remove_folder(db: ToolDB, folder_id: int, forget_files: bool = True) -> None:
-    r = db.one("SELECT path FROM folders WHERE id=?", (folder_id,))
-    if r is None:
-        return
-    if forget_files:
-        db.execute("DELETE FROM files WHERE path LIKE ?", (f"{r['path']}%",))
-    db.execute("DELETE FROM folders WHERE id=?", (folder_id,))
-    db.commit()
-    db.audit("REMOVED", "folder", r["path"])
-
-
-def folder_status(path: str | Path) -> tuple[bool, str]:
-    """Check a shared folder is usable before we promise anything."""
-    if not str(path or "").strip():
-        return False, "No folder selected."
-    p = Path(path)
-    if not p.exists():
-        return False, f"The folder does not exist or is offline:\n{p}"
-    if not p.is_dir():
-        return False, f"That path is a file, not a folder:\n{p}"
-    if not os.access(p, os.R_OK):
-        return False, f"No permission to read:\n{p}"
-    return True, ("Read and write access." if os.access(p, os.W_OK)
-                  else "Read-only — files can be read but not moved.")
-
-
-def file_hash(path: str | Path, limit_mb: int = 32) -> str:
-    import hashlib
-    h = hashlib.sha256()
-    try:
-        with open(path, "rb") as fh:
-            read = 0
-            while chunk := fh.read(1 << 20):
-                h.update(chunk)
-                read += len(chunk)
-                if read >= limit_mb << 20:
-                    break
-    except OSError:
-        return ""
-    return h.hexdigest()
-
-
-def sync_folder(db: ToolDB, folder_id: int, auto_import: bool = True) -> dict:
-    """Index a synchronised folder and pull the handover data out of it.
-
-    Read-only with respect to the shared drive: files are never moved, renamed
-    or deleted — only read. That is deliberate, because the folder is someone
-    else's sync target.
-    """
-    row = db.one("SELECT * FROM folders WHERE id=?", (folder_id,))
-    if row is None:
-        raise ValueError("Folder not found.")
-    ok, note = folder_status(row["path"])
-    if not ok:
-        return {"ok": False, "message": note, "seen": 0, "new": 0,
-                "imported": 0, "failed": 0, "errors": []}
-
-    res = {"ok": True, "message": note, "seen": 0, "new": 0, "imported": 0,
-           "updated": 0, "failed": 0, "errors": [], "ignored_spreadsheets": 0}
-    for f in sorted(Path(row["path"]).rglob("*")):
-        if not f.is_file() or f.name.startswith("~$") or f.name.startswith("."):
-            continue
-        suffix = f.suffix.lower()
-        if suffix in SPREADSHEET_SUFFIXES:
-            res["ignored_spreadsheets"] += 1
-            continue
-        if suffix not in HANDOVER_SUFFIXES:
-            continue
-        res["seen"] += 1
-        try:
-            st = f.stat()
-        except OSError:
-            continue
-        key = str(f)
-        prev = db.one("SELECT * FROM files WHERE path=?", (key,))
-        digest = file_hash(f)
-        modified = _dt.datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
-
-        if prev and prev["file_hash"] == digest:
-            continue                       # unchanged since last scan
-
-        ref = detect_ref(f.name)
-        if prev:
-            db.execute("UPDATE files SET name=?, size_kb=?, modified=?,"
-                       " file_hash=?, ref_no=?, seen_at=? WHERE id=?",
-                       (f.name, round(st.st_size / 1024.0, 1), modified,
-                        digest, ref, _now(), prev["id"]))
-            res["updated"] += 1
-        else:
-            db.execute("INSERT INTO files(path,name,ref_no,size_kb,modified,"
-                       "file_hash,status) VALUES(?,?,?,?,?,?,?)",
-                       (key, f.name, ref, round(st.st_size / 1024.0, 1),
-                        modified, digest, "New"))
-            res["new"] += 1
-
-        if auto_import and f.suffix.lower() == ".pdf":
-            try:
-                got = import_pdf(db, f)
-                if got:
-                    res["imported"] += 1
-            except Exception as exc:       # noqa: BLE001
-                res["failed"] += 1
-                res["errors"].append(f"{f.name}: {exc}")
-                db.execute("UPDATE files SET status=?, note=? WHERE path=?",
-                           ("Failed", str(exc)[:300], key))
-    db.execute("UPDATE folders SET last_scan=? WHERE id=?", (_now(), folder_id))
-    db.commit()
-    db.audit("SYNCED", "folder", row["path"],
-             f"{res['seen']} file(s), {res['imported']} imported, "
-             f"{res['failed']} failed")
-    return res
-
-
-def sync_all(db: ToolDB, auto_import: bool = True) -> dict:
-    total = {"ok": True, "seen": 0, "new": 0, "imported": 0, "updated": 0,
-             "failed": 0, "errors": [], "folders": 0, "offline": [],
-             "ignored_spreadsheets": 0}
-    for f in folders(db, active_only=True):
-        r = sync_folder(db, f["id"], auto_import)
-        total["folders"] += 1
-        if not r["ok"]:
-            total["offline"].append(f["path"])
-            continue
-        for k in ("seen", "new", "imported", "updated", "failed",
-                  "ignored_spreadsheets"):
-            total[k] += r.get(k, 0)
-        total["errors"] += r.get("errors", [])
-    return total
-
-
-def detect_ref(name: str) -> str:
-    """Pull a handover reference out of a file name."""
-    stem = Path(str(name)).stem
-    for token in re.split(r"[ _]+", stem):
-        token = token.strip("().,-")
-        if parse_ref(token):
-            return token
-    m = re.search(r"[A-Z]{2,4}-?\d{2,4}(?:IS|TR|TL|RT)\d{8}\d{1,3}", stem, re.I)
-    return m.group(0) if m else ""
-
-
-def scan_files(db: ToolDB, status: str = "", text: str = "") -> list[dict]:
-    sql = "SELECT * FROM files WHERE 1=1"
-    p: list[Any] = []
-    if status:
-        sql += " AND status=?"
-        p.append(status)
-    if text:
-        like = f"%{text}%"
-        sql += " AND (name LIKE ? OR ref_no LIKE ? OR note LIKE ?)"
-        p += [like] * 3
-    sql += " ORDER BY modified DESC, id DESC"
-    out = []
-    for r in db.query(sql, p):
-        d = dict(r)
-        d["exists"] = Path(d["path"]).exists()
-        if not d["exists"] and d["status"] != "Missing":
-            d["status"] = "Missing"
-        out.append(d)
-    return out
-
-
-# --------------------------------------------------------------- PDF reading
-def read_pdf_text(path: str | Path) -> str:
-    """Extract the text of a handover PDF. Returns "" when unreadable."""
-    try:
-        from pypdf import PdfReader
-    except ImportError:
-        return ""
-    try:
-        reader = PdfReader(str(path))
-        return "\n".join((p.extract_text() or "") for p in reader.pages)
-    except Exception:              # noqa: BLE001
-        return ""
-
-
-# labels of section A/B, mapped to our fields. Matching ignores case and
-# punctuation so a revised form does not break the import.
-_LABELS = {
-    "formno": "form_no",
-    "handoverreferenceno": "ref_no",
-    "handoverreferencenoauto": "ref_no",
-    "referenceno": "ref_no",
-    "ref": "ref_no",
-    "dateddmmyyyy": "doc_date",
-    "date": "doc_date",
-    "time": "doc_time",
-    "expectedreturndate": "expected_return",
-    "expectedreturndateifany": "expected_return",
-    "projectid": "project_id",
-    "projectname": "project_name",
-    "projectsitelocation": "location",
-    "projectlocation": "location",
-    "sitelocation": "location",
-    "handedtofullname": "handed_to",
-    "handedto": "handed_to",
-    "employeeiqamaid": "iqama_id",
-    "iqamaid": "iqama_id",
-    "employeeid": "iqama_id",
-    "jobtitle": "job_title",
-    "mobileno": "mobile",
-    "mobile": "mobile",
-    "companydepartment": "company",
-    "company": "company",
-    "email": "email",
-    "supervisormanager": "supervisor",
-    "supervisor": "supervisor",
-    "costcodewbs": "cost_code",
-    "costcode": "cost_code",
-}
-
-_ITEM_ROW = re.compile(
-    r"^(?P<no>\d{1,3})\s+(?P<rest>\S.*)$")
-
-
-def parse_handover_text(text: str, source: str = "") -> dict | None:
-    """Turn the text of a handover form into a header + line dicts.
-
-    Written against the supplied controlled form (WH-FRM-001 Rev 00) but kept
-    tolerant: labels are matched loosely and every field is optional, so a
-    slightly different revision still imports rather than failing outright.
-    """
-    if not str(text or "").strip():
-        return None
-    raw = [ln.rstrip() for ln in text.replace("\r\n", "\n").split("\n")]
-    lines = [ln.strip() for ln in raw if ln.strip()]
-    if not lines:
-        return None
-
-    head: dict[str, Any] = {}
-
-    # --- labels sit on their own line, value on the next (as the form exports)
-    i = 0
-    while i < len(lines):
-        key = norm(lines[i])
-        field = _LABELS.get(key)
-        if field and i + 1 < len(lines):
-            val = lines[i + 1].strip()
-            if not _LABELS.get(norm(val)) and not val.startswith(("A —", "B —",
-                                                                  "C —", "D —")):
-                head.setdefault(field, val)
-                i += 2
-                continue
-        i += 1
-
-    # --- the reference is authoritative: it also encodes type, date, project
-    ref = str(head.get("ref_no") or "").strip()
-    if not ref:
-        for ln in lines:
-            m = re.search(r"[A-Z]{2,4}-?\d{2,4}(?:IS|TR|TL|RT)\d{8}\d{1,3}",
-                          ln, re.I)
-            if m:
-                ref = m.group(0)
-                break
-    if not ref and source:
-        ref = detect_ref(source)
-    if not ref:
-        return None
-    head["ref_no"] = ref
-    dec = parse_ref(ref)
-    if dec:
-        head.setdefault("warehouse", dec["warehouse"])
-        head["txn_type"] = dec["txn_type"]
-        head.setdefault("project_id", dec["project_id"])
-        head.setdefault("doc_date", dec["doc_date"])
-
-    # --- transaction type: a ticked checkbox wins over the reference code
-    for ln in lines:
-        if "TRANSACTION TYPE" in ln.upper():
-            picked = _ticked_type(ln)
-            if picked:
-                head["txn_type"] = picked
-            break
-    head.setdefault("txn_type", ISSUE)
-
-    head["doc_date"] = to_date(head.get("doc_date"))
-    head["expected_return"] = to_date(head.get("expected_return"))
-    for k in ("email", "supervisor", "cost_code", "expected_return"):
-        if str(head.get(k, "")).strip() == "-":
-            head[k] = ""
-
-    # --- section D signatures: "Name" then "23/08/2026  06:33"
-    head.update(_parse_signatures(lines))
-
-    # --- verification ticks
-    for ln in lines:
-        u = ln.upper()
-        if "VERIFICATION" in u or "CHECKED" in u:
-            head.setdefault("v_serial", 1 if "SERIAL" in u else 0)
-            head.setdefault("v_accessories", 1 if "ACCESSOR" in u else 0)
-            head.setdefault("v_calibration", 1 if "CALIBRATION" in u else 0)
-            head.setdefault("v_photos", 1 if "PHOTO" in u else 0)
-            break
-
-    items = _parse_items(lines)
-    if source:
-        head["source_file"] = str(source)
-    return {"head": head, "lines": items}
-
-
-def _ticked_type(line: str) -> str:
-    """Read which transaction-type box is ticked, if the export shows it."""
-    u = line.upper()
-    for mark in ("☑", "[X]", "(X)", "✓", "✔"):
-        pos = u.find(mark)
-        if pos < 0:
-            continue
-        after = u[pos + len(mark):pos + len(mark) + 22]
-        for name in (ISSUE, TRANSFER, LOAN, RETURN):
-            if name.upper().split()[0] in after:
-                return name
+    serial = norm(rec.get("serial_no"))
+    if serial:
+        return f"SN:{serial}"
+    desc = norm(rec.get("instrument_desc"))
+    make = norm(rec.get("make_model"))
+    if desc:
+        return f"DS:{desc}|{make}|{norm(rec.get('location'))}"
     return ""
 
 
-def _parse_signatures(lines: Sequence[str]) -> dict:
-    """Pull the two names and date-times out of section D."""
-    out: dict[str, str] = {}
-    joined = [l.strip() for l in lines]
-    for idx, ln in enumerate(joined):
-        u = ln.upper()
-        role = ""
-        if u.startswith("ISSUED BY"):
-            role = "issued"
-        elif u.startswith("RECEIVED BY"):
-            role = "received"
-        if not role:
-            continue
-        # the next few lines hold NAME / SIGNATURE / DATE-TIME headings, then
-        # the actual value(s)
-        for cand in joined[idx + 1: idx + 8]:
-            cu = norm(cand)
-            if cu in ("name", "signature", "datetime", "date", "time"):
-                continue
-            m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})", cand)
-            if m:
-                out[f"{role}_at"] = f"{to_date(m.group(1))} {m.group(2)}"
-                name = cand[:m.start()].strip(" ·-\t")
-                if name and not out.get(f"{role}_by"):
-                    out[f"{role}_by"] = name
-                break
-            if not out.get(f"{role}_by"):
-                out[f"{role}_by"] = cand.strip()
+def instrument_title(rec: dict[str, Any]) -> str:
+    desc = str(rec.get("instrument_desc") or "").strip() or "Instrument"
+    serial = str(rec.get("serial_no") or "").strip()
+    return f"{desc} ({serial})" if serial else desc
+
+
+def normalize_record(rec: dict[str, Any]) -> dict[str, Any]:
+    """Coerce anything sheet-shaped into one clean register row."""
+    out: dict[str, Any] = {k: str(rec.get(k, "") or "").strip() for k in ALL_KEYS}
+    out["quantity"] = to_float(rec.get("quantity", rec.get("qty", 1)), 1) or 1
+    if not out["location"]:
+        out["location"] = out.get("site_name", "")
+    if not out["site_name"]:
+        out["site_name"] = out.get("location", "")
+    status = str(rec.get("status") or "").strip()
+    out["status"] = status or (
+        ST_ISSUED if out["issued_to"] else
+        (ST_AT_SITE if out["location"] and norm(out["location"]) != "warehouse"
+         else ST_AVAILABLE))
+    if not (out["instrument_desc"] or out["serial_no"]):
+        raise ValueError("Enter at least an instrument description or a serial number.")
+    out["key_value"] = instrument_key(out)
     return out
 
 
-def _parse_items(lines: Sequence[str]) -> list[dict]:
-    """Read section C. Each item is one numbered line in the extracted text."""
-    start = -1
-    for i, ln in enumerate(lines):
-        u = ln.upper()
-        if "ASSET" in u and "TOOL" in u and "CATEGORY" in u:
-            start = i + 1
-            break
-        if u.startswith("C —") or u.startswith("C -"):
-            start = i + 1
-    if start < 0:
+def _fill_person_from_master(db: ToolDB, data: dict[str, Any],
+                             db_main: Any) -> None:
+    if db_main is None:
+        return
+    found = employee_lookup(db_main, data.get("employee_code", ""),
+                            data.get("iqama_id", ""), data.get("issued_to", ""))
+    for key in PERSON_FIELDS:
+        val = str(found.get(key) or "").strip()
+        if val and not str(data.get(key) or "").strip():
+            data[key] = val
+    if not str(data.get("issued_to") or "").strip() and found.get("issued_to"):
+        data["issued_to"] = found["issued_to"]
+
+
+def _changed_fields(before: dict[str, Any] | None,
+                    after: dict[str, Any]) -> list[str]:
+    if not before:
         return []
-
-    out: list[dict] = []
-    for ln in lines[start:]:
-        u = ln.upper()
-        if u.startswith(("*CONDITION", "VERIFICATION", "D —", "D -",
-                         "CONTROLLED FORM")):
-            break
-        m = _ITEM_ROW.match(ln)
-        if not m:
+    out = []
+    for key, _ in ALL_FIELDS + [("quantity", "Quantity")]:
+        if key in ("qty",):
             continue
-        item = _split_item(m.group("rest"))
-        if item:
-            item["line_no"] = int(m.group("no"))
-            out.append(item)
+        b = before.get(key)
+        a = after.get(key)
+        if key == "quantity":
+            if abs(to_float(b, 0) - to_float(a, 0)) > 1e-9:
+                out.append(_label_of(key))
+            continue
+        if str(b or "").strip() != str(a or "").strip():
+            out.append(_label_of(key))
     return out
 
 
-_COND_RE = re.compile(r"\b([ABCD])\b")
+def _label_of(key: str) -> str:
+    for k, label in ALL_FIELDS:
+        if k == key:
+            return label
+    return key.replace("_", " ").title()
 
 
-def _split_item(rest: str) -> dict | None:
-    """Split one item row into its columns.
+# ------------------------------------------------------------- the register
+def save_instrument(db: ToolDB, data: dict[str, Any],
+                    instrument_id: int | None = None,
+                    movement_type: str = "",
+                    source: str = "Manual Entry",
+                    source_file: str = "",
+                    file_hash_value: str = "",
+                    db_main: Any = None,
+                    quiet: bool = False) -> dict[str, Any]:
+    """Create or update one register row and keep the movement track honest."""
+    before = get_instrument(db, instrument_id) if instrument_id else None
+    if instrument_id and before is None:
+        raise ValueError("This instrument is no longer in the register.")
+    payload = dict(data or {})
+    _fill_person_from_master(db, payload, db_main)
+    rec = normalize_record(payload)
+    if not rec["key_value"]:
+        rec["key_value"] = instrument_key(rec)
 
-    The PDF text layer loses the column boundaries, so the row is decoded from
-    the inside out using the strong anchors that are always present: the
-    condition grade (a lone A/B/C/D), the calibration date, and the asset ID.
-    Everything is optional — a partially readable row is better than none.
-    """
-    text = re.sub(r"\s{2,}", "  ", str(rest or "").strip())
-    if not text:
-        return None
+    clash = db.one("SELECT id, instrument_desc FROM instruments "
+                   "WHERE key_value=? AND id<>?",
+                   (rec["key_value"], instrument_id or 0))
+    if clash:
+        # Same serial, same place — update that row instead of storing it twice.
+        raise ValueError(
+            f"Serial {rec['serial_no'] or rec['instrument_desc']} is already in the "
+            f"register ({clash['instrument_desc']}). Edit that row instead.")
 
-    item: dict[str, Any] = {"asset_id": "", "category": "", "description": "",
-                            "make_model": "", "serial_no": "", "qty": 1,
-                            "accessories": "", "condition": "",
-                            "calib_due": "", "remarks": ""}
-
-    # calibration date + trailing remarks
-    m = re.search(r"(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})\s*(.*)$", text)
-    if m:
-        item["calib_due"] = to_date(m.group(1))
-        item["remarks"] = m.group(2).strip()
-        text = text[:m.start()].strip()
-
-    # condition grade: the last lone capital letter A-D
-    grades = list(_COND_RE.finditer(text))
-    if grades:
-        g = grades[-1]
-        item["condition"] = g.group(1)
-        after = text[g.end():].strip()
-        if after and not item["remarks"]:
-            item["remarks"] = after
-        text = text[:g.start()].strip()
-
-    # accessories phrase sits just before the condition
-    for phrase in ("With All accessories", "With all accessories",
-                   "With accessories"):
-        if phrase.lower() in text.lower():
-            idx = text.lower().rindex(phrase.lower())
-            item["accessories"] = text[idx:idx + len(phrase)]
-            text = (text[:idx] + " " + text[idx + len(phrase):]).strip()
-            break
+    now = _now()
+    if before is None:
+        cols = ALL_KEYS + ["key_value", "source", "source_file", "file_hash",
+                           "created_at", "updated_at"]
+        vals = [rec[k] if k != "quantity" else to_float(rec["quantity"], 1)
+                for k in ALL_KEYS]
+        sql = (f"INSERT INTO instruments ({','.join(cols)}) "
+               f"VALUES ({','.join('?' * len(cols))})")
+        cur = db.execute(sql, vals + [rec["key_value"], source, source_file,
+                                      file_hash_value, now, now])
+        instrument_id = int(cur.lastrowid)
+        moved = movement_type or MV_REGISTERED
+        post_movement(db, instrument_id, moved, movement_date=today(),
+                      location=rec["location"], quantity=rec["quantity"],
+                      status_after=rec["status"], issued_by=rec["issued_by"],
+                      remarks=rec["remarks"], source=source,
+                      source_file=source_file, quiet=True)
     else:
-        if text.endswith(" -"):
-            item["accessories"] = "-"
-            text = text[:-2].strip()
-
-    tokens = text.split()
-    if not tokens:
-        return item if (item["asset_id"] or item["condition"]) else None
-
-    # asset / tool ID is the leading code-like token
-    if re.match(r"^[A-Z0-9][A-Z0-9\-/]{3,}$", tokens[0], re.I) and \
-            any(ch.isdigit() for ch in tokens[0]):
-        item["asset_id"] = tokens.pop(0)
-
-    # category is the next single known word
-    if tokens and tokens[0].title() in ("Instrument", "Tool", "Device",
-                                        "Equipment", "Machine", "Consumable",
-                                        "Accessory", "Safety"):
-        item["category"] = tokens.pop(0).title()
-
-    # serial: the last token that looks like a serial and is not a word
-    if tokens:
-        last = tokens[-1]
-        if last == "-":
-            item["serial_no"] = ""
-            tokens.pop()
-        elif re.match(r"^[0-9][0-9\-/]{3,}$", last):
-            item["serial_no"] = tokens.pop()
-
-    # make / model: a known brand, else the last remaining word
-    brands = ("leica", "bosch", "makita", "hilti", "stanley", "dewalt",
-              "fluke", "topcon", "sokkia", "trimble", "milwaukee", "karcher",
-              "honda", "yamaha", "3m", "abb", "siemens", "schneider", "skf")
-    for i in range(len(tokens) - 1, -1, -1):
-        if tokens[i].lower() in brands:
-            item["make_model"] = tokens.pop(i)
-            break
-
-    item["description"] = " ".join(tokens).strip(" -")
-    if not item["description"] and not item["asset_id"]:
-        return None
-    return item
-
-
-def import_pdf(db: ToolDB, path: str | Path,
-               overwrite: bool = False) -> int | None:
-    """Read one handover PDF from the sync folder into the register."""
-    p = Path(path)
-    text = read_pdf_text(p)
-    parsed = parse_handover_text(text, source=str(p))
-    if not parsed or not parsed["head"].get("ref_no"):
-        db.execute("UPDATE files SET status=?, note=? WHERE path=?",
-                   ("Unreadable", "no handover reference found", str(p)))
-        db.commit()
-        return None
-
-    head = parsed["head"]
-    head["file_hash"] = file_hash(p)
-    ref = head["ref_no"]
-    existing = db.one("SELECT id FROM handovers WHERE ref_no=?", (ref,))
-    if existing and not overwrite:
-        db.execute("UPDATE files SET status=?, ref_no=?, handover_id=?,"
-                   " note=? WHERE path=?",
-                   ("Linked", ref, existing["id"], "already in the register",
-                    str(p)))
-        db.commit()
-        return int(existing["id"])
-
-    hid = save_handover(db, head, parsed["lines"],
-                        handover_id=int(existing["id"]) if existing else None)
-    db.execute("UPDATE files SET status=?, ref_no=?, handover_id=?, note=?"
-               " WHERE path=?",
-               ("Imported", ref, hid, f"{len(parsed['lines'])} item(s)", str(p)))
+        changes = _changed_fields(before, rec)
+        sets = []
+        params: list[Any] = []
+        for key in ALL_KEYS:
+            val = to_float(rec[key], 1) if key == "quantity" else rec[key]
+            sets.append(f"{key}=?")
+            params.append(val)
+        sets += ["key_value=?", "source_file=?", "file_hash=?",
+                 "updated_at=?", "source=?"]
+        params += [rec["key_value"], source_file or before.get("source_file", ""),
+                   file_hash_value or before.get("file_hash", ""), now,
+                   source or before.get("source", "Manual Entry")]
+        db.execute(f"UPDATE instruments SET {', '.join(sets)} WHERE id=?",
+                   params + [instrument_id])
+        if changes and not quiet:
+            post_movement(db, instrument_id, movement_type or MV_UPDATED,
+                          movement_date=today(), location=rec["location"],
+                          quantity=rec["quantity"], status_after=rec["status"],
+                          issued_by=rec["issued_by"], remarks=rec["remarks"],
+                          details="Changed: " + ", ".join(changes),
+                          source=source, source_file=source_file, quiet=True)
     db.commit()
-    db.audit("IMPORTED", "handover", ref, f"from {p.name}")
-    return hid
+    db.audit("SAVED" if before is None else "UPDATED", "instrument",
+             str(instrument_id), instrument_title(rec))
+    row = get_instrument(db, instrument_id)
+    return row or {}
 
 
-def import_folder_files(db: ToolDB, paths: Sequence[str],
-                        overwrite: bool = False) -> dict:
-    res = {"imported": 0, "skipped": 0, "failed": 0, "errors": []}
-    for path in paths:
-        p = Path(path)
-        suffix = p.suffix.lower()
-        if suffix in SPREADSHEET_SUFFIXES:
-            res["skipped"] += 1
-            res["errors"].append(
-                f"{p.name}: this is a spreadsheet — use Site-wise Excel Sync / Import Excel instead"
-            )
+def get_instrument(db: ToolDB, instrument_id: int | None) -> dict[str, Any] | None:
+    if not instrument_id:
+        return None
+    r = db.one("SELECT * FROM instruments WHERE id=?", (int(instrument_id),))
+    return dict(r) if r else None
+
+
+def find_instrument(db: ToolDB, serial: str = "",
+                    description: str = "") -> dict[str, Any] | None:
+    if str(serial or "").strip():
+        r = db.one("SELECT * FROM instruments WHERE serial_no=? COLLATE NOCASE",
+                   (str(serial).strip(),))
+        if r:
+            return dict(r)
+    if str(description or "").strip():
+        r = db.one("SELECT * FROM instruments WHERE instrument_desc=? COLLATE NOCASE",
+                   (str(description).strip(),))
+        if r:
+            return dict(r)
+    return None
+
+
+def find_by_key(db: ToolDB, rec: dict[str, Any]) -> dict[str, Any] | None:
+    """The row this sheet line belongs to — serial first, then description+place.
+
+    A shared description on its own never merges two instruments, so a site
+    sheet with three identical "TRIPOD" lines still stores three rows.
+    """
+    key = instrument_key(rec)
+    if key:
+        r = db.one("SELECT * FROM instruments WHERE key_value=?", (key,))
+        if r:
+            return dict(r)
+    if str(rec.get("serial_no") or "").strip():
+        return find_instrument(db, serial=rec.get("serial_no", ""))
+    return None
+
+
+def delete_instruments(db: ToolDB, ids: Iterable[int]) -> int:
+    """Remove rows (and their history) — only what the user ticked."""
+    gone = 0
+    for i in [int(x) for x in ids if x]:
+        row = get_instrument(db, i)
+        if not row:
             continue
-        if suffix not in HANDOVER_SUFFIXES:
-            res["skipped"] += 1
-            res["errors"].append(f"{p.name}: unsupported handover file type")
-            continue
-        try:
-            got = import_pdf(db, p, overwrite)
-            if got:
-                res["imported"] += 1
-            else:
-                res["skipped"] += 1
-        except Exception as exc:           # noqa: BLE001
-            res["failed"] += 1
-            res["errors"].append(f"{p.name}: {exc}")
-    return res
+        db.execute("DELETE FROM movements WHERE instrument_id=?", (i,))
+        db.execute("DELETE FROM instruments WHERE id=?", (i,))
+        db.audit("DELETED", "instrument", str(i), instrument_title(row))
+        gone += 1
+    db.commit()
+    return gone
 
 
-# --------------------------------------------------------------- spreadsheets
-HEADER_MAP = {
-    "no": "line_no", "sr": "line_no", "srno": "line_no", "line": "line_no",
-    "assettoolid": "asset_id", "assetid": "asset_id", "toolid": "asset_id",
-    "assetno": "asset_id", "code": "asset_id",
-    "category": "category", "type": "category",
-    "description": "description", "itemdescription": "description",
-    "item": "description", "toolname": "description",
-    "makemodel": "make_model", "make": "make_model", "model": "make_model",
-    "brand": "make_model",
-    "serialno": "serial_no", "serial": "serial_no", "sn": "serial_no",
-    "qty": "qty", "quantity": "qty",
-    "accessories": "accessories", "accessoriescomponents": "accessories",
-    "cond": "condition", "condition": "condition",
-    "calibdue": "calib_due", "calibrationdue": "calib_due",
-    "remarks": "remarks", "remarksdefects": "remarks", "remark": "remarks",
-    "reamrks": "remarks",          # the misspelling seen on site sheets
+def search_instruments(db: ToolDB, text: str = "", status: str = "",
+                       location: str = "", division: str = "",
+                       project: str = "", employee_code: str = "",
+                       holder: str = "", issued_only: bool = False,
+                       available_only: bool = False, with_picture: bool = False,
+                       order: str = "description") -> list[dict[str, Any]]:
+    """Filter the register the way the dashboard and the grid need it."""
+    sql = "SELECT * FROM instruments WHERE 1=1"
+    params: list[Any] = []
+    like = f"%{str(text).strip()}%"
+    if str(text).strip():
+        sql += (" AND (instrument_desc LIKE ? OR serial_no LIKE ? OR make_model LIKE ?"
+                " OR location LIKE ? OR status LIKE ? OR issued_to LIKE ?"
+                " OR employee_code LIKE ? OR iqama_id LIKE ? OR designation LIKE ?"
+                " OR division LIKE ? OR current_project LIKE ? OR issued_by LIKE ?"
+                " OR remarks LIKE ?)")
+        params += [like] * 13
+    for column, value in (("status", status), ("location", location),
+                          ("division", division), ("current_project", project),
+                          ("employee_code", employee_code), ("issued_to", holder)):
+        if str(value or "").strip():
+            sql += f" AND {column}=? COLLATE NOCASE"
+            params.append(str(value).strip())
+    if issued_only:
+        sql += " AND TRIM(COALESCE(issued_to,''))<>''"
+    if available_only:
+        sql += " AND TRIM(COALESCE(issued_to,''))=''"
+    if with_picture:
+        sql += " AND TRIM(COALESCE(picture_path,''))<>''"
+    order_by = {
+        "description": "instrument_desc COLLATE NOCASE, serial_no",
+        "serial": "serial_no COLLATE NOCASE",
+        "location": "location COLLATE NOCASE, instrument_desc",
+        "status": "status, instrument_desc",
+        "employee": "issued_to COLLATE NOCASE, instrument_desc",
+        "updated": "updated_at DESC, id DESC",
+        "recent": "id DESC",
+    }.get(order, "instrument_desc COLLATE NOCASE, serial_no")
+    sql += f" ORDER BY {order_by}"
+    return [dict(r) for r in db.query(sql, params)]
+
+
+def distinct_values(db: ToolDB, column: str) -> list[str]:
+    column = column if column in ALL_KEYS else "location"
+    rows = db.query(
+        f"SELECT DISTINCT {column} v FROM instruments "
+        f"WHERE TRIM(COALESCE({column},''))<>'' ORDER BY v COLLATE NOCASE")
+    return [str(r["v"]) for r in rows]
+
+
+def register_total(db: ToolDB) -> dict[str, Any]:
+    """Headline numbers for the module banner."""
+    rows = db.scalar("SELECT COUNT(*) FROM instruments")
+    qty = to_float(db.scalar("SELECT SUM(quantity) FROM instruments", (), 0), 0)
+    held = db.scalar("SELECT COUNT(*) FROM instruments "
+                     "WHERE TRIM(COALESCE(issued_to,''))<>''")
+    movements = db.scalar("SELECT COUNT(*) FROM movements")
+    return {"rows": rows, "quantity": qty, "holders": held, "out": held,
+            "movements": movements}
+
+
+# ------------------------------------------------------------- movements
+def next_movement_ref(db: ToolDB, movement_type: str,
+                      date: str = "") -> str:
+    """IS-261007-01 style, unique per type and day."""
+    d = to_date(date) or today()
+    try:
+        stamp = _dt.date.fromisoformat(d).strftime("%y%m%d")
+    except ValueError:
+        stamp = _dt.date.today().strftime("%y%m%d")
+    code = MOVEMENT_CODES.get(movement_type, "MV")
+    base = f"{code}-{stamp}"
+    n = 1
+    while db.one("SELECT 1 FROM movements WHERE ref_no=?", (f"{base}-{n:02d}",)):
+        n += 1
+    return f"{base}-{n:02d}"
+
+
+def post_movement(db: ToolDB, instrument_id: int, movement_type: str,
+                  movement_date: str = "", to_holder: str = "",
+                  to_employee_code: str = "", iqama_id: str = "",
+                  designation: str = "", division: str = "",
+                  current_project: str = "", location: str = "",
+                  quantity: float | None = None, status_after: str = "",
+                  issued_by: str = "", remarks: str = "",
+                  picture_path: str = "", details: str = "",
+                  source: str = "Manual Entry", source_file: str = "",
+                  db_main: Any = None, quiet: bool = False) -> dict[str, Any]:
+    """Record one movement and move the register row with it.
+
+    Issue / transfer put the instrument in somebody's hands; return takes it
+    back. The person columns are copied onto the movement, so the history keeps
+    the employee's details as they were on the day of the handover.
+    """
+    row = get_instrument(db, instrument_id)
+    if row is None:
+        raise ValueError("Select an instrument in the register first.")
+    movement_type = movement_type or MV_UPDATED
+
+    if to_employee_code or iqama_id or to_holder:
+        found = employee_lookup(db_main, to_employee_code or row.get("employee_code", ""),
+                                iqama_id or row.get("iqama_id", ""), to_holder)
+        to_holder = to_holder or found.get("issued_to", "")
+        to_employee_code = to_employee_code or found.get("employee_code", "")
+        iqama_id = iqama_id or found.get("iqama_id", "")
+        designation = designation or found.get("designation", "")
+        division = division or found.get("division", "")
+        current_project = current_project or found.get("current_project", "")
+        location = location or found.get("location", "") or row.get("location", "")
+
+    date = to_date(movement_date) or today()
+    qty = to_float(quantity if quantity is not None else row.get("quantity"), 1) or 1
+    from_holder = str(row.get("issued_to") or "")
+    from_code = str(row.get("employee_code") or "")
+
+    if movement_type == MV_RETURNED:
+        to_holder, to_employee_code = "", ""
+        iqama_id, designation = "", ""
+        division, current_project = "", ""
+        status_after = status_after or ST_AVAILABLE
+        out_holder = ""
+    elif movement_type in (MV_ISSUED, MV_TRANSFERRED):
+        if not to_holder:
+            raise ValueError("Enter who the instrument is being handed to.")
+        if movement_type == MV_TRANSFERRED and not from_holder:
+            movement_type = MV_ISSUED
+        status_after = status_after or ST_ISSUED
+        out_holder = to_holder
+    else:
+        out_holder = to_holder or from_holder
+        status_after = status_after or row.get("status", ST_AVAILABLE)
+
+    if status_after in NOT_AVAILABLE and movement_type != MV_RETURNED:
+        # damaged / under repair still belongs to its holder until returned
+        out_holder = to_holder or from_holder
+
+    location = str(location or row.get("location") or "").strip()
+    ref = next_movement_ref(db, movement_type, date)
+    db.execute(
+        """INSERT INTO movements (ref_no, instrument_id, movement_type, movement_date,
+                                  from_holder, from_employee_code, to_holder,
+                                  to_employee_code, iqama_id, designation, division,
+                                  current_project, location, quantity, status_after,
+                                  issued_by, remarks, details, picture_path, source,
+                                  source_file, created_by, created_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (ref, instrument_id, movement_type, date, from_holder, from_code, to_holder,
+         to_employee_code, iqama_id, designation, division, current_project,
+         location, qty, status_after, issued_by or row.get("issued_by", ""),
+         remarks, details or "", picture_path, source, source_file,
+         db.current_user, _now()))
+
+    fields: dict[str, Any] = {
+        "location": location,
+        "quantity": qty,
+        "status": status_after,
+        "site_name": location or row.get("site_name", ""),
+        "last_movement": movement_type,
+        "last_movement_at": date,
+        "updated_at": _now(),
+    }
+    if movement_type == MV_RETURNED:
+        # the custodian's own columns go back to empty — the instrument is in store
+        for key in PERSON_FIELDS:
+            fields[key] = ""
+    elif movement_type in (MV_ISSUED, MV_TRANSFERRED):
+        fields.update({"issued_to": to_holder, "employee_code": to_employee_code,
+                       "iqama_id": iqama_id, "designation": designation,
+                       "division": division, "current_project": current_project})
+    else:
+        # Registered / Updated: never blank what the register already knows
+        for key, val in (("issued_to", out_holder),
+                         ("employee_code", to_employee_code),
+                         ("iqama_id", iqama_id), ("designation", designation),
+                         ("division", division),
+                         ("current_project", current_project)):
+            if str(val or "").strip():
+                fields[key] = val
+    if remarks:
+        fields["remarks"] = remarks
+    if picture_path:
+        fields["picture_path"] = picture_path
+    sets = ", ".join(f"{k}=?" for k in fields)
+    db.execute(f"UPDATE instruments SET {sets} WHERE id=?",
+               list(fields.values()) + [instrument_id])
+    db.commit()
+    if not quiet:
+        db.audit(movement_type.upper(), "instrument", str(instrument_id),
+                 f"{ref} {instrument_title(row)}")
+    out = db.one("SELECT * FROM movements WHERE ref_no=?", (ref,))
+    return dict(out) if out else {}
+
+
+def _change(db: ToolDB, instrument_id: int, movement_type: str, **kw) -> dict:
+    kw.setdefault("movement_date", today())
+    return post_movement(db, instrument_id, movement_type, **kw)
+
+
+def issue_instrument(db: ToolDB, instrument_id: int, **kw) -> dict:
+    kw.setdefault("status_after", ST_ISSUED)
+    return _change(db, instrument_id, MV_ISSUED, **kw)
+
+
+def transfer_instrument(db: ToolDB, instrument_id: int, **kw) -> dict:
+    kw.setdefault("status_after", ST_ISSUED)
+    return _change(db, instrument_id, MV_TRANSFERRED, **kw)
+
+
+def return_instrument(db: ToolDB, instrument_id: int, **kw) -> dict:
+    kw.setdefault("status_after", ST_AVAILABLE)
+    return _change(db, instrument_id, MV_RETURNED, **kw)
+
+
+def instrument_history(db: ToolDB, instrument_id: int,
+                       limit: int = 500) -> list[dict[str, Any]]:
+    rows = db.query(
+        "SELECT * FROM movements WHERE instrument_id=? "
+        "ORDER BY movement_date DESC, id DESC LIMIT ?",
+        (int(instrument_id), int(limit)))
+    return [dict(r) for r in rows]
+
+
+def all_movements(db: ToolDB, text: str = "", movement_type: str = "",
+                  date_from: str = "", date_to: str = "", employee_code: str = "",
+                  instrument_id: int = 0, limit: int = 3000) -> list[dict[str, Any]]:
+    """The movement register: one line per handover, transfer and return."""
+    sql = ("SELECT m.*, i.instrument_desc, i.serial_no, i.make_model "
+           "FROM movements m LEFT JOIN instruments i ON i.id=m.instrument_id "
+           "WHERE 1=1")
+    params: list[Any] = []
+    if str(text).strip():
+        like = f"%{str(text).strip()}%"
+        sql += (" AND (i.instrument_desc LIKE ? OR i.serial_no LIKE ?"
+                " OR m.ref_no LIKE ? OR m.to_holder LIKE ? OR m.from_holder LIKE ?"
+                " OR m.to_employee_code LIKE ? OR m.location LIKE ?"
+                " OR m.current_project LIKE ? OR m.remarks LIKE ?)")
+        params += [like] * 9
+    if str(movement_type or "").strip():
+        sql += " AND m.movement_type=?"
+        params.append(str(movement_type).strip())
+    if str(date_from or "").strip():
+        sql += " AND m.movement_date>=?"
+        params.append(to_date(date_from))
+    if str(date_to or "").strip():
+        sql += " AND m.movement_date<=?"
+        params.append(to_date(date_to))
+    if str(employee_code or "").strip():
+        sql += " AND (m.to_employee_code=? OR m.from_employee_code=?)"
+        params += [str(employee_code).strip()] * 2
+    if instrument_id:
+        sql += " AND m.instrument_id=?"
+        params.append(int(instrument_id))
+    sql += " ORDER BY m.movement_date DESC, m.id DESC LIMIT ?"
+    params.append(int(limit))
+    return [dict(r) for r in db.query(sql, params)]
+
+
+def movement_ref(db: ToolDB, movement_id: int) -> dict[str, Any] | None:
+    r = db.one("SELECT * FROM movements WHERE id=?", (int(movement_id),))
+    return dict(r) if r else None
+
+
+def delete_movements(db: ToolDB, ids: Iterable[int]) -> int:
+    gone = 0
+    for i in [int(x) for x in ids if x]:
+        db.execute("DELETE FROM movements WHERE id=?", (i,))
+        gone += 1
+    db.commit()
+    return gone
+
+
+def custody_by_person(db: ToolDB) -> list[dict[str, Any]]:
+    """Who is holding what right now — the question the module exists for."""
+    rows = db.query(
+        """SELECT issued_to, employee_code, iqama_id, designation, division,
+                  current_project, COUNT(*) rows_held, SUM(quantity) quantity,
+                  GROUP_CONCAT(DISTINCT instrument_desc) instruments
+             FROM instruments
+            WHERE TRIM(COALESCE(issued_to,''))<>''
+            GROUP BY issued_to, employee_code
+            ORDER BY rows_held DESC, issued_to COLLATE NOCASE""")
+    return [dict(r) for r in rows]
+
+
+def movements_between(db: ToolDB, date_from: str = "", date_to: str = "") -> list[dict]:
+    return all_movements(db, date_from=date_from, date_to=date_to)
+
+
+# ---------------------------------------------------------------- dashboard
+DEFAULT_FILTERS: dict[str, Any] = {
+    "text": "", "status": "", "location": "", "division": "",
+    "project": "", "employee_code": "", "issued_only": False,
 }
 
 
-def sniff(text: str) -> tuple[list[str], list[list[str]]]:
-    raw = [ln for ln in text.replace("\r\n", "\n").split("\n") if ln.strip()]
-    if not raw:
-        return [], []
-    if "\t" in raw[0]:
-        rows = [ln.split("\t") for ln in raw]
-    elif raw[0].count(",") >= 2:
-        rows = list(csv.reader(io.StringIO("\n".join(raw))))
-    else:
-        rows = [re.split(r"\s{2,}", ln.strip()) for ln in raw]
-    width = max(len(r) for r in rows)
-    rows = [list(r) + [""] * (width - len(r)) for r in rows]
-    head = [str(c).strip() for c in rows[0]]
-    if sum(1 for h in head if norm(h) in HEADER_MAP) >= 2:
-        return head, [[str(c).strip() for c in r] for r in rows[1:]]
-    return [f"Column {i + 1}" for i in range(width)], \
-           [[str(c).strip() for c in r] for r in rows]
+def _month_key(iso: str) -> str:
+    return str(iso or "")[:7]
 
 
-def read_table(path: str | Path) -> tuple[list[str], list[list[Any]]]:
-    p = Path(path)
-    if p.suffix.lower() in (".xlsx", ".xlsm"):
-        from openpyxl import load_workbook
-        wb = load_workbook(p, data_only=True, read_only=True)
-        ws = wb.active
-        data = [[("" if c is None else c) for c in row]
-                for row in ws.iter_rows(values_only=True)]
-        wb.close()
-        data = [r for r in data if any(str(c).strip() for c in r)]
-        if not data:
-            return [], []
-        head = [str(c).strip() for c in data[0]]
-        if sum(1 for c in head if norm(c) in HEADER_MAP) >= 2:
-            return head, data[1:]
-        return [f"Column {i + 1}" for i in range(len(head))], data
-    return sniff(p.read_text(encoding="utf-8", errors="ignore"))
+def dashboard(db: ToolDB, f: dict | None = None) -> dict[str, Any]:
+    """Every number the Instrument Station dashboard shows."""
+    f = dict(f or {})
+    rows = search_instruments(
+        db, text=f.get("text", ""), status=f.get("status", ""),
+        location=f.get("location", ""), division=f.get("division", ""),
+        project=f.get("project", ""), employee_code=f.get("employee_code", ""),
+        issued_only=bool(f.get("issued_only")))
+    qty = sum(to_float(r.get("quantity"), 0) for r in rows)
+    issued = [r for r in rows if str(r.get("issued_to") or "").strip()]
+    available = [r for r in rows if not str(r.get("issued_to") or "").strip()]
+    people = {r["issued_to"] for r in issued if r.get("issued_to")}
+    issues = sum(1 for r in rows if r.get("status") == ST_ISSUED)
+    at_site = sum(1 for r in rows if r.get("status") == ST_AT_SITE)
+    repair = sum(1 for r in rows if r.get("status") == ST_UNDER_REPAIR)
+    damaged = sum(1 for r in rows if r.get("status") == ST_DAMAGED)
+    lost = sum(1 for r in rows if r.get("status") == ST_LOST)
+    pictures = sum(1 for r in rows if str(r.get("picture_path") or "").strip())
+    issued_qty = sum(to_float(r.get("quantity"), 0) for r in issued)
+
+    by_location = _group(rows, "location", qty_measure=True)
+    by_status = [(s, sum(1 for r in rows if r.get("status") == s))
+                 for s in STATUSES]
+    by_status = [(s, n) for s, n in by_status if n]
+    by_project = _group(rows, "current_project", qty_measure=True)
+    by_division = _group(rows, "division", qty_measure=True)
+    by_description = _group(rows, "instrument_desc")
+    by_employee = _group(issued, "issued_to")
+
+    movements = all_movements(
+        db, text=f.get("text", ""), employee_code=f.get("employee_code", ""))
+    if f.get("location"):
+        movements = [m for m in movements if m.get("location") == f["location"]]
+    months = _month_series(movements, 12)
+    recent = all_movements(db, limit=12)
+
+    return {
+        "rows": len(rows),
+        "quantity": qty,
+        "total_qty": qty,
+        "issued": len(issued),
+        "issued_qty": issued_qty,
+        "available": len(available),
+        "available_qty": sum(to_float(r.get("quantity"), 0) for r in available),
+        "holders": len(people),
+        "employees": len(people),
+        "issued_status": issues,
+        "at_site": at_site,
+        "repair": repair,
+        "damaged": damaged,
+        "lost": lost,
+        "pictures": pictures,
+        "sites": len({r["location"] for r in rows if r.get("location")}),
+        "locations": len({r["location"] for r in rows if r.get("location")}),
+        "projects": len({r["current_project"] for r in rows if r.get("current_project")}),
+        "movements": len(movements),
+        "movements_30": _recent_moves(movements, 30),
+        "transfers": sum(1 for m in movements if m.get("movement_type") == MV_TRANSFERRED),
+        "returns": sum(1 for m in movements if m.get("movement_type") == MV_RETURNED),
+        "issues": sum(1 for m in movements if m.get("movement_type") == MV_ISSUED),
+        "by_location": by_location,
+        "by_status": by_status,
+        "by_project": by_project,
+        "by_division": by_division,
+        "by_description": by_description,
+        "by_employee": by_employee,
+        "by_custodian": by_employee,
+        "months": [m for m, _ in months],
+        "monthly": months,
+        "monthly_issued": months,
+        "recent": recent,
+        "recent_rows": recent,
+        "all": rows,
+    }
 
 
-def auto_map(headers: Sequence[str]) -> dict[int, str]:
-    out: dict[int, str] = {}
-    for i, h in enumerate(headers):
-        f = HEADER_MAP.get(norm(h))
-        if f and f not in out.values():
-            out[i] = f
-    return out
+def _group(rows: Sequence[dict], column: str,
+           qty_measure: bool = False) -> list[tuple[str, float]]:
+    agg: dict[str, float] = {}
+    for r in rows:
+        key = str(r.get(column) or "").strip() or "(not set)"
+        agg[key] = agg.get(key, 0.0) + (to_float(r.get("quantity"), 0) if qty_measure else 1.0)
+    return sorted(agg.items(), key=lambda kv: -kv[1])[:12]
 
 
-def rows_to_lines(headers: Sequence[str], rows: Sequence[Sequence[Any]],
-                  mapping: dict[int, str] | None = None) -> list[dict]:
-    m = mapping or auto_map(headers)
-    out = []
-    for n, r in enumerate(rows, 1):
-        d: dict[str, Any] = {}
-        for i, field in m.items():
-            if i < len(r):
-                d[field] = str(r[i]).strip() if r[i] is not None else ""
-        if not (d.get("asset_id") or d.get("description")):
-            continue
-        d["line_no"] = int(to_float(d.get("line_no"), n) or n)
-        d["qty"] = to_float(d.get("qty"), 1) or 1
-        d["calib_due"] = to_date(d.get("calib_due"))
-        out.append(d)
-    return out
+def _month_series(movements: Sequence[dict], months: int = 12) -> list[tuple[str, float]]:
+    """Issued quantities per month, oldest first — the trend line."""
+    today_d = _dt.date.today()
+    keys: list[str] = []
+    y, m = today_d.year, today_d.month
+    for _ in range(months):
+        keys.append(f"{y:04d}-{m:02d}")
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    keys.reverse()
+    agg = {k: 0.0 for k in keys}
+    for mv in movements:
+        k = _month_key(mv.get("movement_date"))
+        if k in agg and mv.get("movement_type") in (MV_ISSUED, MV_TRANSFERRED):
+            agg[k] += to_float(mv.get("quantity"), 0)
+    return [(k, agg[k]) for k in keys]
 
 
-def template_rows() -> tuple[list[str], list[list[Any]]]:
-    cols = ["No.", "Asset / Tool ID", "Category", "Description", "Make / Model",
-            "Serial No.", "Qty", "Accessories / Components", "Cond.",
-            "Calib. Due", "Remarks / Defects"]
-    rows = [[1, "12000AL01", "Instrument", "Auto Level", "Leica", "5778779", 1,
-             "With All accessories", "A", "25/08/2026", "New"],
-            [2, "12000TS01", "Instrument", "Total Station", "Leica", "3366852",
-             1, "With All accessories", "A", "25/08/2026", "New"]]
+def _recent_moves(movements: Sequence[dict], days: int) -> int:
+    cut = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    return sum(1 for m in movements if str(m.get("movement_date") or "") >= cut)
+
+
+# ====================================================== site-wise Excel sync
+# Headings exactly as they appear on the sites' sheet, plus the spellings seen
+# in the wild — the matcher below is deliberately forgiving.
+EXCEL_HEADER_MAP: dict[str, str] = {
+    # Instrument Description
+    "instrumentdescription": "instrument_desc", "instrument": "instrument_desc",
+    "description": "instrument_desc", "itemdescription": "instrument_desc",
+    "itemname": "instrument_desc", "item": "instrument_desc",
+    "toolname": "instrument_desc", "equipment": "instrument_desc",
+    "equipmentdescription": "instrument_desc", "instrumentname": "instrument_desc",
+    # Serial No.
+    "serialno": "serial_no", "serial": "serial_no", "sn": "serial_no",
+    "serialnumber": "serial_no", "srno": "serial_no", "sr": "serial_no",
+    "instrumentserial": "serial_no",
+    # Make / Model
+    "makemodel": "make_model", "make": "make_model", "model": "make_model",
+    "brand": "make_model", "makemodelno": "make_model",
+    "makeandmodel": "make_model", "brandmodel": "make_model",
+    # Location
+    "location": "location", "currentlocation": "location",
+    "locationname": "location", "site": "location", "sitename": "location",
+    "store": "location", "warehouse": "location", "placed": "location",
+    # Quantity
+    "quantity": "quantity", "qty": "quantity", "nos": "quantity",
+    "no": "quantity", "totalquantity": "quantity", "totalqty": "quantity",
+    # Status
+    "status": "status", "currentstatus": "status", "condition": "status",
+    "instrumentstatus": "status",
+    # Issued To / Employee Name
+    "issuedtoemployeename": "issued_to", "issuedto": "issued_to",
+    "employeename": "issued_to", "handedto": "issued_to", "holder": "issued_to",
+    "issuedtoto": "issued_to", "custodian": "issued_to",
+    "nameofemployee": "issued_to", "assignedto": "issued_to",
+    # Employee Code
+    "employeecode": "employee_code", "employeeid": "employee_code",
+    "empid": "employee_code", "empcode": "employee_code",
+    "employeeno": "employee_code", "staffid": "employee_code",
+    # Iqama ID
+    "iqamaid": "iqama_id", "iqama": "iqama_id", "iqamano": "iqama_id",
+    "idiqama": "iqama_id", "idno": "iqama_id", "idnumber": "iqama_id",
+    # Designation
+    "designation": "designation", "jobtitle": "designation",
+    "position": "designation", "job": "designation", "trade": "designation",
+    # Division / Department
+    "divisiondepartment": "division", "division": "division",
+    "department": "division", "dept": "division", "divisiondept": "division",
+    # Current Project
+    "currentproject": "current_project", "project": "current_project",
+    "projectname": "current_project", "projectsite": "current_project",
+    "projectno": "current_project", "siteproject": "current_project",
+    # Issued By
+    "issuedby": "issued_by", "responsibleperson": "issued_by",
+    "handedoverby": "issued_by", "issueby": "issued_by", "storekeeper": "issued_by",
+    # Remarks
+    "remarks": "remarks", "remark": "remarks", "remarksdefects": "remarks",
+    "remarkdefects": "remarks", "reamrks": "remarks", "notes": "remarks",
+    # Extras carried by richer sheets
+    "picturepath": "picture_path", "photopath": "picture_path",
+    "imagepath": "picture_path", "photo": "picture_path", "picture": "picture_path",
+}
+EXCEL_SUFFIXES = (".xlsx", ".xlsm", ".csv", ".txt")
+
+# The template the user downloads is exactly the register heading order.
+TEMPLATE_HEADINGS: list[str] = [label for _, label in COLUMNS]
+
+
+def excel_template_rows() -> tuple[list[str], list[list[Any]]]:
+    cols = list(TEMPLATE_HEADINGS)
+    rows = [
+        ["TOTAL STATION", "1338275", "LEICA (TS02)", "NOOR", 1, "Issued",
+         "ZOHAIB BILAL", "IDL-0040", "2482103955", "Surveyor", "SURVEY", "NOOR",
+         "M. Ali Zain", ""],
+        ["AUTO LEVEL", "5778779", "LEICA (NA2)", "Warehouse", 1, "Available",
+         "", "", "", "", "", "", "", ""],
+    ]
     return cols, rows
 
 
-# ======================================================= site Excel sync
-SITE_SYNC_FIELDS: list[tuple[str, str]] = [
-    ("site_name", "Site Name"),
-    ("item_code", "Item Code"),
-    ("description", "Instrument Description"),
-    ("item_type", "Type"),
-    ("category", "Category"),
-    ("make_model", "Make / Model"),
-    ("serial_no", "Serial No."),
-    ("qty", "Quantity"),
-    ("status", "Status"),
-    ("condition", "Condition"),
-    ("holder", "Issued To / Employee Name"),
-    ("employee_code", "Employee Code"),
-    ("iqama_id", "Iqama ID"),
-    ("designation", "Designation"),
-    ("department", "Division/Department"),
-    ("project_id", "Current Project"),
-    ("location", "Location"),
-    ("issued_by", "Issued By"),
-    ("remarks", "Remarks"),
-    ("picture_path", "Picture Path"),
-    ("last_updated", "Last Updated"),
-]
-SITE_SYNC_LABELS = dict(SITE_SYNC_FIELDS)
-SITE_SYNC_HEADER_MAP = {
-    "sitename": "site_name", "site": "site_name", "locationname": "site_name",
-    "itemcode": "item_code", "assettoolid": "item_code", "assetid": "item_code",
-    "instrumentdescription": "description", "description": "description",
-    "itemdescription": "description", "itemname": "description",
-    "toolname": "description", "equipment": "description",
-    "type": "item_type", "itemtype": "item_type",
-    "category": "category",
-    "makemodel": "make_model", "make": "make_model", "model": "make_model",
-    "brand": "make_model",
-    "serialno": "serial_no", "serial": "serial_no", "sn": "serial_no",
-    "quantity": "qty", "qty": "qty",
-    "status": "status", "currentstatus": "status",
-    "condition": "condition", "cond": "condition",
-    "issuedtoemployeename": "holder", "issuedto": "holder",
-    "employeename": "holder", "handedto": "holder", "holder": "holder",
-    "employeecode": "employee_code", "employeeid": "employee_code",
-    "employeecode": "employee_code", "empid": "employee_code",
-    "iqamaid": "iqama_id", "iqama": "iqama_id", "idiqama": "iqama_id",
-    "designation": "designation",
-    "divisiondepartment": "department", "department": "department",
-    "division": "department",
-    "currentproject": "project_id", "project": "project_id", "projectsite": "project_id",
-    "location": "location", "currentlocation": "location",
-    "issuedby": "issued_by", "responsibleperson": "issued_by",
-    "remarks": "remarks", "remark": "remarks",
-    "picturepath": "picture_path", "photopath": "picture_path", "imagepath": "picture_path",
-    "lastupdated": "last_updated", "updatedat": "last_updated",
-}
-SITE_SYNC_SUFFIXES = (".xlsx", ".xlsm", ".csv", ".txt")
-SITE_INVENTORY_COLS = [
-    "asset_key", "file_id", "folder_id", "item_code", "description", "item_type", "category",
-    "make_model", "serial_no", "qty", "status", "condition", "holder", "employee_code",
-    "iqama_id", "designation", "department", "project_id", "site_name", "location", "issued_by",
-    "remarks", "picture_path", "source_file", "file_hash", "last_updated", "last_sync",
-]
-_SYNC_UNAVAILABLE = {"pending", "missing", "repair", "underrepair", "damaged", "returned", "unavailable", "outofservice"}
+def _row_score(row: Sequence[Any]) -> int:
+    return sum(1 for c in row if norm(c) in EXCEL_HEADER_MAP)
 
 
-def _site_sync_guess_type(text: str) -> str:
-    t = norm(text)
-    if any(k in t for k in ("totalstation", "autolevel", "gps", "level", "theodolite", "prism")):
-        return "Instrument"
-    if any(k in t for k in ("tester", "detector", "meter", "scanner", "tablet", "camera", "device")):
-        return "Device"
-    if any(k in t for k in ("tripod", "pole", "wrench", "spanner", "hammer", "tool", "drill")):
-        return "Tool"
-    return "Equipment"
-
-
-def _site_sync_guess_site(rec: dict[str, Any], fallback: str = "") -> str:
-    for key in ("site_name", "project_id", "location"):
-        val = str(rec.get(key) or "").strip()
-        if val:
-            return val
-    return str(fallback or "Warehouse").strip() or "Warehouse"
-
-
-def _site_sync_asset_key(rec: dict[str, Any], fallback_site: str = "") -> str:
-    site = norm(_site_sync_guess_site(rec, fallback_site))
-    code = norm(rec.get("item_code"))
-    serial = norm(rec.get("serial_no"))
-    desc = norm(rec.get("description"))
-    holder = norm(rec.get("employee_code") or rec.get("holder"))
-    if serial:
-        return f"{site}|{serial}"
-    if code:
-        return f"{site}|{code}|{holder or desc}"
-    return f"{site}|{desc}|{holder}|{norm(rec.get('location'))}"
-
-
-def _site_sync_status(rec: dict[str, Any]) -> str:
-    raw = str(rec.get("status") or "").strip()
-    if raw:
-        return raw
-    if str(rec.get("holder") or "").strip():
-        return "Issued"
-    if to_float(rec.get("qty"), 0) <= 0:
-        return "Pending"
-    loc = norm(rec.get("location"))
-    site = norm(rec.get("site_name") or rec.get("project_id"))
-    if loc.startswith("warehouse") or site.startswith("warehouse"):
-        return "Available"
-    return "At Site"
-
-
-def _site_sync_event_type(before: dict[str, Any] | None, after: dict[str, Any] | None) -> str:
-    if before is None and after is not None:
-        return "Imported"
-    if before is not None and after is None:
-        return "Removed"
-    b_holder = norm(before.get("holder")) if before else ""
-    a_holder = norm(after.get("holder")) if after else ""
-    b_site = norm(before.get("site_name") or before.get("project_id")) if before else ""
-    a_site = norm(after.get("site_name") or after.get("project_id")) if after else ""
-    b_loc = norm(before.get("location")) if before else ""
-    a_loc = norm(after.get("location")) if after else ""
-    a_status = norm(after.get("status")) if after else ""
-    if b_holder and not a_holder and a_status in ("available", "instore", "warehouse", "returned"):
-        return "Returned"
-    if (b_holder != a_holder and a_holder) or (b_site != a_site) or (b_loc != a_loc):
-        return "Transferred"
-    if not b_holder and a_holder:
-        return "Issued"
-    if a_status in _SYNC_UNAVAILABLE:
-        return "Pending"
-    return "Updated"
-
-
-def _site_sync_normalize_inventory_record(rec: dict[str, Any], fallback_site: str = "", source_file: str = "", file_hash_value: str = "", file_id: int = 0, folder_id: int = 0) -> dict[str, Any]:
-    payload = {c: rec.get(c, "") for c in SITE_INVENTORY_COLS}
-    payload["item_code"] = str(payload.get("item_code") or "").strip()
-    payload["description"] = str(payload.get("description") or "").strip()
-    payload["serial_no"] = str(payload.get("serial_no") or "").strip()
-    if not (payload["description"] or payload["serial_no"] or payload["item_code"]):
-        raise ValueError("Enter at least an instrument description, serial number or item code.")
-    payload["site_name"] = _site_sync_guess_site(rec, fallback_site)
-    payload["make_model"] = str(payload.get("make_model") or "").strip()
-    payload["item_type"] = str(payload.get("item_type") or _site_sync_guess_type(payload["description"]) or "Instrument").strip()
-    payload["category"] = str(payload.get("category") or payload["item_type"] or "Instrument").strip()
-    raw_qty = str(rec.get("qty") or "").strip()
-    payload["qty"] = 1 if raw_qty == "" else to_float(rec.get("qty"), 0)
-    payload["condition"] = str(payload.get("condition") or "A").strip() or "A"
-    payload["holder"] = str(payload.get("holder") or "").strip()
-    payload["employee_code"] = str(payload.get("employee_code") or "").strip()
-    payload["iqama_id"] = str(payload.get("iqama_id") or "").strip()
-    payload["designation"] = str(payload.get("designation") or "").strip()
-    payload["department"] = str(payload.get("department") or "").strip()
-    payload["project_id"] = str(payload.get("project_id") or "").strip()
-    payload["location"] = str(payload.get("location") or payload["site_name"] or "Warehouse").strip()
-    payload["issued_by"] = str(payload.get("issued_by") or "").strip()
-    payload["remarks"] = str(payload.get("remarks") or "").strip()
-    payload["picture_path"] = str(payload.get("picture_path") or "").strip()
-    payload["status"] = _site_sync_status({**rec, **payload})
-    payload["asset_key"] = str(payload.get("asset_key") or _site_sync_asset_key(payload, payload["site_name"])).strip()
-    payload["source_file"] = str(source_file or payload.get("source_file") or "Manual Entry").strip() or "Manual Entry"
-    payload["file_hash"] = str(file_hash_value or payload.get("file_hash") or "").strip()
-    payload["file_id"] = int(payload.get("file_id") or file_id or 0)
-    payload["folder_id"] = int(payload.get("folder_id") or folder_id or 0)
-    payload["last_updated"] = to_date(payload.get("last_updated")) or today()
-    payload["last_sync"] = str(payload.get("last_sync") or _now())
-    return payload
-
-
-def _site_sync_upsert_inventory_record(db: ToolDB, payload: dict[str, Any], previous_asset_key: str = "", movement_type: str = "", source_kind: str = "Excel Sync", source_ref: str = "") -> tuple[dict[str, Any] | None, dict[str, Any], bool, bool]:
-    lookup_key = str(previous_asset_key or payload.get("asset_key") or "").strip()
-    before_row = db.one("SELECT * FROM site_inventory WHERE asset_key=?", (lookup_key,)) if lookup_key else None
-    before = dict(before_row) if before_row else None
-    if before and payload["asset_key"] != before.get("asset_key"):
-        clash = db.one("SELECT asset_key FROM site_inventory WHERE asset_key=?", (payload["asset_key"],))
-        if clash:
-            raise ValueError(f'Another record already uses this asset key: {payload["asset_key"]}')
-    vals = [payload.get(c, "") for c in SITE_INVENTORY_COLS]
-    tracked = [c for c in SITE_INVENTORY_COLS if c not in ("file_id", "folder_id", "source_file", "file_hash", "last_sync")]
-    if before:
-        changed = payload["asset_key"] != before.get("asset_key", "") or any(str(before.get(c, "")) != str(payload.get(c, "")) for c in tracked)
-        db.execute(
-            "UPDATE site_inventory SET asset_key=?, file_id=?, folder_id=?, item_code=?, description=?, item_type=?, category=?, make_model=?, serial_no=?, qty=?, status=?, condition=?, holder=?, employee_code=?, iqama_id=?, designation=?, department=?, project_id=?, site_name=?, location=?, issued_by=?, remarks=?, picture_path=?, source_file=?, file_hash=?, last_updated=?, last_sync=?, updated_at=? WHERE asset_key=?",
-            vals + [_now(), before["asset_key"]],
-        )
-        if changed:
-            _site_sync_write_event(
-                db, before, payload, movement_type or _site_sync_event_type(before, payload),
-                payload.get("source_file", ""), int(payload.get("file_id") or 0), int(payload.get("folder_id") or 0),
-                source_kind=source_kind, source_ref=source_ref, responsible_person=str(payload.get("issued_by") or ""), remarks=str(payload.get("remarks") or ""),
-            )
-        return before, payload, False, changed
-    db.execute(
-        "INSERT INTO site_inventory(asset_key,file_id,folder_id,item_code,description,item_type,category,make_model,serial_no,qty,status,condition,holder,employee_code,iqama_id,designation,department,project_id,site_name,location,issued_by,remarks,picture_path,source_file,file_hash,last_updated,last_sync) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        vals,
-    )
-    _site_sync_write_event(
-        db, None, payload, movement_type or _site_sync_event_type(None, payload),
-        payload.get("source_file", ""), int(payload.get("file_id") or 0), int(payload.get("folder_id") or 0),
-        source_kind=source_kind, source_ref=source_ref, responsible_person=str(payload.get("issued_by") or ""), remarks=str(payload.get("remarks") or ""),
-    )
-    return None, payload, True, True
-
-
-def _site_sync_header_score(row: Sequence[Any]) -> int:
-    return sum(1 for c in row if norm(c) in SITE_SYNC_HEADER_MAP)
-
-
-def _site_sync_header_rows(data: list[list[Any]]) -> tuple[list[str], list[list[Any]]]:
-    best_i, best_score = 0, -1
-    for i, row in enumerate(data[:20]):
-        score = _site_sync_header_score(row)
-        if score > best_score:
-            best_i, best_score = i, score
-    head = [str(c).strip() for c in data[best_i]]
-    rows = data[best_i + 1:] if best_score >= 3 else data
-    if best_score < 3:
-        head = [f"Column {i + 1}" for i in range(len(data[0]))]
-        rows = data
-    return head, rows
-
-
-def _site_sync_prepare_rows(data: Sequence[Sequence[Any]]) -> list[list[Any]]:
-    rows = [list(r) for r in data if any(str(c).strip() for c in r)]
+def _prepare_rows(data: Sequence[Sequence[Any]]) -> list[list[Any]]:
+    rows = [list(r) for r in data if any(str(c).strip() for c in (r or []))]
     if not rows:
         return []
     width = max(len(r) for r in rows)
     return [list(r) + [""] * (width - len(r)) for r in rows]
 
 
-def site_sync_read_table(path: str | Path) -> tuple[list[str], list[list[Any]]]:
+def _header_and_body(data: list[list[Any]]) -> tuple[list[str], list[list[Any]]]:
+    """Find the real heading row, even when a title block sits above it."""
+    best_i, best = 0, -1
+    for i, row in enumerate(data[:20]):
+        score = _row_score(row)
+        if score > best:
+            best_i, best = i, score
+    if best < 3:
+        return [f"Column {i + 1}" for i in range(len(data[0]))], data
+    head = [str(c).strip() for c in data[best_i]]
+    return head, data[best_i + 1:]
+
+
+def excel_read_table(path: str | Path) -> tuple[list[str], list[list[Any]]]:
+    """Read a site workbook, choosing the sheet that looks most like the sheet."""
     p = Path(path)
     if p.suffix.lower() in (".xlsx", ".xlsm"):
         from openpyxl import load_workbook
@@ -2618,475 +1471,738 @@ def site_sync_read_table(path: str | Path) -> tuple[list[str], list[list[Any]]]:
         best_rank = (-1, -1, -1)
         try:
             for ws in wb.worksheets:
-                sheet_data = _site_sync_prepare_rows(
-                    [[("" if c is None else c) for c in row] for row in ws.iter_rows(values_only=True)]
-                )
+                sheet_data = _prepare_rows(
+                    [[("" if c is None else c) for c in row]
+                     for row in ws.iter_rows(values_only=True)])
                 if not sheet_data:
                     continue
-                best_score = max((_site_sync_header_score(r) for r in sheet_data[:20]), default=-1)
-                non_blank_cells = sum(1 for row in sheet_data for c in row if str(c).strip())
-                rank = (best_score, non_blank_cells, len(sheet_data))
+                score = max((_row_score(r) for r in sheet_data[:20]), default=-1)
+                filled = sum(1 for row in sheet_data for c in row if str(c).strip())
+                rank = (score, filled, len(sheet_data))
                 if rank > best_rank:
-                    best_rank = rank
-                    best_data = sheet_data
+                    best_rank, best_data = rank, sheet_data
         finally:
             wb.close()
         data = best_data
     else:
         raw = p.read_text(encoding="utf-8", errors="ignore")
-        sample_lines = [ln for ln in raw.splitlines() if ln.strip()]
-        sample = "\n".join(sample_lines[:8])[:4096] or ","
+        lines = [ln for ln in raw.splitlines() if ln.strip()]
+        sample = "\n".join(lines[:8])[:4096] or ","
         try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",;	|")
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
         except csv.Error:
             dialect = csv.excel
             dialect.delimiter = ","
         data = list(csv.reader(io.StringIO(raw), dialect))
         if data and max(len(r) for r in data) <= 1 and "|" in raw:
             data = list(csv.reader(io.StringIO(raw), delimiter="|"))
-        data = _site_sync_prepare_rows(data)
+        data = _prepare_rows(data)
     if not data:
         return [], []
-    return _site_sync_header_rows(data)
+    return _header_and_body(data)
 
 
-def site_sync_auto_map(headers: Sequence[str]) -> dict[int, str]:
+# The name the Excel panel has always used — kept so saved scripts still run.
+site_sync_read_table = excel_read_table
+
+
+def excel_auto_map(headers: Sequence[str]) -> dict[int, str]:
+    """Best-guess column map for one sheet, tolerant of small wording changes."""
     out: dict[int, str] = {}
     used: set[str] = set()
+    probes = sorted(EXCEL_HEADER_MAP.items(), key=lambda kv: len(kv[0]), reverse=True)
     for i, h in enumerate(headers):
         key = norm(h)
-        field = SITE_SYNC_HEADER_MAP.get(key)
-        if not field and key:
-            for probe, mapped in sorted(SITE_SYNC_HEADER_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
-                if mapped in used:
+        if not key:
+            continue
+        field = EXCEL_HEADER_MAP.get(key)
+        if not field:
+            for probe, mapped in probes:
+                if mapped in used and mapped not in ("remarks",):
                     continue
-                if key.startswith(probe) or key.endswith(probe) or probe in key or (len(key) >= 8 and key in probe):
+                if len(probe) >= 4 and (key.startswith(probe) or key.endswith(probe)
+                                        or probe in key):
                     field = mapped
                     break
-        if field and field not in used:
+        if field and (field not in used or field == "remarks"):
             out[i] = field
             used.add(field)
     return out
 
 
-def site_sync_preview(headers: Sequence[str], rows: Sequence[Sequence[Any]], mapping: dict[int, str], defaults: dict | None = None) -> list[dict]:
-    defaults = defaults or {}
-    out: list[dict] = []
-    for n, row in enumerate(rows, 1):
-        rec = {field: "" for field, _ in SITE_SYNC_FIELDS}
-        rec.update({k: v for k, v in defaults.items() if v not in (None, "")})
-        for i, field in mapping.items():
-            if i < len(row):
-                rec[field] = row[i]
-        rec["description"] = str(rec.get("description") or "").strip()
-        rec["item_code"] = str(rec.get("item_code") or "").strip()
-        rec["make_model"] = str(rec.get("make_model") or "").strip()
-        rec["serial_no"] = str(rec.get("serial_no") or "").strip()
-        rec["holder"] = str(rec.get("holder") or "").strip()
-        rec["employee_code"] = str(rec.get("employee_code") or "").strip()
-        rec["iqama_id"] = str(rec.get("iqama_id") or "").strip()
-        rec["designation"] = str(rec.get("designation") or "").strip()
-        rec["department"] = str(rec.get("department") or "").strip()
-        rec["project_id"] = str(rec.get("project_id") or "").strip()
-        rec["site_name"] = str(rec.get("site_name") or defaults.get("site_name") or rec.get("project_id") or rec.get("location") or "").strip()
-        rec["location"] = str(rec.get("location") or rec.get("site_name") or "").strip()
-        rec["item_type"] = str(rec.get("item_type") or _site_sync_guess_type(rec["description"])).strip()
-        rec["category"] = str(rec.get("category") or rec["item_type"]).strip()
-        rec["qty"] = to_float(rec.get("qty"), 1) or 1
-        rec["condition"] = str(rec.get("condition") or "A").strip()
-        rec["status"] = _site_sync_status(rec)
-        rec["issued_by"] = str(rec.get("issued_by") or "").strip()
-        rec["remarks"] = str(rec.get("remarks") or "").strip()
-        rec["picture_path"] = str(rec.get("picture_path") or "").strip()
-        rec["last_updated"] = to_date(rec.get("last_updated")) or str(rec.get("last_updated") or defaults.get("last_updated") or today())[:10]
-        if not (rec["description"] or rec["serial_no"] or rec["item_code"]):
+def site_sync_auto_map(headers: Sequence[str]) -> dict[int, str]:
+    return excel_auto_map(headers)
+
+
+def excel_preview(headers: Sequence[str], rows: Sequence[Sequence[Any]],
+                  mapping: dict[int, str] | None = None,
+                  defaults: dict | None = None) -> list[dict[str, Any]]:
+    """Turn mapped sheet rows into register records (nothing is saved yet)."""
+    m = dict(mapping or excel_auto_map(headers))
+    defaults = dict(defaults or {})
+    out: list[dict[str, Any]] = []
+    for raw in rows:
+        rec: dict[str, Any] = {k: "" for k in ALL_KEYS}
+        for i, field in m.items():
+            if field and i < len(raw):
+                val = raw[i]
+                rec[field] = "" if val is None else (
+                    val if isinstance(val, (int, float)) else str(val).strip())
+        merged = {**defaults, **{k: v for k, v in rec.items() if str(v).strip() != ""}}
+        for key in ("site_name", "location", "division", "current_project",
+                    "status", "issued_by"):
+            if not str(merged.get(key) or "").strip() and defaults.get(key):
+                merged[key] = defaults[key]
+        try:
+            clean = normalize_record(merged)
+        except ValueError:
             continue
-        rec["asset_key"] = _site_sync_asset_key(rec, rec["site_name"])
-        out.append(rec)
+        clean["_source"] = "Excel Sync"
+        out.append(clean)
     return out
+
+
+def site_sync_preview(headers: Sequence[str], rows: Sequence[Sequence[Any]],
+                      mapping: dict[int, str] | None = None,
+                      defaults: dict | None = None) -> list[dict[str, Any]]:
+    return excel_preview(headers, rows, mapping, defaults)
 
 
 def site_sync_template_rows() -> tuple[list[str], list[list[Any]]]:
-    cols = ["Instrument Description", "Serial No.", "Make / Model", "Location", "Quantity", "Status", "Issued To / Employee Name", "Employee Code", "Iqama ID", "Designation", "Division/Department", "Current Project", "Issued By", "Remarks", "Picture Path"]
-    rows = [
-        ["TOTAL STATION", "1338275", "LEICA (TS02)", "PRJ00026", 1, "Issued", "ZOHAIB BILAL", "IDL-0040", "2482103955", "Surveyor", "SURVEY", "PRJ00026", "M. Ali Zain", "", ""],
-        ["AUTO LEVEL", "2205565", "LEICA", "SAFANIYAH PH#86", 1, "Issued", "MD ARIF HOSSAIN", "100750", "2640193773", "Surveyor", "SURVEY", "WARE HOUSE", "M. Ali Zain", "", ""],
-        ["GPS", "1345418", "LEICA", "NOOR", 1, "Available", "", "", "", "", "SURVEY", "NOOR", "M. Ali Zain", "", ""],
-    ]
-    return cols, rows
+    return excel_template_rows()
 
 
-def site_sync_folder_status(path: str | Path) -> tuple[bool, str]:
-    if not str(path or "").strip():
-        return False, "No folder selected."
-    p = Path(path)
-    if not p.exists():
-        return False, f"The folder does not exist or is offline:\n{p}"
-    if not p.is_dir():
-        return False, f"That path is a file, not a folder:\n{p}"
-    if not os.access(p, os.R_OK):
-        return False, f"No permission to read:\n{p}"
-    return True, ("Read and write access." if os.access(p, os.W_OK) else "Read-only — files can be imported but not changed.")
-
-
-def site_sync_folders(db: ToolDB, active_only: bool = False) -> list[dict]:
-    sql = "SELECT * FROM site_sync_folders"
+# ------------------------------------------------------------ sync folders
+def sync_folders(db: ToolDB, active_only: bool = False) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM sync_folders"
     if active_only:
         sql += " WHERE active=1"
-    sql += " ORDER BY id"
-    out = []
-    for r in db.query(sql):
-        d = dict(r)
-        ok, note = site_sync_folder_status(d["path"])
-        d["online"] = ok
-        d["note"] = note
-        d["files"] = int(db.scalar("SELECT COUNT(*) FROM site_sync_files WHERE folder_id=?", (d["id"],), 0) or 0)
-        out.append(d)
-    return out
+    sql += " ORDER BY label COLLATE NOCASE, path"
+    return [dict(r) for r in db.query(sql)]
 
 
-def save_site_sync_folder(db: ToolDB, path: str | Path, label: str = "", site_name: str = "", auto_sync: bool = False, sync_interval: int = 15, folder_id: int | None = None) -> int:
+def save_sync_folder(db: ToolDB, path: str | Path, label: str = "",
+                     site_name: str = "", auto_sync: bool = False,
+                     sync_interval: int = 15,
+                     folder_id: int | None = None) -> int:
     p = str(Path(path))
-    ok, note = site_sync_folder_status(p)
-    if not ok:
-        raise ValueError(note)
-    data = (p, label or Path(p).name, str(site_name or "").strip(), 1 if auto_sync else 0, max(1, int(sync_interval or 15)))
+    if not Path(p).exists():
+        raise FileNotFoundError(f"The folder does not exist:\n{p}")
     if folder_id:
-        db.execute("UPDATE site_sync_folders SET path=?, label=?, site_name=?, auto_sync=?, sync_interval=?, active=1 WHERE id=?", data + (folder_id,))
+        db.execute("UPDATE sync_folders SET path=?, label=?, site_name=?, "
+                   "auto_sync=?, sync_interval=? WHERE id=?",
+                   (p, label, site_name, 1 if auto_sync else 0,
+                    int(sync_interval), int(folder_id)))
         db.commit()
-        db.audit("EDITED", "site-sync-folder", folder_id, p)
+        db.audit("UPDATED", "sync folder", str(folder_id), p)
         return int(folder_id)
-    row = db.one("SELECT id FROM site_sync_folders WHERE path=?", (p,))
-    if row:
-        db.execute("UPDATE site_sync_folders SET label=?, site_name=?, auto_sync=?, sync_interval=?, active=1 WHERE id=?", (label or Path(p).name, str(site_name or "").strip(), 1 if auto_sync else 0, max(1, int(sync_interval or 15)), row["id"]))
+    existing = db.one("SELECT id FROM sync_folders WHERE path=?", (p,))
+    if existing:
+        db.execute("UPDATE sync_folders SET label=?, site_name=?, active=1 WHERE id=?",
+                   (label, site_name, int(existing["id"])))
         db.commit()
-        return int(row["id"])
-    cur = db.execute("INSERT INTO site_sync_folders(path,label,site_name,auto_sync,sync_interval) VALUES(?,?,?,?,?)", data)
+        return int(existing["id"])
+    cur = db.execute(
+        "INSERT INTO sync_folders (path,label,site_name,auto_sync,sync_interval)"
+        " VALUES (?,?,?,?,?)",
+        (p, label or Path(p).name, site_name, 1 if auto_sync else 0,
+         int(sync_interval)))
     db.commit()
-    db.audit("ADDED", "site-sync-folder", p, label)
+    db.audit("ADDED", "sync folder", str(cur.lastrowid), p)
     return int(cur.lastrowid)
 
 
-def remove_site_sync_folder(db: ToolDB, folder_id: int) -> None:
-    db.execute("DELETE FROM site_sync_folders WHERE id=?", (folder_id,))
+def remove_sync_folder(db: ToolDB, folder_id: int) -> None:
+    db.execute("DELETE FROM sync_folders WHERE id=?", (int(folder_id),))
     db.commit()
-    db.audit("REMOVED", "site-sync-folder", folder_id)
 
 
-def site_sync_scan_files(db: ToolDB, folder_id: int | None = None, status: str = "", text: str = "") -> list[dict]:
-    sql = "SELECT f.*, d.label AS folder_label FROM site_sync_files f LEFT JOIN site_sync_folders d ON d.id=f.folder_id WHERE 1=1"
-    p: list[Any] = []
+def sync_folder_status(path: str | Path) -> tuple[bool, str]:
+    p = Path(path)
+    if not p.exists():
+        return False, "Folder not found"
+    if not p.is_dir():
+        return False, "Not a folder"
+    files = [f for f in p.iterdir()
+             if f.is_file() and f.suffix.lower() in EXCEL_SUFFIXES]
+    return True, f"{len(files)} sheet file(s)"
+
+
+def file_hash(path: str | Path, limit_mb: int = 32) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    p = Path(path)
+    try:
+        with p.open("rb") as fh:
+            read = 0
+            while True:
+                chunk = fh.read(1024 * 256)
+                if not chunk:
+                    break
+                h.update(chunk)
+                read += len(chunk)
+                if read > limit_mb * 1024 * 1024:
+                    break
+    except OSError:
+        return ""
+    return h.hexdigest()
+
+
+def scan_sync_files(db: ToolDB, folder_id: int | None = None, status: str = "",
+                    text: str = "") -> list[dict[str, Any]]:
+    sql = "SELECT * FROM sync_files WHERE 1=1"
+    params: list[Any] = []
     if folder_id:
-        sql += " AND f.folder_id=?"
-        p.append(folder_id)
-    if status and status != "All":
-        sql += " AND f.status=?"
-        p.append(status)
-    if text:
-        like = f"%{text.strip()}%"
-        sql += " AND (f.name LIKE ? OR f.detected_site LIKE ? OR f.assigned_site LIKE ? OR f.note LIKE ?)"
-        p += [like] * 4
-    sql += " ORDER BY f.modified DESC, f.id DESC"
-    return [dict(r) for r in db.query(sql, p)]
+        sql += " AND folder_id=?"
+        params.append(int(folder_id))
+    if str(status or "").strip():
+        sql += " AND status=?"
+        params.append(str(status).strip())
+    if str(text or "").strip():
+        like = f"%{str(text).strip()}%"
+        sql += " AND (name LIKE ? OR note LIKE ? OR site_name LIKE ?)"
+        params += [like] * 3
+    sql += " ORDER BY seen_at DESC, id DESC"
+    return [dict(r) for r in db.query(sql, params)]
 
 
-def site_sync_runs(db: ToolDB, file_id: int = 0, limit: int = 200) -> list[dict]:
-    sql = "SELECT * FROM site_sync_runs"
-    p: list[Any] = []
+def sync_runs(db: ToolDB, file_id: int = 0, limit: int = 200) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM sync_runs"
+    params: list[Any] = []
     if file_id:
         sql += " WHERE file_id=?"
-        p.append(file_id)
+        params.append(int(file_id))
     sql += " ORDER BY id DESC LIMIT ?"
-    p.append(limit)
-    return [dict(r) for r in db.query(sql, p)]
+    params.append(int(limit))
+    return [dict(r) for r in db.query(sql, params)]
 
 
-def _site_sync_write_event(db: ToolDB, before: dict[str, Any] | None, after: dict[str, Any] | None, movement_type: str, source_file: str = "", file_id: int = 0, folder_id: int = 0, source_kind: str = "Excel Sync", source_ref: str = "", responsible_person: str = "", remarks: str = "") -> None:
-    base = after or before or {}
-    ref = str(source_ref or Path(source_file).name or source_file or base.get("asset_key") or movement_type).strip()
-    db.execute(
-        """INSERT INTO site_asset_events(asset_key,item_code,description,serial_no,qty_before,qty_after,
-                  movement_type,source_kind,source_ref,source_file,file_id,folder_id,event_date,
-                  site_before,site_after,holder_before,holder_after,employee_before,employee_after,
-                  location_before,location_after,status_before,status_after,condition_before,
-                  condition_after,responsible_person,remarks,before_photo,after_photo)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            base.get("asset_key", ""), base.get("item_code", ""), base.get("description", ""),
-            base.get("serial_no", ""), to_float((before or {}).get("qty"), 0), to_float((after or {}).get("qty"), 0),
-            movement_type, source_kind, ref, source_file, file_id, folder_id,
-            str((after or before or {}).get("last_updated") or today())[:10],
-            (before or {}).get("site_name", ""), (after or {}).get("site_name", ""),
-            (before or {}).get("holder", ""), (after or {}).get("holder", ""),
-            (before or {}).get("employee_code", ""), (after or {}).get("employee_code", ""),
-            (before or {}).get("location", ""), (after or {}).get("location", ""),
-            (before or {}).get("status", ""), (after or {}).get("status", ""),
-            (before or {}).get("condition", ""), (after or {}).get("condition", ""),
-            responsible_person or (after or {}).get("issued_by", ""), remarks or (after or {}).get("remarks", ""),
-            (before or {}).get("picture_path", ""), (after or {}).get("picture_path", ""),
-        ))
-
-
-def import_site_sync_preview_records(db: ToolDB, records: Sequence[dict], source_file: str, assigned_site: str = "", folder_id: int | None = None, file_hash_value: str = "") -> dict[str, Any]:
-    p = Path(source_file)
-    exists = p.exists() and p.is_file()
-    modified = _dt.datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M") if exists else _now()[:16]
-    detected_site = str(assigned_site or (records[0].get("site_name") if records else "") or p.stem).strip()
-    digest = file_hash_value or (file_hash(p) if exists else "")
-    row = db.one("SELECT * FROM site_sync_files WHERE path=?", (str(p),))
+def _track_file(db: ToolDB, path: Path, folder_id: int,
+                site_name: str) -> dict[str, Any]:
+    stat = path.stat()
+    h = file_hash(path)
+    row = db.one("SELECT * FROM sync_files WHERE path=?", (str(path),))
     if row:
-        file_id = int(row["id"])
-        db.execute("UPDATE site_sync_files SET folder_id=?, name=?, assigned_site=?, detected_site=?, size_kb=?, modified=?, file_hash=? WHERE id=?", (folder_id or 0, p.name, assigned_site, detected_site, round((p.stat().st_size if exists else 0) / 1024.0, 1), modified, digest, file_id))
-    else:
-        cur = db.execute("INSERT INTO site_sync_files(folder_id,path,name,assigned_site,detected_site,size_kb,modified,file_hash,status) VALUES(?,?,?,?,?,?,?,?,?)", (folder_id or 0, str(p), p.name, assigned_site, detected_site, round((p.stat().st_size if exists else 0) / 1024.0, 1), modified, digest, "New"))
-        file_id = int(cur.lastrowid)
+        db.execute("UPDATE sync_files SET size_kb=?, modified=?, file_hash=?, "
+                   "site_name=COALESCE(NULLIF(?,''), site_name), seen_at=? WHERE id=?",
+                   (round(stat.st_size / 1024, 1),
+                    _dt.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                    h, site_name, _now(), int(row["id"])))
+        db.commit()
+        return dict(db.one("SELECT * FROM sync_files WHERE id=?", (int(row["id"]),)))
+    cur = db.execute(
+        "INSERT INTO sync_files (folder_id,path,name,site_name,size_kb,modified,"
+        "file_hash,status,seen_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (int(folder_id), str(path), path.name, site_name,
+         round(stat.st_size / 1024, 1),
+         _dt.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+         h, "New", _now()))
     db.commit()
-    created = updated = failed = 0
-    seen: set[str] = set()
+    return dict(db.one("SELECT * FROM sync_files WHERE id=?", (int(cur.lastrowid),)))
+
+
+def _log_run(db: ToolDB, folder_id: int, file_id: int, source_file: str,
+             site_name: str, status: str, res: dict) -> None:
+    db.execute(
+        "INSERT INTO sync_runs (folder_id,file_id,source_file,site_name,status,"
+        "total_rows,created_rows,updated_rows,failed_rows,details)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (int(folder_id), int(file_id), source_file, site_name, status,
+         int(res.get("total", 0)), int(res.get("created", 0)),
+         int(res.get("updated", 0)), int(res.get("failed", 0)),
+         "; ".join(res.get("errors", [])[:8])))
+    db.commit()
+
+
+def import_records(db: ToolDB, records: Sequence[dict], source_file: str = "",
+                   site_name: str = "", folder_id: int = 0, file_id: int = 0,
+                   file_hash_value: str = "", db_main: Any = None,
+                   movement_type: str = MV_REGISTERED,
+                   source: str = "Excel Sync") -> dict[str, Any]:
+    """Upsert preview records into the register and log the movement."""
+    res = {"total": len(records), "created": 0, "updated": 0, "failed": 0,
+           "errors": [], "ids": []}
     for rec in records:
+        data = {k: rec.get(k, "") for k in ALL_KEYS}
+        if site_name:
+            data["site_name"] = data.get("site_name") or site_name
+            data["location"] = data.get("location") or site_name
+        _fill_person_from_master(db, data, db_main)
         try:
-            payload = _site_sync_normalize_inventory_record(
-                rec, assigned_site or detected_site, str(p), digest, file_id, folder_id or 0
-            )
-            seen.add(payload["asset_key"])
-            _, _, was_created, was_changed = _site_sync_upsert_inventory_record(
-                db, payload, source_kind="Excel Sync", source_ref=p.name
-            )
-            if was_created:
-                created += 1
-            elif was_changed:
-                updated += 1
-        except Exception:
-            failed += 1
-    stale = [dict(r) for r in db.query("SELECT * FROM site_inventory WHERE file_id=?", (file_id,)) if r["asset_key"] not in seen]
-    for old in stale:
-        _site_sync_write_event(db, old, None, _site_sync_event_type(old, None), str(p), file_id, folder_id or 0)
-        db.execute("DELETE FROM site_inventory WHERE asset_key=?", (old["asset_key"],))
-    db.execute("UPDATE site_sync_files SET status=?, rows_total=?, rows_created=?, rows_updated=?, rows_failed=?, last_sync=?, note=?, detected_site=? WHERE id=?", ("Failed" if failed else "Synced", len(records), created, updated, failed, _now(), f"{created} created, {updated} updated", detected_site, file_id))
-    db.execute("INSERT INTO site_sync_runs(folder_id,file_id,source_file,site_name,status,total_rows,created_rows,updated_rows,failed_rows,details) VALUES(?,?,?,?,?,?,?,?,?,?)", (folder_id or 0, file_id, str(p), detected_site, "Failed" if failed else "Synced", len(records), created, updated, failed, f"{created} created, {updated} updated, {len(stale)} removed"))
-    if folder_id:
-        db.execute("UPDATE site_sync_folders SET last_scan=?, last_success=?, last_error=? WHERE id=?", (_now(), _now() if not failed else "", "" if not failed else f"{failed} row(s) failed", folder_id))
-    db.commit()
-    db.audit("SYNCED", "site-sync-file", str(p), f"{created} created, {updated} updated, {failed} failed")
-    return {"file_id": file_id, "status": "Failed" if failed else "Synced", "created": created, "updated": updated, "failed": failed, "total": len(records)}
-
-
-def sync_site_sync_file(db: ToolDB, path: str | Path, folder_id: int | None = None, assigned_site: str = "", force: bool = False) -> dict[str, Any]:
-    p = Path(path)
-    if not p.exists() or not p.is_file():
-        raise FileNotFoundError(p)
-    if p.suffix.lower() not in SITE_SYNC_SUFFIXES or p.name.startswith("~$"):
-        raise ValueError(f"Unsupported file: {p.name}")
-    st = p.stat()
-    digest = file_hash(p)
-    modified = _dt.datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
-    row = db.one("SELECT * FROM site_sync_files WHERE path=?", (str(p),))
-    if row and (not force) and row["file_hash"] == digest and row["status"] == "Synced":
-        return {"file_id": int(row["id"]), "status": "Unchanged", "created": 0, "updated": 0, "failed": 0, "total": int(row["rows_total"] or 0)}
-    headers, rows = site_sync_read_table(p)
-    mapping = site_sync_auto_map(headers)
-    if not mapping:
-        msg = ("no recognisable instrument columns — expected headings like "
-               "Instrument Description, Serial No., Make / Model, Location, Quantity, Status")
-        if row:
-            file_id = int(row["id"])
-            db.execute("UPDATE site_sync_files SET status=?, rows_failed=1, last_sync=?, note=?, detected_site=? WHERE id=?", ("Failed", _now(), msg, assigned_site or p.stem, file_id))
-        else:
-            cur = db.execute("INSERT INTO site_sync_files(folder_id,path,name,assigned_site,detected_site,size_kb,modified,file_hash,status,note) VALUES(?,?,?,?,?,?,?,?,?,?)", (folder_id or 0, str(p), p.name, assigned_site, assigned_site or p.stem, round(st.st_size / 1024.0, 1), modified, digest, "Failed", msg))
-            file_id = int(cur.lastrowid)
-        db.execute("INSERT INTO site_sync_runs(folder_id,file_id,source_file,site_name,status,failed_rows,details) VALUES(?,?,?,?,?,?,?)", (folder_id or 0, file_id, str(p), assigned_site or p.stem, "Failed", 1, msg))
-        db.commit()
-        return {"file_id": file_id, "status": "Failed", "created": 0, "updated": 0, "failed": 1, "total": 0, "error": msg}
-    defaults = {"site_name": assigned_site, "last_updated": modified[:10]}
-    recs = site_sync_preview(headers, rows, mapping, defaults)
-    if not recs:
-        raise ValueError("no usable records found")
-    return import_site_sync_preview_records(db, recs, str(p), assigned_site=assigned_site, folder_id=folder_id, file_hash_value=digest)
-
-
-def sync_site_sync_folder(db: ToolDB, folder_id: int, force: bool = False) -> dict[str, Any]:
-    row = db.one("SELECT * FROM site_sync_folders WHERE id=?", (folder_id,))
-    if row is None:
-        raise ValueError("Folder not found.")
-    ok, note = site_sync_folder_status(row["path"])
-    if not ok:
-        db.execute("UPDATE site_sync_folders SET last_scan=?, last_error=? WHERE id=?", (_now(), note, folder_id))
-        db.commit()
-        return {"ok": False, "message": note, "seen": 0, "synced": 0, "failed": 0, "errors": [note]}
-    res = {"ok": True, "message": note, "seen": 0, "synced": 0, "failed": 0, "errors": []}
-    for f in sorted(Path(row["path"]).rglob("*")):
-        if not f.is_file() or f.suffix.lower() not in SITE_SYNC_SUFFIXES or f.name.startswith("~$") or f.name.startswith("."):
-            continue
-        res["seen"] += 1
-        out = sync_site_sync_file(db, f, folder_id=folder_id, assigned_site=str(row["site_name"] or ""), force=force)
-        if out.get("status") == "Failed":
+            clean = normalize_record(data)
+        except ValueError as exc:
             res["failed"] += 1
-            if out.get("error"):
-                res["errors"].append(f"{f.name}: {out['error']}")
-        elif out.get("status") != "Unchanged":
-            res["synced"] += 1
-    db.execute("UPDATE site_sync_folders SET last_scan=? WHERE id=?", (_now(), folder_id))
+            res["errors"].append(str(exc))
+            continue
+        existing = find_by_key(db, clean)
+        try:
+            if existing:
+                before = dict(existing)
+                save_instrument(db, clean, instrument_id=int(existing["id"]),
+                                source=source, source_file=source_file,
+                                file_hash_value=file_hash_value,
+                                db_main=db_main, quiet=True)
+                after = get_instrument(db, int(existing["id"])) or {}
+                changed = _changed_fields(before, after)
+                if changed:
+                    post_movement(db, int(existing["id"]),
+                                  _movement_for_change(before, after),
+                                  movement_date=today(),
+                                  to_holder=after.get("issued_to", ""),
+                                  to_employee_code=after.get("employee_code", ""),
+                                  iqama_id=after.get("iqama_id", ""),
+                                  designation=after.get("designation", ""),
+                                  division=after.get("division", ""),
+                                  current_project=after.get("current_project", ""),
+                                  location=after.get("location", ""),
+                                  quantity=after.get("quantity", 1),
+                                  status_after=after.get("status", ""),
+                                  issued_by=after.get("issued_by", ""),
+                                  details="Excel sync: " + ", ".join(changed),
+                                  source=source, source_file=source_file,
+                                  quiet=True)
+                res["updated"] += 1
+                res["ids"].append(int(existing["id"]))
+            else:
+                row = save_instrument(db, clean, movement_type=movement_type,
+                                      source=source, source_file=source_file,
+                                      file_hash_value=file_hash_value,
+                                      db_main=db_main, quiet=True)
+                res["created"] += 1
+                res["ids"].append(int(row.get("id") or 0))
+        except (ValueError, sqlite3.Error) as exc:
+            res["failed"] += 1
+            res["errors"].append(f"{clean.get('instrument_desc') or clean.get('serial_no')}: {exc}")
     db.commit()
     return res
 
 
-def sync_due_site_folders(db: ToolDB) -> dict[str, Any]:
-    total = {"folders": 0, "synced": 0, "failed": 0, "seen": 0, "errors": []}
+def _movement_for_change(before: dict, after: dict) -> str:
+    b_holder = norm(before.get("issued_to"))
+    a_holder = norm(after.get("issued_to"))
+    if b_holder != a_holder:
+        if not a_holder:
+            return MV_RETURNED
+        if not b_holder:
+            return MV_ISSUED
+        return MV_TRANSFERRED
+    return MV_UPDATED
+
+
+def import_site_sync_preview_records(db: ToolDB, records: Sequence[dict],
+                                     source_file: str, assigned_site: str = "",
+                                     folder_id: int | None = None,
+                                     file_hash_value: str = "",
+                                     db_main: Any = None) -> dict[str, Any]:
+    return import_records(db, records, source_file=source_file,
+                          site_name=assigned_site or "",
+                          folder_id=int(folder_id or 0),
+                          file_hash_value=file_hash_value, db_main=db_main)
+
+
+def sync_file(db: ToolDB, path: str | Path, folder_id: int = 0,
+              site_name: str = "", force: bool = False,
+              db_main: Any = None) -> dict[str, Any]:
+    """Read one site sheet into the register. Never moves the source file."""
+    p = Path(path)
+    res: dict[str, Any] = {"file": p.name, "status": "", "total": 0, "created": 0,
+                           "updated": 0, "failed": 0, "errors": [], "skipped": False}
+    if not p.exists():
+        res["status"] = "Missing"
+        res["errors"].append("file not found")
+        return res
+    if p.suffix.lower() not in EXCEL_SUFFIXES:
+        res["status"] = "Ignored"
+        res["errors"].append("not a sheet file")
+        return res
+    tracked = _track_file(db, p, folder_id, site_name or p.parent.name)
+    file_id = int(tracked["id"])
+    if not force and tracked.get("file_hash") and tracked.get("status") in (
+            "Imported", "Up to date") and tracked.get("file_hash") == file_hash(p):
+        res["status"] = "Up to date"
+        res["skipped"] = True
+        return res
+    try:
+        headers, rows = excel_read_table(p)
+    except Exception as exc:           # noqa: BLE001
+        res["status"] = "Unreadable"
+        res["errors"].append(str(exc))
+        _finish_file(db, file_id, "Unreadable", res, folder_id, site_name)
+        return res
+    if not headers or not rows:
+        res["status"] = "Empty"
+        res["errors"].append("no rows found")
+        _finish_file(db, file_id, "Empty", res, folder_id, site_name)
+        return res
+    mapping = excel_auto_map(headers)
+    if not mapping:
+        res["status"] = "Nothing mapped"
+        res["errors"].append(
+            "no recognisable instrument columns — expected headings like "
+            + ", ".join(TEMPLATE_HEADINGS[:5]))
+        _finish_file(db, file_id, "Nothing mapped", res, folder_id, site_name)
+        return res
+    defaults = {"site_name": site_name} if site_name else {}
+    records = excel_preview(headers, rows, mapping, defaults)
+    res["mapped"] = len(mapping)
+    if not records:
+        res["status"] = "Nothing mapped"
+        res["errors"].append("no usable rows after mapping")
+        _finish_file(db, file_id, "Nothing mapped", res, folder_id, site_name)
+        return res
+    got = import_records(db, records, source_file=str(p),
+                         site_name=site_name, folder_id=folder_id,
+                         file_id=file_id,
+                         file_hash_value=str(tracked.get("file_hash") or ""),
+                         db_main=db_main)
+    res.update({k: got[k] for k in ("total", "created", "updated", "failed")})
+    res["errors"] = got["errors"]
+    res["status"] = "Imported" if not got["failed"] else "Imported with errors"
+    _finish_file(db, file_id, res["status"], res, folder_id, site_name)
+    return res
+
+
+def _finish_file(db: ToolDB, file_id: int, status: str, res: dict,
+                 folder_id: int, site_name: str) -> None:
+    db.execute("UPDATE sync_files SET status=?, last_sync=?, rows_total=?, "
+               "rows_created=?, rows_updated=?, rows_failed=?, note=? WHERE id=?",
+               (status, _now(), int(res.get("total", 0)), int(res.get("created", 0)),
+                int(res.get("updated", 0)), int(res.get("failed", 0)),
+                "; ".join(res.get("errors", [])[:4]), int(file_id)))
+    if folder_id:
+        ok = status in ("Imported", "Up to date")
+        db.execute("UPDATE sync_folders SET last_scan=?, "
+                   "last_success=CASE WHEN ? THEN ? ELSE last_success END, "
+                   "last_error=CASE WHEN ? THEN '' ELSE ? END WHERE id=?",
+                   (_now(), 1 if ok else 0, _now(), 1 if ok else 0,
+                    "; ".join(res.get("errors", [])[:2]), int(folder_id)))
+    db.commit()
+    _log_run(db, folder_id, file_id, res.get("file", ""), site_name, status, res)
+
+
+def sync_folder(db: ToolDB, folder_id: int, force: bool = False,
+                db_main: Any = None) -> dict[str, Any]:
+    folder = db.one("SELECT * FROM sync_folders WHERE id=?", (int(folder_id),))
+    if folder is None:
+        raise ValueError("That sync folder is no longer registered.")
+    root = Path(folder["path"])
+    out: dict[str, Any] = {"folder": folder["label"] or root.name, "files": 0,
+                           "created": 0, "updated": 0, "failed": 0, "skipped": 0,
+                           "errors": [], "results": []}
+    if not root.exists():
+        out["errors"].append(f"folder not found: {root}")
+        db.execute("UPDATE sync_folders SET last_error=? WHERE id=?",
+                   (str(out["errors"][0]), int(folder_id)))
+        db.commit()
+        return out
+    files = sorted(f for f in root.rglob("*")
+                   if f.is_file() and f.suffix.lower() in EXCEL_SUFFIXES
+                   and not f.name.startswith("~$") and not f.name.startswith("."))
+    out["files"] = len(files)
+    for f in files:
+        res = sync_file(db, f, folder_id=int(folder_id),
+                        site_name=str(folder["site_name"] or ""),
+                        force=force, db_main=db_main)
+        out["created"] += int(res.get("created", 0))
+        out["updated"] += int(res.get("updated", 0))
+        out["failed"] += int(res.get("failed", 0))
+        if res.get("skipped"):
+            out["skipped"] += 1
+        out["errors"] += res.get("errors", [])
+        out["results"].append(res)
+    db.execute("UPDATE sync_folders SET last_scan=? WHERE id=?", (_now(), int(folder_id)))
+    db.commit()
+    return out
+
+
+def sync_all_folders(db: ToolDB, force: bool = False,
+                     db_main: Any = None) -> dict[str, Any]:
+    out = {"folders": 0, "files": 0, "created": 0, "updated": 0, "failed": 0,
+           "skipped": 0, "errors": [], "results": []}
+    for folder in sync_folders(db, active_only=True):
+        got = sync_folder(db, int(folder["id"]), force=force, db_main=db_main)
+        out["folders"] += 1
+        for key in ("files", "created", "updated", "failed", "skipped"):
+            out[key] += int(got.get(key, 0))
+        out["errors"] += got.get("errors", [])
+        out["results"].append(got)
+    return out
+
+
+def sync_due_folders(db: ToolDB, db_main: Any = None) -> dict[str, Any]:
+    """Auto-sync folders whose interval has elapsed (used by the timer)."""
+    out = {"folders": 0, "created": 0, "updated": 0, "failed": 0, "errors": []}
     now = _dt.datetime.now()
-    for f in site_sync_folders(db, active_only=True):
-        if not int(f.get("auto_sync") or 0):
+    for folder in sync_folders(db, active_only=True):
+        if not folder.get("auto_sync"):
             continue
-        due = True
-        last = str(f.get("last_scan") or "").strip()
-        if last:
-            try:
-                dt = _dt.datetime.strptime(last[:19], "%Y-%m-%d %H:%M:%S")
-                due = (now - dt).total_seconds() >= max(60, int(f.get("sync_interval") or 15) * 60)
-            except ValueError:
-                due = True
+        last = str(folder.get("last_scan") or "")
+        try:
+            due = (now - _dt.datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
+                   ).total_seconds() >= int(folder.get("sync_interval") or 15) * 60
+        except ValueError:
+            due = True
         if not due:
             continue
-        r = sync_site_sync_folder(db, int(f["id"]), force=False)
-        total["folders"] += 1
-        total["synced"] += int(r.get("synced") or 0)
-        total["failed"] += int(r.get("failed") or 0)
-        total["seen"] += int(r.get("seen") or 0)
-        total["errors"] += list(r.get("errors") or [])
-    return total
+        got = sync_folder(db, int(folder["id"]), force=False, db_main=db_main)
+        out["folders"] += 1
+        out["created"] += int(got.get("created", 0))
+        out["updated"] += int(got.get("updated", 0))
+        out["failed"] += int(got.get("failed", 0))
+        out["errors"] += got.get("errors", [])
+    return out
 
 
+def sync_excel_files(db: ToolDB, paths: Sequence[str], site_name: str = "",
+                     force: bool = True, db_main: Any = None) -> dict[str, Any]:
+    """Read a hand-picked list of sheet files into the register."""
+    out = {"files": 0, "created": 0, "updated": 0, "failed": 0, "errors": [],
+           "results": []}
+    for path in paths:
+        p = Path(path)
+        folder_id = 0
+        row = db.one("SELECT id FROM sync_folders WHERE path=?", (str(p.parent),))
+        if row:
+            folder_id = int(row["id"])
+        res = sync_file(db, p, folder_id=folder_id, site_name=site_name,
+                        force=force, db_main=db_main)
+        out["files"] += 1
+        out["created"] += int(res.get("created", 0))
+        out["updated"] += int(res.get("updated", 0))
+        out["failed"] += int(res.get("failed", 0))
+        out["errors"] += res.get("errors", [])
+        out["results"].append(res)
+    return out
+
+
+def sync_site_sync_file(db: ToolDB, path: str | Path, folder_id: int | None = None,
+                        assigned_site: str = "", force: bool = False,
+                        db_main: Any = None) -> dict[str, Any]:
+    return sync_file(db, path, folder_id=int(folder_id or 0),
+                     site_name=assigned_site, force=force, db_main=db_main)
+
+
+def sync_site_sync_folder(db: ToolDB, folder_id: int, force: bool = False,
+                          db_main: Any = None) -> dict[str, Any]:
+    return sync_folder(db, folder_id, force=force, db_main=db_main)
+
+
+def site_sync_folders(db: ToolDB, active_only: bool = False) -> list[dict[str, Any]]:
+    return sync_folders(db, active_only=active_only)
+
+
+def save_site_sync_folder(db: ToolDB, path: str | Path, label: str = "",
+                          site_name: str = "", auto_sync: bool = False,
+                          sync_interval: int = 15,
+                          folder_id: int | None = None) -> int:
+    return save_sync_folder(db, path, label=label, site_name=site_name,
+                            auto_sync=auto_sync, sync_interval=sync_interval,
+                            folder_id=folder_id)
+
+
+def remove_site_sync_folder(db: ToolDB, folder_id: int) -> None:
+    remove_sync_folder(db, folder_id)
+
+
+def site_sync_scan_files(db: ToolDB, folder_id: int | None = None, status: str = "",
+                         text: str = "") -> list[dict[str, Any]]:
+    return scan_sync_files(db, folder_id=folder_id, status=status, text=text)
+
+
+def site_sync_runs(db: ToolDB, file_id: int = 0, limit: int = 200) -> list[dict[str, Any]]:
+    return sync_runs(db, file_id=file_id, limit=limit)
+
+
+def site_sync_import_files(db: ToolDB, paths: Sequence[str], assigned_site: str = "",
+                           force: bool = True,
+                           db_main: Any = None) -> dict[str, Any]:
+    return sync_excel_files(db, paths, site_name=assigned_site, force=force,
+                            db_main=db_main)
+
+
+def site_sync_folder_status(path: str | Path) -> tuple[bool, str]:
+    return sync_folder_status(path)
+
+
+# ---------------------------------------------- analytics compatibility layer
+# The separate Analytics module reads the register through these names.
 def distinct_site_inventory(db: ToolDB, column: str) -> list[str]:
-    safe = {"site_name", "category", "item_type", "status", "location", "holder", "project_id"}
-    if column not in safe:
-        return []
-    return [str(r[0]) for r in db.query(f"SELECT DISTINCT {column} FROM site_inventory WHERE COALESCE({column},'')<>'' ORDER BY {column}")]
+    return distinct_values(db, column)
 
 
-def site_inventory_record(db: ToolDB, asset_key: str) -> dict[str, Any] | None:
-    row = db.one("SELECT * FROM site_inventory WHERE asset_key=?", (asset_key,))
-    return dict(row) if row else None
-
-
-def manual_site_inventory_save(db: ToolDB, rec: dict[str, Any], previous_asset_key: str = "", movement_type: str = "", source_ref: str = "") -> dict[str, Any]:
-    payload = _site_sync_normalize_inventory_record(
-        rec, str(rec.get("site_name") or rec.get("project_id") or rec.get("location") or "Warehouse"),
-        str(rec.get("source_file") or "Manual Entry"), str(rec.get("file_hash") or ""), int(rec.get("file_id") or 0), int(rec.get("folder_id") or 0),
-    )
-    existing = site_inventory_record(db, previous_asset_key or payload["asset_key"])
-    default_move = "Manual Added" if existing is None else "Updated"
-    before, after, created, changed = _site_sync_upsert_inventory_record(
-        db, payload, previous_asset_key=previous_asset_key,
-        movement_type=movement_type or default_move,
-        source_kind="Manual Entry",
-        source_ref=source_ref or movement_type or ("Manual Add" if existing is None else "Manual Edit"),
-    )
-    db.commit()
-    db.audit("UPDATED", "instrument-site-row", after["asset_key"], movement_type or ("Created" if created else "Edited"))
-    return {"asset_key": after["asset_key"], "created": created, "changed": changed, "record": after}
-
-
-def search_site_inventory(db: ToolDB, text: str = "", site_name: str = "", category: str = "", item_type: str = "", status: str = "", date_from: str = "", date_to: str = "") -> list[dict]:
-    sql = "SELECT * FROM site_inventory WHERE 1=1"
-    p: list[Any] = []
-    if site_name:
-        sql += " AND site_name=?"
-        p.append(site_name)
-    if category:
-        sql += " AND category=?"
-        p.append(category)
-    if item_type:
-        sql += " AND item_type=?"
-        p.append(item_type)
-    if status:
-        sql += " AND status=?"
-        p.append(status)
+def search_site_inventory(db: ToolDB, text: str = "", site_name: str = "",
+                          category: str = "", item_type: str = "",
+                          status: str = "", date_from: str = "",
+                          date_to: str = "") -> list[dict[str, Any]]:
+    rows = search_instruments(db, text=text, status=status, location=site_name)
     if date_from:
-        sql += " AND substr(COALESCE(last_updated,last_sync,''),1,10) >= ?"
-        p.append(date_from[:10])
+        rows = [r for r in rows if str(r.get("updated_at") or "") >= to_date(date_from)]
     if date_to:
-        sql += " AND substr(COALESCE(last_updated,last_sync,''),1,10) <= ?"
-        p.append(date_to[:10])
-    if text:
-        like = f"%{text.strip()}%"
-        sql += (" AND (description LIKE ? OR serial_no LIKE ? OR make_model LIKE ? OR holder LIKE ? OR employee_code LIKE ? OR iqama_id LIKE ? OR project_id LIKE ? OR site_name LIKE ? OR location LIKE ? OR remarks LIKE ? OR item_code LIKE ?)")
-        p += [like] * 11
-    sql += " ORDER BY site_name, project_id, description, serial_no"
-    return [dict(r) for r in db.query(sql, p)]
-
-
-def site_asset_events(db: ToolDB, asset_key: str = "", limit: int = 200) -> list[dict]:
-    sql = "SELECT * FROM site_asset_events"
-    p: list[Any] = []
-    if asset_key:
-        sql += " WHERE asset_key=?"
-        p.append(asset_key)
-    sql += " ORDER BY id DESC LIMIT ?"
-    p.append(limit)
-    return [dict(r) for r in db.query(sql, p)]
+        rows = [r for r in rows if str(r.get("updated_at") or "") <= to_date(date_to) + " 23:59"]
+    return rows
 
 
 def site_inventory_dashboard(db: ToolDB, f: dict | None = None) -> dict[str, Any]:
-    rows = search_site_inventory(db, **(f or {}))
-    total_qty = sum(float(r.get("qty") or 0) for r in rows)
-    available = sum(float(r.get("qty") or 0) for r in rows if norm(r.get("status")) in ("available", "instore", "atsite", "warehouse"))
-    issued = sum(float(r.get("qty") or 0) for r in rows if str(r.get("holder") or "").strip() or norm(r.get("status")) in ("issued", "inuse"))
-    transferred = sum(float(r.get("qty") or 0) for r in rows if norm(r.get("site_name")) not in ("", "warehouse", "mainwarehouse") and norm(r.get("location")) not in ("", "warehouse", "mainwarehouse"))
-    pending = sum(float(r.get("qty") or 0) for r in rows if norm(r.get("status")) in _SYNC_UNAVAILABLE)
-    recent = sorted(rows, key=lambda r: str(r.get("last_updated") or r.get("last_sync") or ""), reverse=True)[:25]
-    missing = [r for r in rows if norm(r.get("status")) in _SYNC_UNAVAILABLE][:25]
-    by_site: dict[str, float] = {}
-    by_type: dict[str, float] = {}
-    by_category: dict[str, float] = {}
-    by_status: dict[str, float] = {}
-    by_item: dict[str, float] = {}
-    for r in rows:
-        q = float(r.get("qty") or 0)
-        by_site[r.get("site_name") or "(blank)"] = by_site.get(r.get("site_name") or "(blank)", 0.0) + q
-        by_type[r.get("item_type") or "(blank)"] = by_type.get(r.get("item_type") or "(blank)", 0.0) + q
-        by_category[r.get("category") or "(blank)"] = by_category.get(r.get("category") or "(blank)", 0.0) + q
-        by_status[r.get("status") or "(blank)"] = by_status.get(r.get("status") or "(blank)", 0.0) + q
-        key = f"{r.get('description') or r.get('item_code') or '(blank)'} @ {r.get('site_name') or '(blank)'}"
-        by_item[key] = by_item.get(key, 0.0) + q
-    last_sync = db.scalar("SELECT MAX(last_sync) FROM site_sync_files", default="") or ""
-    file_count = int(db.scalar("SELECT COUNT(*) FROM site_sync_files", default=0) or 0)
-    failed_files = int(db.scalar("SELECT COUNT(*) FROM site_sync_files WHERE status='Failed'", default=0) or 0)
-    returned = int(db.scalar("SELECT COUNT(*) FROM site_asset_events WHERE movement_type='Returned'", default=0) or 0)
-    return {
-        "rows": rows,
-        "row_count": len(rows),
-        "total_qty": total_qty,
-        "available_qty": available,
-        "issued_qty": issued,
-        "transferred_qty": transferred,
-        "pending_qty": pending,
-        "returned_events": returned,
-        "file_count": file_count,
-        "failed_files": failed_files,
-        "last_sync": last_sync,
-        "site_count": len({r.get('site_name') or '' for r in rows if r.get('site_name')}),
-        "recent": recent,
-        "missing": missing,
-        "by_site": sorted(by_site.items(), key=lambda kv: (-kv[1], kv[0].lower())),
-        "by_type": sorted(by_type.items(), key=lambda kv: (-kv[1], kv[0].lower())),
-        "by_category": sorted(by_category.items(), key=lambda kv: (-kv[1], kv[0].lower())),
-        "by_status": sorted(by_status.items(), key=lambda kv: (-kv[1], kv[0].lower())),
-        "top_items": sorted(by_item.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:12],
-    }
+    return dashboard(db, f)
 
 
-def site_sync_import_files(db: ToolDB, paths: Sequence[str], assigned_site: str = "", force: bool = True) -> dict[str, Any]:
-    res = {"synced": 0, "failed": 0, "errors": []}
-    for p in paths:
-        try:
-            out = sync_site_sync_file(db, p, assigned_site=assigned_site, force=force)
-        except Exception as exc:  # noqa: BLE001
-            res["failed"] += 1
-            res["errors"].append(f"{Path(p).name}: {exc}")
-            continue
-        if out.get("status") == "Failed":
-            res["failed"] += 1
-            if out.get("error"):
-                res["errors"].append(f"{Path(p).name}: {out['error']}")
-        elif out.get("status") != "Unchanged":
-            res["synced"] += 1
-    return res
+def site_asset_events(db: ToolDB, asset_key: str = "", limit: int = 200) -> list[dict]:
+    """The movement track, optionally for one instrument (by serial or id)."""
+    instrument_id = 0
+    if str(asset_key or "").strip():
+        row = find_instrument(db, serial=str(asset_key).strip())
+        instrument_id = int(row["id"]) if row else 0
+    return all_movements(db, instrument_id=instrument_id, limit=limit)
+
+
+# ------------------------------------------------------------------ reports
+REPORT_LIST = [
+    "Instrument Register — every column",
+    "Issued / Handed-over Instruments",
+    "In Store — available instruments",
+    "By Location / Site",
+    "By Employee (custody)",
+    "By Instrument Description",
+    "By Project",
+    "Status Summary",
+    "Movement History — issue, transfer and return",
+    "Transfers Between Employees",
+    "Returns to Store",
+    "Instruments Without a Picture",
+]
+
+REGISTER_REPORT_COLS = [label for _, label in COLUMNS]
+
+
+def _register_rows(rows: Sequence[dict]) -> list[list[Any]]:
+    return [[r.get(k, "") for k, _ in COLUMNS] for r in rows]
+
+
+def build_report(db: ToolDB, name: str, f: dict | None = None
+                 ) -> tuple[str, list[str], list[list[Any]]]:
+    """Every printable report, built from the same register the screen shows."""
+    f = dict(f or {})
+    rows = search_instruments(
+        db, text=f.get("text", ""), status=f.get("status", ""),
+        location=f.get("location", ""), division=f.get("division", ""),
+        project=f.get("project", ""), employee_code=f.get("employee_code", ""),
+        with_picture=False)
+    issued = [r for r in rows if str(r.get("issued_to") or "").strip()]
+
+    if name.startswith("Instrument Register"):
+        out = [[r.get(k, "") for k, _ in COLUMNS]
+               + ["Yes" if str(r.get("picture_path") or "").strip() else ""]
+               for r in rows]
+        return name, REGISTER_REPORT_COLS + ["Picture"], out
+    if name.startswith("Issued / Handed-over"):
+        out = [[r.get("instrument_desc", ""), r.get("serial_no", ""),
+                r.get("make_model", ""), r.get("issued_to", ""),
+                r.get("employee_code", ""), r.get("iqama_id", ""),
+                r.get("designation", ""), r.get("division", ""),
+                r.get("current_project", ""), r.get("location", ""),
+                fmt_qty(r.get("quantity")), r.get("issued_by", ""),
+                fmt_date(r.get("last_movement_at", "")), r.get("remarks", "")]
+               for r in issued]
+        return name, ["Instrument Description", "Serial No.", "Make / Model",
+                      "Issued To / Employee Name", "Employee Code", "Iqama ID",
+                      "Designation", "Division/Department", "Current Project",
+                      "Location", "Quantity", "Issued By", "Handed Over On",
+                      "Remarks"], out
+    if name.startswith("In Store"):
+        out = [[r.get(k, "") for k in ("instrument_desc", "serial_no", "make_model",
+                                       "location", "quantity", "status", "remarks")]
+               for r in rows if not str(r.get("issued_to") or "").strip()]
+        return name, ["Instrument Description", "Serial No.", "Make / Model",
+                      "Location", "Quantity", "Status", "Remarks"], out
+    if name.startswith("By Location"):
+        order = [k for k in ("location", "instrument_desc", "serial_no", "quantity",
+                             "status", "issued_to", "employee_code", "current_project")]
+        out = [[r.get(k, "") for k in order] for r in
+               sorted(rows, key=lambda r: (str(r.get("location") or "").lower(),
+                                           str(r.get("instrument_desc") or "").lower()))]
+        return name, [COLUMN_LABELS[k] for k in order], out
+    if name.startswith("By Employee"):
+        out = [[p["issued_to"], p["employee_code"], p["iqama_id"],
+                p["designation"], p["division"], p["current_project"],
+                p["rows_held"], fmt_qty(p["quantity"]), p["instruments"]]
+               for p in custody_by_person(db)]
+        return name, ["Employee Name", "Employee Code", "Iqama ID", "Designation",
+                      "Division/Department", "Current Project", "Instruments Held",
+                      "Total Quantity", "Instruments"], out
+    if name.startswith("By Instrument Description"):
+        agg: dict[str, list[float]] = {}
+        for r in rows:
+            key = str(r.get("instrument_desc") or "(not set)")
+            agg.setdefault(key, [0, 0.0, 0])
+            agg[key][0] += 1
+            agg[key][1] += to_float(r.get("quantity"), 0)
+            agg[key][2] += 1 if str(r.get("issued_to") or "").strip() else 0
+        out = [[k, v[0], fmt_qty(v[1]), v[2], v[0] - v[2]]
+               for k, v in sorted(agg.items())]
+        return name, ["Instrument Description", "Rows", "Total Quantity",
+                      "Issued", "In Store"], out
+    if name.startswith("By Project"):
+        agg: dict[str, list[float]] = {}
+        for r in rows:
+            key = str(r.get("current_project") or "(not set)")
+            agg.setdefault(key, [0, 0.0])
+            agg[key][0] += 1
+            agg[key][1] += to_float(r.get("quantity"), 0)
+        return name, ["Current Project", "Rows", "Total Quantity"], \
+            [[k, v[0], fmt_qty(v[1])] for k, v in sorted(agg.items())]
+    if name.startswith("Status Summary"):
+        agg: dict[str, list[float]] = {}
+        for r in rows:
+            key = str(r.get("status") or "(not set)")
+            agg.setdefault(key, [0, 0.0])
+            agg[key][0] += 1
+            agg[key][1] += to_float(r.get("quantity"), 0)
+        return name, ["Status", "Rows", "Total Quantity"], \
+            [[k, v[0], fmt_qty(v[1])] for k, v in sorted(agg.items())]
+    if name.startswith("Movement History"):
+        moves = all_movements(db, text=f.get("text", ""))
+        out = [[fmt_date(m.get("movement_date", "")), m.get("ref_no", ""),
+                m.get("movement_type", ""), m.get("instrument_desc", ""),
+                m.get("serial_no", ""), m.get("from_holder", ""),
+                m.get("to_holder", ""), m.get("to_employee_code", ""),
+                m.get("designation", ""), m.get("division", ""),
+                m.get("current_project", ""), m.get("location", ""),
+                fmt_qty(m.get("quantity")), m.get("issued_by", ""),
+                m.get("remarks", "")]
+               for m in moves]
+        return name, ["Date", "Ref", "Movement", "Instrument Description",
+                      "Serial No.", "From", "To", "Employee Code", "Designation",
+                      "Division/Department", "Current Project", "Location",
+                      "Quantity", "Issued By", "Remarks"], out
+    if name.startswith("Transfers"):
+        moves = all_movements(db, movement_type=MV_TRANSFERRED)
+        out = [[fmt_date(m.get("movement_date", "")), m.get("ref_no", ""),
+                m.get("instrument_desc", ""), m.get("serial_no", ""),
+                m.get("from_holder", ""), m.get("from_employee_code", ""),
+                m.get("to_holder", ""), m.get("to_employee_code", ""),
+                m.get("iqama_id", ""), m.get("designation", ""),
+                m.get("division", ""), m.get("current_project", ""),
+                m.get("location", ""), m.get("remarks", "")]
+               for m in moves]
+        return name, ["Date", "Ref", "Instrument Description", "Serial No.",
+                      "From", "From Code", "To", "Employee Code", "Iqama ID",
+                      "Designation", "Division/Department", "Current Project",
+                      "Location", "Remarks"], out
+    if name.startswith("Returns"):
+        moves = all_movements(db, movement_type=MV_RETURNED)
+        out = [[fmt_date(m.get("movement_date", "")), m.get("ref_no", ""),
+                m.get("instrument_desc", ""), m.get("serial_no", ""),
+                m.get("from_holder", ""), m.get("from_employee_code", ""),
+                m.get("location", ""), fmt_qty(m.get("quantity")),
+                m.get("remarks", "")]
+               for m in moves]
+        return name, ["Date", "Ref", "Instrument Description", "Serial No.",
+                      "Returned By", "Employee Code", "Location", "Quantity",
+                      "Remarks"], out
+    # Instruments without a picture
+    out = [[r.get("instrument_desc", ""), r.get("serial_no", ""),
+            r.get("make_model", ""), r.get("location", ""),
+            r.get("status", ""), r.get("issued_to", "")]
+           for r in rows if not str(r.get("picture_path") or "").strip()]
+    return name, ["Instrument Description", "Serial No.", "Make / Model",
+                  "Location", "Status", "Issued To / Employee Name"], out

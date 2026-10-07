@@ -435,7 +435,7 @@ class MainWindow(QMainWindow):
             "Document Library": "Synced folders of scanned delivery notes — browse, "
                                 "preview and print",
             "Calculator": "Quick calculations without leaving AURCO",
-            "Instrument Station": "Separate custody register for instruments, devices and related field equipment — issue, transfer, temporary loan, return, picture proof, PDF handover sync and site-wise Excel folder sync. Its own database; no stock effect.",
+            "Instrument Station": "The instrument register, built exactly on the site Excel sheet (Instrument Description, Serial No., Make/Model, Location, Quantity, Status, Issued To, Employee Code, Iqama ID, Designation, Division/Department, Current Project, Issued By, Remarks) — dashboard, manual entry with picture proof, issue / transfer / return, the full movement track and site-wise Excel folder sync. Its own database; no stock effect.",
             "Analytics": "Separate analytics module for typed materials and site-wise synced inventory — auto-detected from Item Master / Delivery Notes plus Excel-synced instrument/device visibility.",
             "Cable Records": "Separate cable drum register — length left on every "
                              "drum, every cut, the cable schedule and its megger "

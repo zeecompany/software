@@ -1214,8 +1214,17 @@ class ItemMasterAnalyticsTab(QWidget):
 
 
 class SiteSyncAnalyticsTab(QWidget):
+    """Read-only site view of the Instrument Station register.
+
+    The register itself is the site Excel sheet, so this tab is simply the same
+    rows grouped by location, status, project and employee — plus the movement
+    track so an auditor can see when each instrument last changed hands.
+    """
+
     def __init__(self, tdb: T.ToolDB, db: Database, parent=None):
         super().__init__(parent)
+        from PySide6.QtWidgets import QCheckBox
+
         self.tdb = tdb
         self.db = db
         self.rows: list[dict] = []
@@ -1225,49 +1234,39 @@ class SiteSyncAnalyticsTab(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         note = QLabel(
-            "This dashboard monitors the synced site Excel folders and shows which site currently has which tools, devices, instruments, and related equipment."
-        )
+            "This dashboard reads the Instrument Station register: which "
+            "instrument is at which location, who is holding it, and when it last "
+            "moved. Edit the register in the Instrument Station module.")
         note.setWordWrap(True)
         v.addWidget(note)
 
         bar = QWidget(); bar.setObjectName("Card")
         gl = QGridLayout(bar); gl.setContentsMargins(10, 8, 10, 8)
-        self.f_text = W.SearchBox("Search site, item, category, type, serial, status or file ...")
-        self.f_site = W.combo(["All Sites"], editable=True)
-        self.f_cat = W.combo(["All Categories"], editable=True)
-        self.f_type = W.combo(["All Types"], editable=True)
-        self.f_status = W.combo(["All Status"], editable=True)
-        self.chk_dates = W.QCheckBox("Date range") if hasattr(W, 'QCheckBox') else None
-        for w in (self.f_text, self.f_site, self.f_cat, self.f_type, self.f_status):
-            if hasattr(w, "textChanged"):
-                w.textChanged.connect(self.reload)
-            else:
-                w.currentTextChanged.connect(self.reload)
-        from PySide6.QtWidgets import QCheckBox
-        self.chk_dates = QCheckBox("Date range")
-        self.chk_dates.toggled.connect(self.reload)
-        self.d_from = date_edit(); self.d_to = date_edit()
-        self.d_from.dateChanged.connect(self.reload); self.d_to.dateChanged.connect(self.reload)
+        self.f_text = W.SearchBox("Search instrument, serial, employee, project or location ...")
+        self.f_site = W.combo(["All Locations"], editable=True)
+        self.f_status = W.combo(["All Status"] + T.STATUSES)
+        self.chk_issued = QCheckBox("Issued / with an employee only")
+        for w in (self.f_text,):
+            w.textChanged.connect(self.reload)
+        for w in (self.f_site, self.f_status):
+            w.currentTextChanged.connect(self.reload)
+        self.chk_issued.toggled.connect(self.reload)
         gl.addWidget(self.f_text, 0, 0, 1, 4)
         gl.addWidget(self.f_site, 0, 4)
-        gl.addWidget(self.f_cat, 0, 5)
-        gl.addWidget(self.f_type, 0, 6)
-        gl.addWidget(self.f_status, 0, 7)
-        gl.addWidget(self.chk_dates, 1, 0)
-        gl.addWidget(self.d_from, 1, 1)
-        gl.addWidget(self.d_to, 1, 2)
-        gl.addWidget(W.button("Sync Now", slot=self.sync_now), 1, 5)
-        gl.addWidget(W.button("Excel", slot=self.export_excel), 1, 6)
-        gl.addWidget(W.button("Reset", slot=self.reset_filters), 1, 7)
+        gl.addWidget(self.f_status, 0, 5)
+        gl.addWidget(self.chk_issued, 1, 0, 1, 2)
+        gl.addWidget(W.button("🔄 Sync Now", slot=self.sync_now), 1, 4)
+        gl.addWidget(W.button("📊 Excel", slot=self.export_excel), 1, 5)
+        gl.addWidget(W.button("♻ Reset", slot=self.reset_filters), 1, 6)
         v.addWidget(bar)
 
         cards = QGridLayout()
         for i, (key, label, glyph, color) in enumerate((
-                ("rows", "Items", "📋", W.NAVY),
+                ("rows", "Instruments", "🔧", W.NAVY),
                 ("qty", "Total Qty", "Σ", "#0b6e83"),
-                ("sites", "Sites", "📍", "#7048e8"),
-                ("files", "Synced Files", "📂", "#1a9c52"),
-                ("missing", "Unavailable", "⚠", "#c92a2a"),
+                ("sites", "Locations", "📍", "#7048e8"),
+                ("holders", "Employees Holding", "👥", "#1a9c52"),
+                ("pictures", "With Picture", "📷", "#c92a2a"),
         )):
             c = W.StatCard(label, glyph=glyph, color=color)
             self.cards[key] = c
@@ -1275,132 +1274,117 @@ class SiteSyncAnalyticsTab(QWidget):
         v.addLayout(cards)
 
         row1 = QHBoxLayout()
-        c1 = W.Card("Site-wise quantity summary")
+        c1 = W.Card("Location-wise quantity")
         self.c_site = W.BarChart([], color="#14538f")
         c1.add(self.c_site, 1)
         row1.addWidget(c1, 1)
-        c2 = W.Card("Category-wise breakdown")
-        self.c_cat = W.BarChart([], color="#7048e8", horizontal=True)
-        c2.add(self.c_cat, 1)
+        c2 = W.Card("Status mix")
+        self.c_status = W.DonutChart()
+        c2.add(self.c_status, 1)
         row1.addWidget(c2, 1)
-        c3 = W.Card("Type mix")
-        self.c_type = W.DonutChart()
-        c3.add(self.c_type, 1)
+        c3 = W.Card("Project-wise quantity")
+        self.c_project = W.BarChart([], color="#7048e8", horizontal=True)
+        c3.add(self.c_project, 1)
         row1.addWidget(c3, 1)
         v.addLayout(row1, 1)
 
         row2 = QHBoxLayout()
-        c4 = W.Card("Item-wise breakdown / site comparison")
+        c4 = W.Card("Employee-wise custody")
         self.c_item = W.BarChart([], color="#1f6feb", horizontal=True)
         c4.add(self.c_item, 1)
-        row2.addWidget(c4, 2)
-        c5 = W.Card("Recently added / updated items")
+        row2.addWidget(c4, 1)
+        c5 = W.Card("Latest movements")
         self.t_recent = W.DataTable()
         self.t_recent.setMaximumHeight(240)
         c5.add(self.t_recent, 1)
         row2.addWidget(c5, 2)
         v.addLayout(row2, 1)
 
-        row3 = QHBoxLayout()
-        c6 = W.Card("Missing or unavailable items")
-        self.t_missing = W.DataTable()
-        self.t_missing.setMaximumHeight(220)
-        c6.add(self.t_missing, 1)
-        row3.addWidget(c6, 1)
-        c7 = W.Card("Current site inventory view")
+        c7 = W.Card("Register as it stands")
         self.table = W.DataTable()
         c7.add(self.table, 1)
-        row3.addWidget(c7, 2)
-        v.addLayout(row3, 2)
+        v.addWidget(c7, 2)
 
-    def _filters(self) -> dict[str, str]:
+    # -------------------------------------------------------------- helpers
+    def _filters(self) -> dict:
         return {
             "text": self.f_text.text().strip(),
-            "site_name": "" if self.f_site.currentText().strip() == "All Sites" else self.f_site.currentText().strip(),
-            "category": "" if self.f_cat.currentText().strip() == "All Categories" else self.f_cat.currentText().strip(),
-            "item_type": "" if self.f_type.currentText().strip() == "All Types" else self.f_type.currentText().strip(),
-            "status": "" if self.f_status.currentText().strip() == "All Status" else self.f_status.currentText().strip(),
-            "date_from": iso(self.d_from) if self.chk_dates.isChecked() else "",
-            "date_to": iso(self.d_to) if self.chk_dates.isChecked() else "",
+            "location": "" if self.f_site.currentText().strip() == "All Locations"
+                        else self.f_site.currentText().strip(),
+            "status": "" if self.f_status.currentText().strip() == "All Status"
+                      else self.f_status.currentText().strip(),
+            "issued_only": self.chk_issued.isChecked(),
         }
 
     def reload_filters(self):
-        def refill(cb, first, values):
-            cur = cb.currentText()
-            cb.blockSignals(True)
-            cb.clear(); cb.addItems([first] + values)
-            if cur in [first] + values:
-                cb.setCurrentText(cur)
-            cb.blockSignals(False)
-        refill(self.f_site, "All Sites", T.distinct_site_inventory(self.tdb, "site_name"))
-        refill(self.f_cat, "All Categories", T.distinct_site_inventory(self.tdb, "category"))
-        refill(self.f_type, "All Types", T.distinct_site_inventory(self.tdb, "item_type"))
-        refill(self.f_status, "All Status", T.distinct_site_inventory(self.tdb, "status"))
+        cur = self.f_site.currentText()
+        values = T.distinct_values(self.tdb, "location")
+        self.f_site.blockSignals(True)
+        self.f_site.clear()
+        self.f_site.addItems(["All Locations"] + values)
+        self.f_site.setCurrentText(cur if cur in ["All Locations"] + values
+                                   else "All Locations")
+        self.f_site.blockSignals(False)
 
     def reset_filters(self):
         self.f_text.clear()
-        for cb in (self.f_site, self.f_cat, self.f_type, self.f_status):
-            cb.setCurrentIndex(0)
-        self.chk_dates.setChecked(False)
+        self.f_site.setCurrentIndex(0)
+        self.f_status.setCurrentIndex(0)
+        self.chk_issued.setChecked(False)
         self.reload()
 
     def sync_now(self):
-        total = {"synced": 0, "failed": 0}
-        for f in T.site_sync_folders(self.tdb, active_only=True):
-            if not f.get("online"):
-                continue
-            r = T.sync_site_sync_folder(self.tdb, int(f["id"]), force=True)
-            total["synced"] += int(r.get("synced") or 0)
+        total = {"created": 0, "updated": 0, "failed": 0}
+        for f in T.sync_folders(self.tdb, active_only=True):
+            r = T.sync_folder(self.tdb, int(f["id"]), force=True, db_main=self.db)
+            total["created"] += int(r.get("created") or 0)
+            total["updated"] += int(r.get("updated") or 0)
             total["failed"] += int(r.get("failed") or 0)
         self.reload()
-        W.toast(self, f"{total['synced']} file(s) synced · {total['failed']} failed")
+        W.toast(self, f"{total['created']} new · {total['updated']} updated · "
+                      f"{total['failed']} failed")
 
     def reload(self):
-        T.sync_due_site_folders(self.tdb)
+        try:
+            T.sync_due_folders(self.tdb, db_main=self.db)
+        except Exception:          # noqa: BLE001
+            pass
         self.reload_filters()
-        d = T.site_inventory_dashboard(self.tdb, self._filters())
-        self.rows = d["rows"]
-        self.cards["rows"].set_value(f"{d['row_count']:,}", "synced item row(s)")
-        self.cards["qty"].set_value(_fmt_qty(d["total_qty"]), "current site qty")
-        self.cards["sites"].set_value(f"{d['site_count']:,}", "sites represented")
-        self.cards["files"].set_value(f"{d['file_count']:,}", (d['last_sync'] or 'never')[:16] or "never")
-        self.cards["missing"].set_value(f"{len(d['missing']):,}", f"failed files {d['failed_files']}")
-        self.c_site.set_data(d["by_site"] or [("No data", 0)])
-        self.c_cat.set_data(d["by_category"] or [("No data", 0)])
-        self.c_type.set_data([(k, v, "#0b6e83" if i % 2 == 0 else "#7048e8") for i, (k, v) in enumerate(d["by_type"])])
-        self.c_item.set_data(d["top_items"] or [("No data", 0)])
-        self.table.fill(["Site Name", "Item Code", "Item Name", "Category", "Type", "Brand", "Model",
-                         "Serial Number", "Quantity", "Condition", "Status", "Location", "Remarks",
-                         "Last Updated", "Source File"],
-                        [[r.get("site_name", ""), r.get("item_code", ""), r.get("item_name", ""),
-                          r.get("category", ""), r.get("item_type", ""), r.get("brand", ""),
-                          r.get("model", ""), r.get("serial_no", ""), float(r.get("qty") or 0),
-                          r.get("condition", ""), r.get("status", ""), r.get("location", ""),
-                          r.get("remarks", ""), r.get("last_updated", ""), Path(str(r.get("source_file", ""))).name]
-                         for r in self.rows])
-        self.t_recent.fill(["Site", "Item", "Type", "Qty", "Status", "Last Updated"],
-                           [[r.get("site_name", ""), r.get("item_name", r.get("item_code", "")),
-                             r.get("item_type", ""), float(r.get("qty") or 0), r.get("status", ""),
-                             r.get("last_updated", "")] for r in d["recent"][:25]])
-        self.t_missing.fill(["Site", "Item", "Type", "Qty", "Status", "Location", "Last Updated"],
-                            [[r.get("site_name", ""), r.get("item_name", r.get("item_code", "")),
-                              r.get("item_type", ""), float(r.get("qty") or 0), r.get("status", ""),
-                              r.get("location", ""), r.get("last_updated", "")] for r in d["missing"][:25]])
+        f = self._filters()
+        self.rows = T.search_instruments(
+            self.tdb, text=f["text"], status=f["status"], location=f["location"],
+            issued_only=f["issued_only"])
+        d = T.dashboard(self.tdb, f)
+        self.cards["rows"].set_value(f"{d['rows']:,}", "rows in the register")
+        self.cards["qty"].set_value(T.fmt_qty(d["quantity"]), "total quantity")
+        self.cards["sites"].set_value(f"{d['sites']:,}", "locations")
+        self.cards["holders"].set_value(f"{d['holders']:,}", "employees")
+        self.cards["pictures"].set_value(f"{d['pictures']:,}", "with a picture")
+        self.c_site.set_data(d["by_location"] or [("No data", 0)])
+        self.c_status.set_data([(k, n, T.STATUS_COLORS.get(k, W.NAVY))
+                                for k, n in d["by_status"]] or [("No data", 1, W.NAVY)])
+        self.c_project.set_data(d["by_project"] or [("No data", 0)])
+        self.c_item.set_data(d["by_employee"] or [("No data", 0)])
+        self.t_recent.fill(
+            ["Date", "Movement", "Instrument", "Serial No.", "From", "To",
+             "Employee Code", "Location"],
+            [[T.fmt_date(m.get("movement_date", "")), m.get("movement_type", ""),
+              m.get("instrument_desc", ""), m.get("serial_no", ""),
+              m.get("from_holder", "") or "—", m.get("to_holder", "") or "—",
+              m.get("to_employee_code", ""), m.get("location", "")]
+             for m in d["recent"][:25]])
+        self.table.fill(
+            ["Instrument Description", "Serial No.", "Make / Model", "Location",
+             "Quantity", "Status", "Issued To / Employee Name", "Employee Code",
+             "Iqama ID", "Designation", "Division/Department", "Current Project",
+             "Issued By", "Remarks"],
+            [[r.get(k, "") for k, _ in T.COLUMNS] for r in self.rows])
 
     def export_excel(self):
         f = D.export_excel(
-            self.db,
-            "Analytics — Site-wise Synced Inventory",
-            ["Site Name", "Item Code", "Item Name", "Category", "Type", "Brand", "Model",
-             "Serial Number", "Quantity", "Condition", "Status", "Location", "Remarks",
-             "Last Updated", "Source File"],
-            [[r.get("site_name", ""), r.get("item_code", ""), r.get("item_name", ""),
-              r.get("category", ""), r.get("item_type", ""), r.get("brand", ""),
-              r.get("model", ""), r.get("serial_no", ""), float(r.get("qty") or 0),
-              r.get("condition", ""), r.get("status", ""), r.get("location", ""),
-              r.get("remarks", ""), r.get("last_updated", ""), Path(str(r.get("source_file", ""))).name]
-             for r in self.rows],
-        )
+            self.db, "Analytics — Instrument Station Register",
+            [label for _, label in T.COLUMNS],
+            [[r.get(k, "") for k, _ in T.COLUMNS] for r in self.rows])
         self.last_file = f
         W.toast(self, f"Exported {f.name}")
         D.open_path(f)

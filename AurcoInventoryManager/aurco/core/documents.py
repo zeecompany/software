@@ -2120,30 +2120,37 @@ def cable_report_pdf(db: Database, title: str, cols: list[str],
     return report_pdf(db, title, cols, rows, out, subtitle=subtitle, stats=stats)
 
 
-def handover_pdf(db: Database, tdb, handover_id: int,
-                 out_path: str | Path | None = None) -> Path:
-    """Reprint one handover as the controlled form WH-FRM-001.
+def instrument_slip_pdf(db: Database, tdb, movement_id: int,
+                        out_path: str | Path | None = None,
+                        include_picture: bool = True) -> Path:
+    """Printable handover / transfer / return slip for one instrument movement.
 
-    Follows the paper layout the user supplied: A handover details ·
-    B recipient · C item grid · D acknowledgement, with the signature block
-    sitting directly above the footer rule as required.
+    Every movement the Instrument Station records can be printed as a slip the
+    site can sign: the movement, the instrument as it stands in the register,
+    the employee taking over (name, code, Iqama, designation, division and
+    project as they were on the day) and the two signature blocks. The attached
+    picture is printed underneath when there is one.
+
+    `db` is the inventory database, read-only for the letterhead and theme;
+    `tdb` is the Instrument Station database.
     """
     from . import toolstation as _T
 
-    h = _T.get_handover(tdb, handover_id)
-    if h is None:
-        raise ValueError("Handover not found.")
+    m = _T.movement_ref(tdb, movement_id)
+    if m is None:
+        raise ValueError("Instrument movement not found.")
+    inst = _T.get_instrument(tdb, int(m["instrument_id"])) or {}
+    ref = str(m.get("ref_no") or f"MV-{movement_id}")
     out = Path(out_path) if out_path else (
-        _T.module_folder() / "Forms" /
-        f"{safe_file_part(h['ref_no'])}.pdf")
+        _T.module_folder() / "Slips" / f"{safe_file_part(ref)}.pdf")
     out.parent.mkdir(parents=True, exist_ok=True)
 
     primary, accent = _brand_colors(db)
-    page_w = landscape(A4)[0] - 24 * mm
+    page_w = A4[0] - 24 * mm
 
     def _section(text: str) -> Table:
         t = Table([[Paragraph(
-            f"<font color='white' size=8.4><b>{text}</b></font>", P_SM)]],
+            f"<font color='white' size=8.2><b>{text}</b></font>", P_SM)]],
             colWidths=[page_w])
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, -1), accent),
@@ -2152,115 +2159,105 @@ def handover_pdf(db: Database, tdb, handover_id: int,
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
         return t
 
-    # Helvetica has no ballot-box glyph (U+2610/2611) -- it prints as a black
-    # box, exactly like the old U+26A0 bug. Use markup instead so the ticked
-    # option is unmistakable in print and in photocopies.
-    def _tick(on: bool) -> str:
-        return "[X]" if on else "[  ]"
-
-    types = " &nbsp;".join(
-        (f"<b>[X] {t}</b>" if h["txn_type"] == t
-         else f"<font color='#8a97a5'>[&nbsp;&nbsp;] {t}</font>")
-        for t in _T.TXN_TYPES)
-
+    movement = str(m.get("movement_type") or "")
     story: list[Any] = [
-        Paragraph("TOOLS, DEVICES &amp; INSTRUMENTS HANDOVER FORM", P_TITLE),
-        Paragraph(f"{h['warehouse'] or 'MAIN'} WAREHOUSE  ·  Form No.: "
-                  f"WH-FRM-001  Rev: 00", P_SUB),
+        Paragraph("INSTRUMENT HANDOVER / TRANSFER / RETURN SLIP", P_TITLE),
+        Paragraph(f"{_T.MODULE_NAME} &nbsp;|&nbsp; Slip No.: <b>{ref}</b> "
+                  f"&nbsp;|&nbsp; {movement} &nbsp;|&nbsp; "
+                  f"<i>Issued from the instrument register — no stock effect</i>",
+                  P_SUB),
         _rule(primary, accent, page_w), Spacer(1, 3 * mm),
-        _section("A — HANDOVER DETAILS"),
-        _kv_block([("Form No.", h["form_no"] or "-"),
-                   ("Handover Reference No.", h["ref_no"]),
-                   ("Date", _T.fmt_date(h["doc_date"])),
-                   ("Time", h["doc_time"] or "-"),
-                   ("Transaction Type", types),
-                   ("Expected Return Date", _T.fmt_date(h["expected_return"]) or "-"),
-                   ("Project ID", h["project_id"] or "-"),
-                   ("Project Name", h["project_name"] or "-"),
-                   ("Project / Site Location", h["location"] or "-"),
-                   ("Custody Status", h["status"])],
+        _section("A — MOVEMENT"),
+        _kv_block([("Slip No.", ref),
+                   ("Movement", movement),
+                   ("Date", _T.fmt_date(m.get("movement_date"))),
+                   ("Quantity", _T.fmt_qty(m.get("quantity"))),
+                   ("Location", m.get("location") or "-"),
+                   ("Status after", m.get("status_after") or "-"),
+                   ("From", m.get("from_holder") or "— store —"),
+                   ("From Code", m.get("from_employee_code") or "-"),
+                   ("Issued By", m.get("issued_by") or "-")],
                   cols=3, total_width=page_w),
         Spacer(1, 3 * mm),
-        _section("B — RECIPIENT / CUSTODIAN DETAILS"),
-        _kv_block([("Handed To", h["handed_to"] or "-"),
-                   ("Employee ID / Code", h.get("employee_code", "") or "-"),
-                   ("Iqama / National ID", h["iqama_id"] or "-"),
-                   ("Designation / Job Title", h["job_title"] or "-"),
-                   ("Division / Department", h.get("department", "") or h["company"] or "-"),
-                   ("Mobile No.", h["mobile"] or "-"),
-                   ("Email", h["email"] or "-"),
-                   ("Supervisor / Manager", h["supervisor"] or "-"),
-                   ("Cost Code / WBS", h["cost_code"] or "-")],
-                  cols=3, total_width=page_w),
-        Spacer(1, 3 * mm),
-        _section("C — ITEM DETAILS"), Spacer(1, 1.5 * mm)]
+        _section("B — INSTRUMENT (as recorded in the register)"),
+        Spacer(1, 1.4 * mm)]
 
-    cols = ["No.", "Asset / Tool ID", "Category", "Description", "Make / Model",
-            "Serial No.", "Qty", "Returned", "Accessories / Components",
-            "Cond.", "Calib. Due", "Remarks / Defects", "Picture Path"]
-    rows = [[l["line_no"], l["asset_id"], l["category"], l["description"],
-             l["make_model"], l["serial_no"] or "-",
-             round(float(l["qty"] or 0), 2),
-             round(float(l["qty_returned"] or 0), 2),
-             l["accessories"] or "-", l["condition"],
-             _T.fmt_date(l["calib_due"]) or "-", l["remarks"], l.get("photo", "")]
-            for l in h["lines"]]
-    weights = [3, 8, 8, 14, 8, 8, 4, 5, 12, 4, 8, 10, 10]
+    icols = ["Instrument Description", "Serial No.", "Make / Model", "Location",
+             "Quantity", "Status", "Issued By", "Remarks"]
+    irows = [[inst.get("instrument_desc", ""), inst.get("serial_no", "") or "-",
+              inst.get("make_model", "") or "-", inst.get("location", "") or "-",
+              _T.fmt_qty(inst.get("quantity")),
+              inst.get("status", "") or "-", inst.get("issued_by", "") or "-",
+              inst.get("remarks", "") or "-"]]
+    weights = [20, 10, 14, 10, 6, 9, 11, 20]
     widths = [page_w * w / sum(weights) for w in weights]
-    story.append(_grid(cols, rows, widths, 7.2, db=db, compact=True))
-    story.append(Spacer(1, 1.5 * mm))
-    story.append(Paragraph(
-        "<font size=6.6 color='#6b7c8f'>*Condition grade:&nbsp;&nbsp; "
-        "A – New / Excellent&nbsp;&nbsp;&nbsp; B – Good&nbsp;&nbsp;&nbsp; "
-        "C – Fair / Usable&nbsp;&nbsp;&nbsp; D – Damaged / Not Usable</font>",
-        P_SM))
-    story.append(Spacer(1, 2 * mm))
+    story.append(_grid(icols, irows, widths, 7.4, db=db, compact=True))
+    story.append(Spacer(1, 3 * mm))
+
+    story.append(_section("C — CUSTODY / EMPLOYEE DETAILS"))
     story.append(_kv_block(
-        [("Serial / Asset ID checked", _tick(h["v_serial"])),
-         ("Accessories checked", _tick(h["v_accessories"])),
-         ("Calibration valid", _tick(h["v_calibration"])),
-         ("Photos attached", _tick(h["v_photos"]))],
-        cols=4, total_width=page_w))
+        [("Handed To / Employee Name", m.get("to_holder") or "— returned to store —"),
+         ("Employee Code", m.get("to_employee_code") or "-"),
+         ("Iqama ID", m.get("iqama_id") or "-"),
+         ("Designation", m.get("designation") or "-"),
+         ("Division / Department", m.get("division") or "-"),
+         ("Current Project", m.get("current_project") or "-"),],
+        cols=3, total_width=page_w))
+    if m.get("remarks"):
+        story.append(Spacer(1, 1.5 * mm))
+        story.append(Paragraph(
+            f"<font size=7.4><b>Remarks:</b> {m.get('remarks')}</font>", P_SM))
 
-    story.append(Spacer(1, 4 * mm))
-    story.append(_section("D — ACKNOWLEDGEMENT & AUTHORIZATION"))
-    story.append(Paragraph(
-        "<font size=7>I acknowledge receipt of the items listed above in the "
-        "stated condition and with the stated accessories. I accept "
-        "responsibility for their safe custody, proper use, and return (where "
-        "applicable). I will immediately report any loss, damage, malfunction "
-        "or change in condition to the Main Warehouse and my supervisor. Items "
-        "shall not be transferred to another person or project without "
-        "authorization.</font>", P_SM))
-    story.append(Spacer(1, 2.5 * mm))
+    picture = str(m.get("picture_path") or inst.get("picture_path") or "")
+    if include_picture and picture and Path(picture).exists():
+        try:
+            ir = ImageReader(picture)
+            iw, ih = ir.getSize()
+            w = min(70 * mm, page_w / 3)
+            h = w * ih / max(iw, 1)
+            im = Image(picture, width=w, height=h)
+            im.hAlign = "LEFT"
+            story.append(Spacer(1, 3 * mm))
+            story.append(_section("D — PICTURE PROOF"))
+            story.append(Spacer(1, 1.5 * mm))
+            story.append(im)
+        except Exception:          # noqa: BLE001 - a bad photo must not stop the slip
+            pass
 
-    sig = Table([[Paragraph("<font size=7.4><b>ISSUED BY — WAREHOUSE</b><br/><br/>"
-                            f"{h['issued_by'] or ''}<br/>"
-                            "____________________________<br/>"
-                            f"<font size=6.6 color='#6b7c8f'>Signature &amp; Date: "
-                            f"{h['issued_at'] or ''}</font></font>", P_SM),
-                 Paragraph("<font size=7.4><b>RECEIVED BY — CUSTODIAN</b><br/><br/>"
-                           f"{h['received_by'] or ''}<br/>"
-                           "____________________________<br/>"
-                           f"<font size=6.6 color='#6b7c8f'>Signature &amp; Date: "
-                           f"{h['received_at'] or ''}</font></font>", P_SM)]],
-                colWidths=[page_w / 2] * 2)
+    story.append(Spacer(1, 5 * mm))
+    story.append(_section("E — SIGNATURES"))
+    story.append(Spacer(1, 2 * mm))
+    sig = Table([[
+        Paragraph("<font size=7.4><b>ISSUED BY / STORE</b><br/><br/>"
+                  f"{(m.get('issued_by') or inst.get('issued_by') or '')}<br/>"
+                  "____________________________<br/>"
+                  f"<font size=6.6 color='#6b7c8f'>Signature &amp; Date: "
+                  f"{_dt.datetime.now():%d/%m/%Y}</font></font>", P_SM),
+        Paragraph("<font size=7.4><b>RECEIVED BY / CUSTODIAN</b><br/><br/>"
+                  f"{m.get('to_holder') or ''}<br/>"
+                  "____________________________<br/>"
+                  "<font size=6.6 color='#6b7c8f'>Signature &amp; Date: "
+                  "________________</font></font>", P_SM)]],
+        colWidths=[page_w / 2] * 2)
     sig.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
                              ("LEFTPADDING", (0, 0), (-1, -1), 6),
                              ("TOPPADDING", (0, 0), (-1, -1), 4)]))
-    # the signature block must sit at the bottom, immediately above the footer
-    # line -- the same rule the delivery note follows
-    story += [Spacer(1, 6 * mm), BottomAnchored(sig)]
+    story.append(sig)
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph(
+        "<font size=6.8 color='#6b7c8f'>The instrument remains the property of "
+        "the company. Report loss, damage or a change of custodian to the store "
+        "immediately — the transfer must be recorded in the Instrument Station "
+        "before the instrument leaves the site.</font>", P_SM))
 
-    _build_with_totals(out, story, True, db, "__default__",
+    _build_with_totals(out, story, False, db, "__default__",
                        lambda total: _header_footer(
-                           db, f"Tools Handover — {h['ref_no']}", True,
+                           db, f"Instrument {movement} — {ref}", False,
                            total_pages=total))
-    db.audit("EXPORTED", "tool-handover", h["ref_no"], f"PDF -> {out.name}")
+    db.audit("EXPORTED", "instrument-slip", ref, f"PDF -> {out.name}")
     return out
 
 
-# ------------------------------------------------- material request check PDF
 _MR_TINT = {
     "Full Available": ("#0f7b3d", "#e6f6ec"),
     "Partial Available": ("#9a6700", "#fff6e0"),

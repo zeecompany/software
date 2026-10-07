@@ -735,91 +735,101 @@ print and share.</p>
 database backup does not include it.</p>
 """),
     ("Instrument Station", """
-<h2>Tools, Instruments &amp; Devices <span style='color:#6b7c8f'>(Ctrl+Shift+T)</span></h2>
-<p>A <b>stand-alone custody register</b> for tools, instruments and devices,
-built around the controlled form <i>WH-FRM-001 — Tools, Devices &amp;
-Instruments Handover</i>. It answers one question: <b>who is holding which
-tool, and since when.</b></p>
-<p>It keeps its own database file (<code>tool_station.db</code>), its own
-backups and its own reports. <b>Nothing here ever posts a stock movement</b> —
-tool custody and warehouse stock are deliberately separate.</p>
-
-<h3>The four transaction types</h3>
+<h2>Instrument Station <span style='color:#6b7c8f'>(Ctrl+Shift+T)</span></h2>
+<p>The instrument register, built <b>exactly on the site Excel sheet</b> — the
+same fourteen columns, in the same order, on the screen and in the exported
+sheet:</p>
 <table border='1' cellpadding='6' cellspacing='0' width='100%'>
-<tr><th>Type</th><th>What it means</th></tr>
-<tr><td><b>Issue</b></td><td>Tool leaves the warehouse, open-ended custody</td></tr>
-<tr><td><b>Transfer</b></td><td>Custody moves from one holder to another</td></tr>
-<tr><td><b>Temporary Loan</b></td>
-<td>Must come back by the Expected Return Date</td></tr>
-<tr><td><b>Return</b></td><td>Tool comes back, closing an earlier handover</td></tr>
+<tr><th>Column</th><th>What it is</th></tr>
+<tr><td>Instrument Description</td><td>TOTAL STATION, AUTO LEVEL, GPS …</td></tr>
+<tr><td>Serial No.</td><td>The instrument's own number — the key it is traced by</td></tr>
+<tr><td>Make / Model</td><td>LEICA (TS02) …</td></tr>
+<tr><td>Location</td><td>Warehouse, NOOR, ZULUF, Yanbu …</td></tr>
+<tr><td>Quantity</td><td>How many pieces the line covers</td></tr>
+<tr><td>Status</td><td>Available · Issued · At Site · Under Repair · Damaged · Lost · Retired</td></tr>
+<tr><td>Issued To / Employee Name</td><td>Who is holding it now</td></tr>
+<tr><td>Employee Code</td><td>Type this and the rest of the employee's details fill in</td></tr>
+<tr><td>Iqama ID</td><td>From the Employee Master</td></tr>
+<tr><td>Designation</td><td>From the Employee Master</td></tr>
+<tr><td>Division/Department</td><td>From the Employee Master</td></tr>
+<tr><td>Current Project</td><td>From the Employee Master</td></tr>
+<tr><td>Issued By</td><td>Who handed it over</td></tr>
+<tr><td>Remarks</td><td>Condition, accessories, notes</td></tr>
+</table>
+<p>The module keeps its own database file
+(<code>instrument_station.db</code>), its own pictures folder, backups and
+reports. <b>Nothing here ever posts a stock movement.</b></p>
+
+<h3>The five tabs</h3>
+<table border='1' cellpadding='6' cellspacing='0' width='100%'>
+<tr><th>Tab</th><th>What it does</th></tr>
+<tr><td><b>Dashboard</b></td><td>KPI tiles and charts — instruments, total
+quantity, issued, in store, employees holding, locations, movements in the last
+30 days, pictures. Status donut, location chart, employee chart, instrument
+chart, project chart and the monthly handover trend, plus the latest movements.
+Click a tile or a bar to open the register on exactly those instruments.</td></tr>
+<tr><td><b>Instruments</b></td><td>The register itself — the Excel columns, in
+Excel order, with the picture of the selected instrument, its details and its
+own track record beside the grid.</td></tr>
+<tr><td><b>Movements</b></td><td>Every handover, transfer and return, with the
+date, both people, the employee code, the project, the location and the
+remarks.</td></tr>
+<tr><td><b>Excel Sync</b></td><td>Point at the folder(s) the sites drop their
+Excel sheets into and read them straight into the register.</td></tr>
+<tr><td><b>Reports</b></td><td>Twelve reports — register, issued, in store, by
+location, by employee, by description, by project, status summary, movement
+history, transfers, returns and instruments without a picture — each with PDF,
+Excel, CSV and print.</td></tr>
 </table>
 
-<h3>The dashboard is yours to shape</h3>
-<p>Everything on the Dashboard tab answers to the filter bar at the top:
-free text, transaction type, status, project, custodian, tool category,
-warehouse, a period (or a custom date range), <i>only still out</i> and
-<i>only overdue</i>. The <b>Measure</b> selector decides what the charts count
-— documents, quantity handed over, or quantity still out.</p>
-<p>Press <b>&#9881; Customise</b> to tick exactly which KPI tiles, charts and
-tables you want and how many tiles sit on a row. The layout is stored in the
-module's own database, so it is still there tomorrow. <b>Click any tile</b> to
-open the register on precisely those documents, and click a bar in the project,
-custodian, type or category chart to filter the whole dashboard by it.
-<b>Export View</b> prints a PDF (or Excel) of exactly what the filters show,
-with the KPI figures across the top.</p>
+<h3>Manual entry, with picture proof</h3>
+<p><b>➕ New Entry</b> opens one form with every register column. Attach a
+picture with <b>Choose picture</b> — it is <i>copied</i> into the module's own
+Pictures folder (the original file you picked is never moved), and it can be
+re-opened at any time with <b>View</b>. The register shows a ✓ in the Picture
+column for every instrument that has one.</p>
 
-<h3>The reference number does the filing for you</h3>
-<p>A reference such as <code>WH-087IS2308202601</code> is self-describing and is
-decoded on sight: warehouse <b>WH</b>, project <b>087 → PRJ000087</b>, type
-<b>IS = Issue</b>, date <b>23/08/2026</b>, sequence <b>01</b>. Because of that,
-a folder of signed PDFs can be filed with nothing typed by hand.</p>
-
-<h3>Sync Folder — the point of the module</h3>
-<p>Point AURCO at the folder your signed handover forms sync to — a network
-share, OneDrive or Google Drive. Press <b>Sync All Folders</b> and every PDF is
-read: the reference is decoded and the whole form is filed, including the
-custodian, iqama ID, mobile, project, and every item line with its asset ID,
-serial number, make, condition grade and calibration date. Syncing twice never
-double-posts the same form.</p>
-<p><b>Files are only ever read.</b> Nothing in the synchronised folder is moved,
-renamed or deleted — it belongs to whoever syncs it.</p>
-
-<h3>The unified filter</h3>
-<p>Every document type appears in <b>one consistent shape</b>, so Issues,
-Transfers, Loans and Returns can be compared directly. Filter by type, status,
-project, custodian or date range, tick <b>Overdue only</b> or <b>Outstanding
-only</b>, or simply search by asset ID, serial number, iqama or project.
-<b>Show one row per item</b> switches the grid between one row per document and
-one row per tool.</p>
-
-<h3>How custody is tracked</h3>
+<h3>Issue · Transfer · Return — the movement track</h3>
+<p>Select the instrument in the register and press <b>Issue</b>,
+<b>Transfer</b> or <b>Return</b>. One dialog does all three:</p>
 <ul>
-<li>Returns can be <b>partial</b> — bring back 1 of 6 items and the handover
-becomes <i>Partially Returned</i>, not closed.</li>
-<li>Returning more than is outstanding is <b>blocked</b>.</li>
-<li>A transfer closes the source as <b>Transferred Out</b>, never
-<i>Returned</i> — the tools never came back to the warehouse, and the record
-stays honest about that.</li>
-<li>A Temporary Loan past its Expected Return Date turns <b>Overdue</b> by
-itself and reports how many days late it is.</li>
+<li><b>Issue</b> — hand the instrument to an employee and set the date.</li>
+<li><b>Transfer</b> — move custody from the present holder to another employee.
+Both names stay on the movement line, so the history shows who handed it over
+<i>and</i> who took over.</li>
+<li><b>Return</b> — take it back into store; the holder columns are cleared and
+the status goes back to Available.</li>
 </ul>
+<p>Every movement gets its own reference
+(<code>IS-261007-01</code>, <code>TR-…</code>, <code>RT-…</code>), the date, the
+quantity, the location and the remarks, and it is written into the instrument's
+own history — so it is always possible to answer <b>when the instrument was
+handed over, to whom, by whom, and when it came back.</b> Press <b>🖨 Slip</b>
+on a movement line to print a signed handover / transfer / return slip, with the
+picture proof on it, for the site to sign.</p>
 
-<h3>Assets — where is it now</h3>
-<p>Built automatically from the handover history: current status (In Store /
-Issued Out / On Loan / Overdue), who holds it, which project, its condition,
-calibration due date and days remaining — plus the complete movement history of
-that one tool.</p>
+<h3>The Employee Code fills the rest</h3>
+<p>Type the <b>Employee Code</b> (or the Iqama ID, or pick the name) in any form
+and press <b>Fill from Employee Master</b>: the name, Iqama, designation,
+division and current project are read from the Employee Master and filled in.
+The same details are stamped onto the movement line, so the history keeps them
+as they were on the day of the handover. If the person is not registered yet,
+the details typed by hand are simply saved.</p>
 
-<h3>Reports</h3>
-<p>Sixteen, including <b>Outstanding Custody</b>, <b>Overdue Loans</b>,
-<b>Custody by Person</b>, <b>Asset Register (Where Is It Now)</b>,
-<b>Calibration Due</b>, <b>Damaged / Defective Items</b> and <b>Missing
-Documents &amp; Signatures</b> — the governance report that lists which
-controlled forms are still missing a signature, a verification tick or a
-scanned copy.</p>
-<p><b>Print Form</b> reprints any handover in the controlled WH-FRM-001 layout,
-with the ticked transaction type, the item grid, the verification boxes and both
-signature blocks sitting directly above the footer rule.</p>
+<h3>Excel Sync — the sites' sheets, read as they are</h3>
+<p>Add the folder(s) and press <b>Sync all folders</b>: every
+<code>.xlsx</code>, <code>.xlsm</code>, <code>.csv</code> or
+<code>.txt</code> file inside them (sub-folders included) is read. The reader
+finds the real heading row even when a company title or a cover sheet comes
+first, and matches the columns automatically — anything it is unsure about can
+be corrected in the mapping dialog, which previews the rows before they are
+imported. The <b>Excel template</b> button gives you a sheet with exactly these
+headings to hand to the sites.</p>
+<p>Importing twice never duplicates: a row is matched on its serial number (or
+its description and make), and only what actually changed is written down —
+including a change of holder, which is recorded as a <b>Transfer</b>.</p>
+<p><b>Files are only ever read</b> — nothing in the folder is moved, renamed or
+deleted. Tick <b>Auto</b> on a folder to have it re-read on a timer.</p>
 """),
     ("Reports and dashboard", """
 <h2>Dashboard</h2>

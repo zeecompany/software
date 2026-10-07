@@ -1,6 +1,6 @@
 # AURCO INVENTORY MANAGER — User & Build Guide
 
-**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.28.23
+**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.28.24
 **Platform:** Windows Desktop (.EXE) · offline · local-first · SQLite
 
 ---
@@ -129,85 +129,76 @@ Print labels from **Item Master → Print Barcodes** (Code128).
 
 ## 3a. Instrument Station (Ctrl+Shift+T)
 
-A **stand-alone custody register** for tools, instruments and devices, built
-around the controlled form *WH-FRM-001 — Tools, Devices & Instruments Handover*.
-It answers one question: **who is holding which tool, and since when.** Its own
-database (`Instrument Station/tool_station.db`), its own backups and reports. **No
-stock movement is ever posted.**
+The instrument register, built **exactly on the site Excel sheet** — the same
+fourteen columns, in the same order, on the screen and in the exported sheet:
 
-**Four transaction types**, exactly as on the paper form:
-
-| Type | Meaning |
+| Column | Notes |
 |---|---|
-| **Issue** | Tool leaves the warehouse, open-ended custody |
-| **Transfer** | Custody moves from one holder to another |
-| **Temporary Loan** | Must come back by the Expected Return Date |
-| **Return** | Tool comes back, closing an earlier handover |
+| Instrument Description | TOTAL STATION, AUTO LEVEL, GPS … |
+| Serial No. | The key every instrument is traced by |
+| Make / Model | LEICA (TS02) … |
+| Location | Warehouse, NOOR, ZULUF, Yanbu … |
+| Quantity | Pieces covered by the line |
+| Status | Available · Issued · At Site · Under Repair · Damaged · Lost · Retired |
+| Issued To / Employee Name | Who is holding it now |
+| Employee Code | Type this and the rest of the employee fills in automatically |
+| Iqama ID | From the Employee Master |
+| Designation | From the Employee Master |
+| Division/Department | From the Employee Master |
+| Current Project | From the Employee Master |
+| Issued By | Who handed it over |
+| Remarks | Condition, accessories, notes |
 
-**A dashboard you can shape.** The Dashboard tab has one filter bar that drives
-everything on it: text, type, status, project, custodian, category, warehouse,
-period (or a custom date range), *only still out*, *only overdue*, and a
-**Measure** selector (documents / quantity / quantity still out). Press
-**⚙ Customise** to choose which KPI tiles, charts and tables appear and how many
-tiles sit on a row — the layout is stored in the module's own database. Click a
-tile to drill into the register with the same filters, click a chart bar to
-filter by it, and use **Export View** for a PDF or Excel of exactly what is on
-screen.
+Its own database (`Instrument Station/instrument_station.db`), its own pictures
+folder, backups and reports. **No stock movement is ever posted.**
 
-**The reference number is self-describing** and is decoded automatically:
+**The five tabs**
 
-```
-WH-087IS2308202601
-^^ ^^^ ^^ ^^^^^^^^ ^^
-|  |   |  |        └─ sequence that day
-|  |   |  └────────── date 23/08/2026
-|  |   └───────────── type: IS Issue · TR Transfer · TL Loan · RT Return
-|  └───────────────── project 087 → PRJ000087
-└──────────────────── originating warehouse
-```
+| Tab | What it does |
+|---|---|
+| **Dashboard** | KPI tiles and charts — instruments, total quantity, issued, in store, employees holding, locations, movements in the last 30 days, pictures. Status donut, location / employee / instrument / project charts and the monthly handover trend, plus the latest movements. Click a tile or a bar to open the register on exactly those instruments. |
+| **Instruments** | The register — the Excel columns, in Excel order, with the picture of the selected instrument and its own track record beside the grid. Filters: text, status, location, division, project, *Issued only* and *With picture*. |
+| **Movements** | Every handover, transfer and return with the date, both people, the employee code, Iqama, designation, division, project, location and remarks. |
+| **Excel Sync** | Point at the folders the sites drop their Excel sheets into and read them straight into the register. |
+| **Reports** | Twelve reports, each with PDF, Excel, CSV and print. |
 
-### Sync Folder — the point of the module
-Point AURCO at the folder your signed handover PDFs sync to (network share,
-OneDrive, Google Drive). Press **Sync All Folders** and it reads every PDF,
-decodes the reference, and files the handover with all of its item lines —
-custodian, iqama, mobile, project, asset IDs, serials, makes, condition grades
-and calibration dates. Re-syncing never double-posts the same form.
+**Manual entry, with picture proof.** **➕ New Entry** opens one form with every
+register column. **Choose picture** copies the photo into the module's own
+Pictures folder (your original file is never moved); **View** opens it again at
+full size and the register shows a ✓ in the Picture column.
 
-> **Files are only ever read.** Nothing in the synchronised folder is moved,
-> renamed or deleted — it is someone else's sync target.
+**Issue · Transfer · Return.** Select an instrument and press one of the three
+buttons — one dialog does all of them, with the date, quantity, status, remarks
+and picture:
 
-### The unified filter
-Every document type is shown in **one consistent shape**, so Issues, Transfers,
-Loans and Returns are directly comparable. Filter by type, status, project,
-custodian, date range, *Overdue only* or *Outstanding only*, or search by asset
-ID, serial number, iqama or project. Tick **Show one row per item** to switch
-between one row per document and one row per tool.
+* **Issue** hands it to an employee.
+* **Transfer** moves custody from the present holder to another employee, keeping
+  *both* names on the movement line.
+* **Return** takes it back into store, clears the holder and sets the status back
+  to Available.
 
-### Custody engine
-Returns can be partial — return 1 of 6 items and the handover becomes
-*Partially Returned*, not closed. Over-returning more than is outstanding is
-blocked. A transfer closes the source as **Transferred Out**, never *Returned*,
-because the tools did not come back to the warehouse. A Temporary Loan past its
-Expected Return Date turns **Overdue** automatically and reports how many days
-late.
+Every movement gets its own reference (`IS-261007-01`, `TR-…`, `RT-…`) and is
+written into the instrument's own history, so **when an instrument was handed
+over, to whom, by whom, and when it came back** is always answerable. **🖨 Slip**
+prints a signed handover / transfer / return slip with the picture proof on it.
 
-### Assets — where is it now
-Derived automatically from the handover history: current status (In Store /
-Issued Out / On Loan / Overdue), who holds it, which project, condition,
-calibration due date and days remaining, plus the full movement history of that
-one tool.
+**The Employee Code fills the rest.** Type the code (or the Iqama ID, or pick the
+name) and the name, Iqama, designation, division and current project are read
+from the Employee Master and filled in — and stamped onto the movement line so
+the history keeps them as they were on the day of the handover.
 
-### Reports (16)
-All Handover Documents · Issue / Transfer / Temporary Loan / Return Registers ·
-Outstanding Custody · Overdue Loans · Custody by Person · Custody by Project ·
-Item-wise Handover Detail · Asset Register (Where Is It Now) · Asset Movement
-History · **Calibration Due** · Damaged / Defective Items · **Missing Documents
-& Signatures** (which controlled forms are incomplete) · Monthly Handover
-Summary. All with PDF / Excel / CSV / print / share.
+**Excel Sync.** Add the folder(s) and press **Sync all folders**: every
+`.xlsx`, `.xlsm`, `.csv` or `.txt` file inside them (sub-folders included) is
+read. The reader finds the real heading row even behind a company title or a
+cover sheet and matches the columns automatically; the mapping dialog lets you
+correct anything and previews the rows before importing. The **Excel template**
+button gives you a sheet with exactly these headings for the sites.
 
-**Print Form** reprints any handover as the controlled WH-FRM-001 layout, with
-the ticked transaction type, the item grid, the verification boxes and the two
-signature blocks sitting directly above the footer rule.
+Importing twice never duplicates — a row is matched on its serial number (or its
+description and make) and only real changes are written, including a change of
+holder, which is recorded as a **Transfer**. **Files are only ever read**;
+nothing in the folder is moved, renamed or deleted. Tick **Auto** on a folder to
+re-read it on a timer.
 
 ---
 

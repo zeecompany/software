@@ -1,0 +1,78 @@
+software v 48 / AURCO Inventory Manager v2.28.24
+
+INSTRUMENT STATION — REBUILT ON THE EXCEL SHEET
+
+The module now follows your sheet columns exactly, in this order:
+Instrument Description | Serial No. | Make / Model | Location | Quantity |
+Status | Issued To / Employee Name | Employee Code | Iqama ID | Designation |
+Division/Department | Current Project | Issued By | Remarks
+(Picture Path and Site Name are kept behind the scenes for the photo proof and
+the folder sync.)
+
+1) REGISTER
+   - the Instruments tab IS that sheet: same headings, same order
+   - sortable and filterable: text, status, location, division, project,
+     Issued only, With picture
+   - the selected instrument's picture and its own track record beside the grid
+   - Excel and PDF buttons export exactly what is on screen
+
+2) DASHBOARD
+   - tiles: instruments, total quantity, issued/with an employee, in store,
+     employees holding, locations, movements in the last 30 days, with a picture
+   - charts: status donut, location, employee, instrument, project and the
+     monthly handover trend, plus the latest movements
+   - click any tile or bar to open the register on exactly those instruments
+
+3) MANUAL ENTRY WITH PICTURE PROOF
+   - New Entry: one form with every register column
+   - Choose picture COPIES the photo into the module's own Pictures folder
+     (your original file is never moved), View opens it full size
+   - the register shows a tick in the Picture column
+
+4) ISSUE / TRANSFER / RETURN  (the movement track)
+   - one dialog does all three, with date, quantity, status, remarks and picture
+   - Transfer keeps BOTH the person handing over and the one taking over
+   - Return clears the holder and puts the status back to Available
+   - every movement gets its own reference (IS- / TR- / RT-), its date and its
+     remarks, written into the instrument's own history
+   - Slip button prints a signed handover / transfer / return slip with the
+     picture proof on it
+
+5) EMPLOYEE CODE FILLS THE OTHER DATA
+   - typing the Employee Code (or Iqama ID, or picking the name) fills the name,
+     Iqama, designation, division and current project from the Employee Master
+   - the same details are stamped onto the movement line, so the history keeps
+     them as they were on the day of the handover
+
+6) MOVEMENTS TAB
+   - every handover, transfer and return: date, reference, movement, instrument,
+     serial, from, to, employee code, Iqama, designation, division, project,
+     location, quantity, issued by, remarks
+   - filter by text, movement type and date range; export to Excel / PDF / print
+
+7) EXCEL SYNC
+   - add the folders the sites drop their sheets into, press Sync all folders
+   - reads .xlsx, .xlsm, .csv and .txt files, sub-folders included
+   - finds the real heading row behind a company title or a cover sheet and
+     matches all fourteen columns automatically
+   - mapping dialog to fix a column and preview rows before importing
+   - Excel template button gives a sheet with exactly these headings
+   - importing twice never duplicates: rows match on serial number (or
+     description + make), and a changed holder becomes a Transfer
+   - files are only ever read - nothing is moved, renamed or deleted
+
+8) REPORTS (12) with PDF / Excel / CSV / print
+   Register - Issued - In Store - By Location - By Employee - By Description -
+   By Project - Status Summary - Movement History - Transfers - Returns -
+   Without a Picture
+
+9) ALSO
+   - the module's own database is now instrument_station.db inside the
+     Instrument Station folder; an existing tool_station.db is adopted
+     automatically (copied) and its rows carried over
+   - the separate Analytics -> Site Sync tab reads this same register
+   - the in-app User Manual and the User Guide describe the new module
+
+VALIDATION
+- py_compile passed on every changed module and the test suite
+- full regression: ALL 1405 CHECKS PASSED
