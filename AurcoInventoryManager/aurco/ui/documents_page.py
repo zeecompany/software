@@ -72,6 +72,9 @@ class DocumentsPage(QWidget):
         btns.addWidget(W.button("✅  Finalize Draft", slot=self.finalize))
         btns.addWidget(W.button("↩  Reverse / Correct", "Danger", self.reverse))
         btns.addWidget(W.button("📊  Export List to Excel", slot=self.export))
+        btns.addWidget(W.button("🧹  One File per Document", slot=self.clean_duplicates,
+                                tip="Keep exactly one PDF for the selected document (or for "
+                                    "every document) and remove leftover copies from older builds"))
         btns.addStretch(1)
         self.count = QLabel()
         self.count.setStyleSheet(f"color:{W.MUTED};")
@@ -354,6 +357,49 @@ class DocumentsPage(QWidget):
         f = D.export_excel(self.db, "Document Register", self.table.headers(), self.table.all_rows())
         W.toast(self, f"Exported {f.name}")
         D.open_path(f)
+
+    def clean_duplicates(self):
+        """Keep exactly one PDF per document; remove leftover copies."""
+        d = self._sel()
+        if d:
+            if not W.confirm(self, f"Reduce {d['doc_no']} to a single PDF file?\n\n"
+                                   "The newest official file is kept and any extra copy of the "
+                                   "same document (draft render, studio copy, older folder) is "
+                                   "removed."):
+                return
+            try:
+                info = D.one_file_per_document(self.db, d)
+            except Exception as exc:                      # noqa: BLE001
+                W.error_box(self, f"Could not clean the files.\\n\\n{exc}")
+                return
+            self._report_cleanup([info], f"{d['doc_no']}")
+            return
+        if not W.confirm(self, "Check every document and keep exactly one PDF file for each?\n\n"
+                               "Duplicates created by older versions are removed; the newest "
+                               "official file of each document is always kept.",
+                         "One file per document"):
+            return
+        try:
+            summary = D.clean_duplicate_document_files(self.db)
+        except Exception as exc:                          # noqa: BLE001
+            W.error_box(self, f"Could not clean the document files.\\n\\n{exc}")
+            return
+        self._report_cleanup(summary["details"], f"{summary['checked']} document(s) checked")
+
+    def _report_cleanup(self, details: list[dict], scope: str):
+        if not details:
+            W.toast(self, f"{scope}: every document already has exactly one file.")
+            return
+        removed = sum(len(i["removed"]) for i in details)
+        lines = []
+        for i in details[:25]:
+            lines.append(f"• {i['doc_no']}: kept {Path(i['kept']).name if i['kept'] else '—'}"
+                         f"  ({len(i['removed'])} duplicate file(s) removed)")
+        if len(details) > 25:
+            lines.append(f"… and {len(details) - 25} more document(s)")
+        W.info_box(self, f"{scope}\n\n{removed} duplicate file(s) removed — each document now "
+                         f"has exactly one PDF:\n\n" + "\n".join(lines), "One file per document")
+        W.toast(self, f"{removed} duplicate document file(s) removed.")
 
 
 # ========================================================== movement history

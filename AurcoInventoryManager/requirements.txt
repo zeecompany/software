@@ -1,5 +1,9 @@
 # AURCO Inventory Manager - runtime dependencies
-PySide6>=6.6,<7
+# PySide6 6.12.0 crashes the interpreter (fatal "none_dealloc" refcount error)
+# as soon as a table cell value is written with QTableWidgetItem.setData(),
+# which every AURCO list uses. 6.11 and older are fine -- pinned out until a
+# fixed release lands.
+PySide6>=6.6,<6.12
 reportlab>=4.0
 openpyxl>=3.1
 pillow>=10.0        # required by reportlab for image support

@@ -385,10 +385,13 @@ class CreateTab(QWidget):
     def _register_attachments(self, doc_no: str):
         for a in self.attachments:
             ent = self._attachment_entry(a)
-            final_path = D.store_document_attachment("GDN", doc_no, ent["file_path"])
+            staged = Path(ent["file_path"])
+            final_path = D.store_document_attachment("GDN", doc_no, staged)
             self.db.execute(
                 "INSERT INTO attachments(doc_type,doc_no,file_path,source,page_order) VALUES(?,?,?,?,?)",
                 ("GDN", doc_no, str(final_path), ent["source"], ent["page_order"]))
+            # picture filed once — drop the staging copy
+            D.discard_staging_attachment(self.db, staged)
         self.db.commit()
         self.attachments = []
         self._refresh_attachments()

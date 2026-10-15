@@ -557,6 +557,24 @@ changing stock again.</p>
 project/department, item, size, quantity, DN number and remarks. Existing lines
 can be edited later, for example when a synced DN line needs its employee code
 completed.</p>
+<p><b>Import Excel / CSV</b> on the Register tab loads an existing PPE sheet
+straight into the register: pick the file, check the column mapping AURCO
+detected (change or ignore a column if needed) and import. Imported rows are
+<u>register</u> rows, duplicates are skipped, and the whole import can be undone
+from the <b>Import Sheet</b> tab. <b>Template</b> saves an empty sheet with the
+register columns.</p>
+<p><b>Export this view</b> writes exactly what the register shows — filters
+included — to <b>Excel</b>, <b>PDF</b>, <b>CSV</b> or straight to the
+<b>printer</b>. The same export buttons sit on the <b>Synced DN Records</b> tab
+for the Delivery-Note rows.</p>
+
+<h3>Dashboard</h3>
+<p>The dashboard reports the <b>PPE register only</b> — manual issues and sheet
+imports. Records pulled in from Delivery Notes are excluded, so the KPI tiles,
+charts and the latest-issues list can never be confused with DN activity. Tick
+<b>Include DN-synced records</b> to see everything together; the DN tiles and the
+source split appear only then. The line under the tiles always states which
+scope is on screen.</p>
 
 <h3>Sync from Delivery Notes</h3>
 <p><b>Preview Matches</b> scans FINAL Delivery Notes and detects matching lines by
@@ -572,6 +590,17 @@ name, it is flagged as <b>Needs Employee Info</b>.</p>
 <p>Built-in reports include Full PPE Register, Safety Shoes Register, Blanket
 Register, FRC Register, Coverall Register, By Employee, By Delivery Note,
 Missing Employee Codes and Synced Delivery Note PPE.</p>
+
+<h3>One file per document</h3>
+<p>A Delivery Note with pictures attached is still <b>one</b> PDF: the pictures
+are merged into the document itself and stored once under
+<span class="mono">Attachments/DN/&lt;DN number&gt;/</span>. AURCO never leaves a
+"with photos" or "without photos" second copy beside it. If an older version left
+extra copies behind, press <b>Documents → One File per Document</b> (or
+<b>Settings → Backup &amp; restore → Clean Duplicate Files</b>) once: the newest
+official file of every document is kept and the leftovers are removed. While
+File Protection is on, removed copies are moved into the folder's
+<span class="mono">_Archive</span> so nothing is ever destroyed.</p>
 """),
     ("Document Library", """
 <h2>Document Library — your scanned delivery notes</h2>

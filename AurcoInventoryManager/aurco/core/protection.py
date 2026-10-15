@@ -348,6 +348,7 @@ def archive_instead_of_delete(db: Database, path: str | Path,
     p = Path(path)
     if not p.exists():
         return None
+    ensure_schema(db)          # the book-keeping table must exist before we move
     archive = p.parent / ARCHIVE_DIR
     archive.mkdir(parents=True, exist_ok=True)
     stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")

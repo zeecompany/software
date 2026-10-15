@@ -364,12 +364,24 @@ def finalize_draft(db: Database, doc_id: int) -> None:
             else:
                 _post(db, ln["item_id"], "ISSUE", 0, ln["qty"], h, doc_id, d["doc_no"],
                       unit_cost=ln["unit_cost"], party=d["issued_to"])
-        db.execute("UPDATE documents SET status='FINAL', finalized_at=datetime('now','localtime')"
-                   " WHERE id=?", (doc_id,))
+        db.execute("UPDATE documents SET status='FINAL', pdf_path='',"
+                   " finalized_at=datetime('now','localtime') WHERE id=?", (doc_id,))
         db.commit()
     except Exception:
         db.rollback()
         raise
+    # One finalized Delivery Note = one file: drop any draft-folder render and
+    # any leftover copy an older build left behind for this document.
+    try:
+        from . import documents as D
+        fresh = db.one("SELECT * FROM documents WHERE id=?", (doc_id,))
+        if fresh is not None:
+            fresh_lines = db.query("SELECT * FROM document_lines WHERE doc_id=? ORDER BY id", (doc_id,))
+            keep = D.document_target_path(db, fresh, fresh_lines)
+            D.one_file_per_document(db, fresh, fresh_lines, keep_path=keep)
+            D.relocate_document_pdf(db, fresh, fresh_lines)
+    except Exception:                       # noqa: BLE001 — never block finalizing
+        pass
     db.audit("FINALIZED", d["doc_type"], d["doc_no"])
 
 

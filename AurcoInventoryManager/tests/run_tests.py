@@ -50,7 +50,7 @@ def fresh(tag: str):
 def main() -> int:
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QShortcut
-    from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog,
+    from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog,
                                    QLabel, QPushButton)
     from aurco.ui import widgets as W
 
@@ -663,6 +663,75 @@ def main() -> int:
     check(ppe_page.t_reg.rowCount() == 0 and ppe_page.t_synced.rowCount() == 0,
           "the PPE page refreshes both separate registers after Delete All")
 
+    # ---- PPE dashboard reports the register: DN sync must stay out of it
+    EP.save_record(_pdb, {"issue_date": "2026-10-01", "employee_code": "E-REG",
+                          "employee_name": "Register Only", "item_group": EP.GROUP_SHOES,
+                          "item_code": "PPE-SHOE-42", "item_desc": "Safety Shoes Size 42",
+                          "qty": 2, "uom": "PAIR", "source_type": EP.SOURCE_MANUAL})
+    EP.save_record(_pdb, {"issue_date": "2026-10-02", "employee_code": "E-DN",
+                          "employee_name": "Synced From DN", "item_group": EP.GROUP_COVERALL,
+                          "item_code": "PPE-FRC-L", "item_desc": "FRC Coverall XL",
+                          "qty": 4, "uom": "PCS", "dn_no": "DN-2026-00001",
+                          "source_type": EP.SOURCE_DN})
+    _scope = EP.dashboard_data(_pdb)
+    check(_scope["include_dn"] is False and _scope["synced"] == 0,
+          "PPE dashboard ignores DN-synced records by default")
+    check(_scope["total_records"] == _scope["manual_records"] == 1,
+          "PPE dashboard KPI totals count the register only")
+    check(_scope["dn_excluded_records"] == 1 and _scope["dn_excluded_qty"] == 4,
+          "PPE dashboard reports how many DN-synced records it left out")
+    _scope_all = EP.dashboard_data(_pdb, include_dn=True)
+    check(_scope_all["total_records"] == 2 and _scope_all["synced"] == 1
+          and _scope_all["active_dns"] == 1,
+          "PPE dashboard can still include DN-synced records on request")
+    ppe_page.reload_dashboard()
+    app.processEvents()
+    check(ppe_page.dash_source.isChecked() is False
+          and isinstance(ppe_page.dash_source, QCheckBox),
+          "the dashboard scope switch starts off (register only)")
+    check(ppe_page.dash_cards["synced"].isHidden() and ppe_page.card_source.isHidden(),
+          "DN tiles and the source split are hidden while DN rows are excluded")
+    ppe_page.dash_source.setChecked(True)
+    app.processEvents()
+    check(not ppe_page.dash_cards["synced"].isHidden() and not ppe_page.card_source.isHidden(),
+          "ticking Include DN-synced records brings the DN tiles back")
+    check("register only" in ppe_page.lbl_dash_scope.text().replace("&nbsp;", " ")
+          or "PPE register" in ppe_page.lbl_dash_scope.text(),
+          "the dashboard explains the scope of the numbers on screen")
+    ppe_page.dash_source.setChecked(False)
+    app.processEvents()
+
+    # ---- PPE register: import a sheet, then export the register
+    _reg_headers = ["Date", "Employee Code", "Employee Name", "Item Group", "Item Code",
+                    "Description", "Qty", "UOM", "Delivery Note No."]
+    _reg_rows = [["2026-10-05", "E-SHEET1", "Sheet One", EP.GROUP_BLANKET, "PPE-BLANKET-01",
+                  "Blanket Single Bed", "3", "PCS", ""],
+                 ["2026-10-06", "E-SHEET2", "Sheet Two", EP.GROUP_FRC, "PPE-FRC-L",
+                  "FRC Coverall XL", "1", "PCS", ""]]
+    _reg_map = EP.auto_map(_reg_headers)
+    check(_reg_map.get(1) == "employee_code" and _reg_map.get(6) == "qty"
+          and _reg_map.get(2) == "employee_name",
+          "register import recognises the sheet headings")
+    _reg_recs = EP.preview(_reg_headers, _reg_rows, _reg_map)
+    _ins, _skp = EP.import_records(_pdb, _reg_recs, "unit-test-register.xlsx")
+    check((_ins, _skp) == (2, 0), "register import adds the sheet rows")
+    check(all(r["source_type"] == EP.SOURCE_MANUAL
+              for r in EP.list_records(_pdb, text="E-SHEET")),
+          "sheet imports always land in the manual register, never as DN-synced rows")
+    _rt, _rc, _rr = EP.register_report(_pdb, {"text": ""})
+    check(_rt == "Employee PPE Register" and "Employee Code" in _rc and len(_rr) == 3,
+          "the register export carries the same columns and rows as the register tab")
+    _rx = D.export_excel(db, _rt, _rc, _rr)
+    check(_rx.exists() and _rx.stat().st_size > 2000, "the PPE register exports to Excel")
+    _rp = D.report_pdf(db, _rt, _rc, _rr)
+    check(_rp.exists() and _rp.stat().st_size > 2000, "the PPE register exports to PDF")
+    _rxml = EP.template_rows()
+    check(len(_rxml[0]) == len(EP.FIELDS) and _rxml[0][1] == "Employee Code",
+          "the register template carries the register columns")
+    ppe_page.reload_register()
+    app.processEvents()
+    check(ppe_page.t_reg.rowCount() == 3, "the register tab shows the imported rows")
+
     # ------------------------------------------------ export presentation
     section("PDF and Excel presentation")
     _t5, _c5, _r5 = reports.build_report(db, "Stock Valuation", {})
@@ -974,6 +1043,50 @@ def main() -> int:
     check(len(_drop_rows) == 1 and _drop_rows[0]["source"] == "drop"
           and _drop_rows[0]["page_order"] == 1,
           "drag-and-drop attachments are accepted for delivery-note documents")
+
+    # ---- one Delivery Note with a picture = exactly ONE file
+    from PIL import Image as _PI_one
+    _one_pic = att_dir / "dn_one_file_photo.png"
+    _PI_one.new("RGB", (520, 360), (210, 130, 40)).save(_one_pic)
+    _one_doc = db.one("SELECT * FROM documents WHERE doc_no=?", (dn2,))
+    _one_pdf = D.document_pdf(db, _one_doc["id"])
+    _one_folder = _one_pdf.parent
+    _stray = [_one_pdf.with_suffix(".merged.pdf"), _one_pdf.with_suffix(".count.pdf"),
+              _one_pdf.with_name(_one_pdf.name + ".tmp")]
+    for _j in _stray:                       # what an interrupted merge used to leave
+        shutil.copy2(_one_pdf, _j)
+    _old_folder_copy = config.folder("Reports") / _one_pdf.name
+    shutil.copy2(_one_pdf, _old_folder_copy)
+    D.write_document_reference(_old_folder_copy, _one_doc)
+    _doc_no = str(_one_doc["doc_no"])
+    def _copies_of(no: str = _doc_no) -> list:
+        return [p for p in _one_folder.glob("*.pdf") if no in p.name]
+    check(len(_copies_of()) >= 3 and _old_folder_copy.exists(),
+          "leftover copies of one Delivery Note are detectable before the sweep")
+    _one_info = D.one_file_per_document(db, _one_doc)
+    check(len(_one_info["removed"]) >= 4,
+          f"the one-file sweep removes every extra copy ({len(_one_info['removed'])} removed)")
+    check(len(_copies_of()) == 1,
+          "one Delivery Note = exactly one PDF file after the sweep")
+    check(Path(_one_info["kept"]) == _one_pdf, "the sweep keeps the official file")
+    check(not _old_folder_copy.exists()
+          and D.read_document_reference(_old_folder_copy) is None,
+          "copies left in older folders are removed with their sidecar")
+    _one_sweep = D.clean_duplicate_document_files(db, dry_run=True)
+    check(_one_sweep["files_removed"] == 0 and _one_sweep["error"] == "",
+          "a whole-storage sweep reports every document as single-file")
+    check(D.document_pdf(db, _one_doc["id"]) == _one_pdf and len(_copies_of()) == 1,
+          "re-rendering a document still leaves one file")
+    check(not list(_one_folder.glob("*.merged.pdf"))
+          and not list(_one_folder.glob("*.count.pdf")),
+          "merge / page-count work files are never written next to the document")
+    _scratch = _one_folder / "_temp"
+    check((not _scratch.exists()) or not list(_scratch.iterdir()),
+          "the renderer leaves no scratch files behind")
+    _staging = att_dir / "staging_probe.png"
+    _PI_one.new("RGB", (12, 12), (4, 5, 6)).save(_staging)
+    check(D.discard_staging_attachment(db, _staging) is True and not _staging.exists(),
+          "an unreferenced staging copy of a picture is dropped after filing")
 
     # ---- PR / MR labelling
     from aurco.core import header_design as _HD2

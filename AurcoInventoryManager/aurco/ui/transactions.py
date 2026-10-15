@@ -561,10 +561,14 @@ class _TxnPage(QWidget):
     def _register_attachments(self, doc_type: str, doc_no: str):
         for a in self.attachments:
             ent = self._attachment_entry(a)
-            final_path = D.store_document_attachment(doc_type, doc_no, ent["file_path"])
+            staged = Path(ent["file_path"])
+            final_path = D.store_document_attachment(doc_type, doc_no, staged)
             self.db.execute(
                 "INSERT INTO attachments(doc_type,doc_no,file_path,source,page_order) VALUES(?,?,?,?,?)",
                 (doc_type, doc_no, str(final_path), ent["source"], ent["page_order"]))
+            # The picture now lives under Attachments/<DOC TYPE>/<doc no>/ — drop
+            # the staging copy so one photo is not left behind twice.
+            D.discard_staging_attachment(self.db, staged)
         self.db.commit()
         self.attachments = []
         self._refresh_attach_label()
@@ -576,11 +580,18 @@ class _TxnPage(QWidget):
         d = self.db.one("SELECT id FROM documents WHERE doc_type=? AND doc_no=?",
                         (doc_type, doc_no))
         self.last_pdf = D.document_pdf(self.db, d["id"])
+        # One document = one file. Any extra copy of this document that an older
+        # build left behind (draft render, studio copy) is removed here.
+        info = D.one_file_per_document(self.db, self.db.one("SELECT * FROM documents WHERE id=?", (d["id"],)),
+                                       keep_path=self.last_pdf)
         self.lines.clear_lines()
         self.reset_form()
         self.dataChanged.emit()
         W.toast(self, msg)
-        if W.confirm(self, f"{msg}\n\nOpen the PDF now?", "Document ready"):
+        extra = (f"\n\n{len(info['removed'])} leftover copy(ies) of this document were removed — "
+                 "one file per Delivery Note." if info["removed"] else "")
+        if W.confirm(self, f"{msg}\n\nOne file: {self.last_pdf.name}{extra}\n\nOpen the PDF now?",
+                     "Document ready"):
             D.open_path(self.last_pdf)
 
     def reset_form(self):

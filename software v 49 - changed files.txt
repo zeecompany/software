@@ -1,0 +1,83 @@
+software v 49 / AURCO Inventory Manager v2.28.25
+
+EMPLOYEE PPE REGISTER — IMPORT + EXPORT ON THE REGISTER TAB
+
+1) REGISTER TAB gets its own sheet row
+   - Import Excel / CSV: reads the sheet, shows the detected column mapping for
+     review (change or ignore a column), skips duplicates, imports the rows as
+     register records; undo stays on the Import Sheet tab
+   - Template: empty Excel sheet with the register column headings
+   - Export this view: Excel | PDF | CSV | Print of the rows on screen, filters
+     included — same columns, same order, same totals as the other reports
+   - Synced DN Records tab got the same four export buttons
+   - a sheet import always lands in the register, never as a DN-synced record
+
+PPE DASHBOARD — NO LONGER PICKS UP DELIVERY-NOTE SYNCED DATA
+
+2) the dashboard reports the PPE REGISTER only (manual issues + sheet imports)
+   - DN-synced records are excluded from every tile, chart, month graph and the
+     latest-issues list
+   - the All Sources / MANUAL / DN selector is now one tick box:
+     "Include DN-synced records" — starts OFF
+   - while it is off the "Synced from DNs" and "Delivery Notes" tiles and the
+     Source Split chart are hidden
+   - a line under the tiles states the scope on screen, e.g. "Scope: PPE
+     register only — 12 DN-synced record(s) (46.00 qty) are excluded."
+   - ticking the box brings DN records into every number on the page again;
+     the DN tabs themselves are unchanged
+
+ONE DELIVERY NOTE = EXACTLY ONE FILE (WITH PICTURES)
+
+3) picture attachments no longer create a second "with photos" copy
+   - merge and page-count work files were written next to the finished PDF
+     (….merged.pdf / ….count.pdf / ….pdf.tmp) and were left behind when a save
+     was interrupted or the PDF was open elsewhere — that is what made one DN
+     look like three files. They now live in a _temp scratch folder and are
+     removed after every render
+   - if the PDF is open in another program the merger keeps the single official
+     file, logs a warning and reports it instead of leaving a second file
+   - the merged document is ONE PDF (document pages + picture pages)
+   - the picture is stored once under Attachments/DN/<DN number>/; the
+     clipboard/drop staging copy is deleted when the attachment is filed
+   - every render / finalize / re-print runs one_file_per_document(), keeping
+     the newest official file and removing any other copy of that document in
+     AURCO's folders (Reports, PDF Studio exports, " copy" duplicates)
+
+   Cleaning up copies already on disk:
+   - Documents -> "🧹 One File per Document" (selected document, or all)
+   - Settings -> Backup & restore -> "🧹 Clean Duplicate Files" (with dry-run
+     summary and confirmation)
+   - with File Protection on (default) removed duplicates go to the folder's
+     _Archive sub-folder, so nothing is destroyed; protection's bookkeeping
+     table is now created on demand (the first archive used to fail halfway)
+
+DEPENDENCY PIN
+
+4) requirements.txt: PySide6>=6.6,<6.12
+   - PySide6 6.12.0 aborts the interpreter with a fatal "none_dealloc" refcount
+     error as soon as a table cell is written with QTableWidgetItem.setData(),
+     which every AURCO list uses; 6.11 and older are fine
+
+FILES CHANGED (16)
+
+  aurco/core/config.py                  version 2.28.25
+  aurco/core/documents.py               one_file_per_document, clean_duplicate_document_files,
+                                        relocate_document_pdf, document_work_files,
+                                        document_temp_dir/path, commit_pdf_file,
+                                        discard_staging_attachment, stray-copy detection
+  aurco/core/employee_ppe.py            dashboard_data(include_dn=...), register_report
+  aurco/core/protection.py              ensure_schema before archiving
+  aurco/core/services.py                finalize_draft enforces one file, relocates the PDF
+  aurco/ui/documents_page.py            "One File per Document" button + cleanup report
+  aurco/ui/employee_ppe_page.py         register import/export row, column-mapping dialog,
+                                        dashboard scope tick box + hidden DN tiles
+  aurco/ui/general_dn.py                staging picture copy removed after filing
+  aurco/ui/settings_page.py             "Clean Duplicate Files" maintenance button
+  aurco/ui/transactions.py              one-file enforcement + staging cleanup in _after_post
+  aurco/ui/user_manual.py               PPE register import/export, dashboard scope,
+                                        one-file-per-document help
+  docs/USER_GUIDE.md                    section 3g updated (version 2.28.25)
+  packaging/installer.iss               version 2.28.25
+  packaging/version_info.txt            2.28.25.0
+  requirements.txt                      PySide6 pinned below 6.12
+  tests/run_tests.py                    26 new checks — ALL 1431 CHECKS PASSED

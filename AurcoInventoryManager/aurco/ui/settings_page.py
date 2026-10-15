@@ -337,7 +337,9 @@ class SettingsPage(QWidget):
         for _b in (W.button("💾  Backup Now", "Primary", self._backup_now),
                    W.button("♻  Restore Backup", "Danger", self._restore),
                    W.button("🩺  Validate Database", slot=self._validate),
-                   W.button("🔧  Rebuild Balances", slot=self._repair)):
+                   W.button("🔧  Rebuild Balances", slot=self._repair),
+                   W.button("🧹  Clean Duplicate Files", slot=self._clean_doc_files,
+                            tip="Keep exactly one PDF per document (one DN = one file)")):
             _b.setMinimumWidth(160)
             brow2.addWidget(_b)
         brow2.addStretch(1)
@@ -484,6 +486,29 @@ class SettingsPage(QWidget):
             n = self.db.repair_balances()
             W.info_box(self, f"{n} balance(s) rebuilt from the ledger.")
             self.settingsChanged.emit()
+
+    def _clean_doc_files(self):
+        """Keep exactly one PDF file for each document (one DN = one file)."""
+        from ..core import documents as D
+        summary = D.clean_duplicate_document_files(self.db, dry_run=True)
+        if not summary["documents"]:
+            W.info_box(self, f"{summary['checked']} document(s) checked — every document "
+                             "already has exactly one PDF file.", "One file per document")
+            return
+        names = "\n".join(f"• {i['doc_no']}  ({len(i['removed'])} duplicate file(s))"
+                          for i in summary["details"][:25])
+        if len(summary["details"]) > 25:
+            names += f"\n… and {len(summary['details']) - 25} more"
+        if not W.confirm(self, f"{summary['files_removed']} duplicate document file(s) found in "
+                               f"{summary['documents']} document(s):\n\n{names}\n\n"
+                               "Remove them and keep the newest official file for each document?",
+                         "Clean duplicate document files"):
+            return
+        done = D.clean_duplicate_document_files(self.db)
+        self.settingsChanged.emit()
+        W.info_box(self, f"{done['files_removed']} duplicate file(s) removed from "
+                         f"{done['documents']} document(s).\n\nEvery document now has exactly "
+                         "one PDF in its folder.", "Cleanup finished")
 
     def _net_guide(self):
         from PySide6.QtWidgets import QDialog, QDialogButtonBox, QPlainTextEdit

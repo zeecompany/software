@@ -438,6 +438,61 @@ def _render_band(canvas, doc, db: Database, design: dict, ctx: dict, *,
         cursor -= gap
 
 
+def document_temp_dir(final_path: str | Path) -> Path:
+    """Scratch folder for AURCO's own PDF work files, beside the document.
+
+    Rendering a page-count probe or merging attachment pages used to write the
+    work file next to the finished PDF, so an interrupted save or a PDF that was
+    open in another program left extra files behind (``….count.pdf``,
+    ``….merged.pdf``, ``….pdf.tmp``) — which is why one Delivery Note could look
+    like three files in the folder. Work files now live in ``_temp``.
+    """
+    folder = Path(final_path).parent
+    scratch = folder / "_temp"
+    try:
+        scratch.mkdir(parents=True, exist_ok=True)
+        return scratch
+    except OSError:
+        return folder
+
+
+def document_temp_path(final_path: str | Path, tag: str) -> Path:
+    p = Path(final_path)
+    return document_temp_dir(p) / f"{p.stem}.{tag}.pdf"
+
+
+def commit_pdf_file(tmp: str | Path, dest: str | Path, tries: int = 4) -> bool:
+    """Move a finished PDF into place, tolerating a reader holding it open."""
+    import time as _time
+    tmp = Path(tmp)
+    dest = Path(dest)
+    for attempt in range(max(1, tries)):
+        try:
+            tmp.replace(dest)
+            _drop_empty_temp(tmp.parent)
+            return True
+        except OSError:
+            _time.sleep(0.15 * (attempt + 1))
+    try:                       # last resort: copy over the top, then clean up
+        shutil.copyfile(tmp, dest)
+        tmp.unlink()
+        _drop_empty_temp(tmp.parent)
+        return True
+    except OSError:
+        return False
+
+
+def _drop_empty_temp(folder: str | Path) -> None:
+    """Leave no empty _temp folder behind after a clean render."""
+    d = Path(folder)
+    if d.name != "_temp":
+        return
+    try:
+        d.rmdir()
+    except OSError:
+        pass
+
+
 def _build_with_totals(out: Path, story, land: bool, db: Database, doc_type: str,
                        make_hf) -> None:
     """Build twice when the design needs a page total, once otherwise."""
@@ -459,7 +514,7 @@ def _build_with_totals(out: Path, story, land: bool, db: Database, doc_type: str
         def afterPage(self):
             counter["n"] = self.page
 
-    tmp = out.with_suffix(".count.pdf")
+    tmp = document_temp_path(out, "count")
     c = _Counter(str(tmp), pagesize=_doc(out, land, db, doc_type).pagesize,
                  topMargin=_doc(out, land, db, doc_type).topMargin,
                  bottomMargin=_doc(out, land, db, doc_type).bottomMargin,
@@ -474,6 +529,7 @@ def _build_with_totals(out: Path, story, land: bool, db: Database, doc_type: str
             tmp.unlink()
         except OSError:
             pass
+        _drop_empty_temp(tmp.parent)
     _doc(out, land, db, doc_type).build(story, onFirstPage=make_hf(total),
                                         onLaterPages=make_hf(total))
 
@@ -1011,6 +1067,59 @@ def read_document_reference(path: str | Path) -> dict[str, Any] | None:
     return data
 
 
+def document_work_files(db: Database, doc_row, lines=None) -> list[Path]:
+    """AURCO's own work files for one document, safe to delete any time.
+
+    Covers the ``_temp`` scratch folder plus anything an older build wrote next
+    to the official PDF while merging pictures or counting pages.
+    """
+    if doc_row is None:
+        return []
+    dtype = _doc_field(doc_row, "doc_type")
+    doc_no = _doc_field(doc_row, "doc_no")
+    lines = lines if lines is not None else []
+    try:
+        base = document_basename(db, doc_row, lines)
+        rev_base = reversed_document_basename(db, doc_row, lines)
+    except Exception:                       # noqa: BLE001
+        base = str(doc_no)
+        rev_base = str(doc_no)
+    stems = {Path(base).stem, Path(rev_base).stem, str(doc_no)}
+    out: list[Path] = []
+    for status in ("FINAL", "DRAFT", "REVERSED"):
+        try:
+            folder = document_output_folder(dtype, status)
+        except Exception:                   # noqa: BLE001
+            continue
+        for stem in list(stems):
+            if not stem:
+                continue
+            for pat in (f"{stem}.merged.pdf", f"{stem}.count.pdf", f"{stem}.pdf.tmp",
+                        f"{stem}.tmp"):
+                out.append(folder / pat)
+        scratch = folder / "_temp"
+        try:
+            if scratch.exists():
+                for p in list(scratch.glob("*.pdf")) + list(scratch.glob("*.tmp")):
+                    if not p.is_file():
+                        continue
+                    if any(stem and p.name.startswith(stem + ".") for stem in stems):
+                        out.append(p)
+        except OSError:
+            pass
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for p in out:
+        try:
+            key = str(p)
+        except OSError:
+            continue
+        if key not in seen:
+            seen.add(key)
+            uniq.append(p)
+    return uniq
+
+
 def _candidate_document_paths(db: Database, doc_row, lines) -> list[Path]:
     dtype = _doc_field(doc_row, "doc_type")
     status = _doc_field(doc_row, "status").upper() or "FINAL"
@@ -1056,6 +1165,155 @@ def resolve_document_pdf_path(db: Database, doc_row, lines=None, update: bool = 
     return None
 
 
+def _managed_document_roots() -> list[Path]:
+    """Folders AURCO itself writes document PDFs into.
+
+    Used to recognise an old copy of a document that AURCO produced and that
+    should not still be lying around next to the single official file.
+    """
+    roots: list[Path] = []
+    for name in set(DOC_FOLDERS.values()) | set(DRAFT_DOC_FOLDERS.values()) | \
+            set(REVERSED_DOC_FOLDERS.values()) | {"Reports"}:
+        try:
+            roots.append(config.folder(name))
+        except Exception:
+            continue
+    try:
+        roots.append(config.get_storage_root())
+    except Exception:
+        pass
+    try:                       # PDF Studio export folder (bound copies land here)
+        from . import pdf_tools as PT
+        roots.append(PT.PDF_EXPORT_DIR)
+    except Exception:
+        pass
+    out: list[Path] = []
+    seen: set[str] = set()
+    for p in roots:
+        try:
+            key = str(Path(p).resolve())
+        except OSError:
+            key = str(p)
+        if key not in seen:
+            seen.add(key)
+            out.append(Path(p))
+    return out
+
+
+def document_stray_files(db: Database, doc_row, lines=None) -> list[Path]:
+    """Copies of one document that sit outside its official document folders.
+
+    A file only qualifies when AURCO can prove it produced it for *this*
+    document: either the sidecar reference AURCO writes next to every document
+    PDF names the same document, or the file lives directly in one of AURCO's
+    own document / export folders and carries the document number in its name.
+    Files outside the app's storage are never touched.
+    """
+    if doc_row is None:
+        return []
+    dtype = _doc_field(doc_row, "doc_type")
+    doc_no = _doc_field(doc_row, "doc_no")
+    doc_id = _doc_field(doc_row, "id")
+    if not doc_no:
+        return []
+    roots = _managed_document_roots()
+    official: set[str] = set()
+    for status in ("FINAL", "DRAFT", "REVERSED"):
+        try:
+            official.add(str(document_output_folder(dtype, status).resolve()))
+        except OSError:
+            official.add(str(document_output_folder(dtype, status)))
+    keep_names = {"", }
+    saved = _doc_field(doc_row, "pdf_path")
+    try:
+        nospace = "".join(str(doc_no).split()).lower()
+    except Exception:
+        nospace = ""
+    found: list[Path] = []
+    for root in roots:
+        try:
+            if not root.exists():
+                continue
+            hits = root.glob("*.pdf")
+        except OSError:
+            continue
+        for cand in hits:
+            try:
+                if not cand.is_file():
+                    continue
+                parent_key = str(cand.parent.resolve())
+            except OSError:
+                continue
+            ref = read_document_reference(cand)
+            same_doc = bool(ref) and (
+                (doc_id and str(ref.get("doc_id", "")) == str(doc_id))
+                or (str(ref.get("doc_type", "")) == str(dtype)
+                    and str(ref.get("doc_no", "")) == str(doc_no)))
+            named = bool(nospace) and nospace in "".join(cand.stem.split()).lower()
+            if saved and str(cand) == str(saved):
+                same_doc = True
+            if parent_key in official:
+                continue                      # handled by purge_document_files
+            if not (same_doc or (named and _is_managed_folder(cand, roots))):
+                continue
+            found.append(cand)
+    out: list[Path] = []
+    seen: set[str] = set()
+    for cand in found:
+        try:
+            key = str(cand.resolve())
+        except OSError:
+            key = str(cand)
+        if key not in seen:
+            seen.add(key)
+            out.append(cand)
+    return out
+
+
+def _is_managed_folder(path: Path, roots: list[Path]) -> bool:
+    """True when the file sits directly in an AURCO folder (not in a user folder)."""
+    try:
+        parent = path.parent.resolve()
+    except OSError:
+        parent = path.parent
+    for root in roots:
+        try:
+            if root.resolve() == parent:
+                return True
+        except OSError:
+            if root == parent:
+                return True
+    return False
+
+
+def _delete_document_file(path: Path, db: Database | None = None) -> bool:
+    """Remove one stale/duplicate document file (archiving it when protection is on)."""
+    refers = True
+    try:                       # work files were never registered as a document
+        refers = read_document_reference(path) is not None or path.suffix.lower() == ".pdf"
+    except Exception:          # noqa: BLE001
+        refers = True
+    if refers:
+        remove_document_reference(path)
+    if not path.exists() or not path.is_file():
+        return False
+    if db is not None:
+        try:
+            from . import protection as P
+            if P.is_enabled(db):
+                P.archive_instead_of_delete(
+                    db, path, "duplicate copy of a document — one file per document")
+        except Exception:      # noqa: BLE001 — protection is optional
+            pass
+        if not path.exists():  # archived: the folder is clean either way
+            return True
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def purge_document_files(db: Database, doc_row, lines=None, keep_path: str | Path | None = None) -> int:
     """Remove stale official PDFs/sidecars for one document, keeping at most one.
 
@@ -1087,14 +1345,185 @@ def purge_document_files(db: Database, doc_row, lines=None, keep_path: str | Pat
             file_key = str(cand)
         if parent_key not in official_folders or file_key == keep:
             continue
-        remove_document_reference(cand)
-        try:
-            if cand.exists() and cand.is_file():
-                cand.unlink()
-                removed += 1
-        except OSError:
-            pass
+        if _delete_document_file(cand, db):
+            removed += 1
     return removed
+
+
+def one_file_per_document(db: Database, doc_row, lines=None, keep_path: str | Path | None = None,
+                          dry_run: bool = False) -> dict[str, Any]:
+    """Reduce one document to a single PDF file on disk.
+
+    AURCO always renders a document into exactly one official file, but older
+    versions (and the PDF Studio export folder) could leave extra copies behind:
+    a draft render, a pre-photo render, a reprint copy or a studio duplicate.
+    This routine keeps the newest official file and reports every other copy of
+    the same document that it removed, so one Delivery Note can never look like
+    three files in the folder.
+
+    Returns ``{"doc_no", "doc_type", "kept", "removed": [paths], "scanned": n}``.
+    """
+    info: dict[str, Any] = {"doc_no": _doc_field(doc_row, "doc_no"), "doc_type": _doc_field(doc_row, "doc_type"),
+                            "kept": "", "removed": [], "scanned": 0}
+    if doc_row is None:
+        return info
+    doc_id = _doc_field(doc_row, "id")
+    if lines is None and doc_id:
+        lines = db.query("SELECT * FROM document_lines WHERE doc_id=? ORDER BY id", (doc_id,))
+    lines = lines or []
+    keep = Path(keep_path) if keep_path else None
+    if keep is None or not keep.exists():
+        saved = _doc_field(doc_row, "pdf_path")
+        target = document_target_path(db, doc_row, lines)
+        if saved and Path(saved).exists():
+            keep = Path(saved)
+        elif target.exists():
+            keep = target
+        else:
+            keep = resolve_document_pdf_path(db, doc_row, lines, update=False)
+    if keep is not None and keep.exists():
+        info["kept"] = str(keep)
+    official: list[Path] = [c for c in _candidate_document_paths(db, doc_row, lines) if c.exists()]
+    strays = document_stray_files(db, doc_row, lines)
+    work = [c for c in document_work_files(db, doc_row, lines) if c.exists()]
+    extra = [c for c in (official + strays + work)]
+    info["scanned"] = len(extra)
+    if (keep is None or not keep.exists()) and extra:
+        # Nothing was resolved as the official file — never wipe every copy:
+        # keep the newest one and report the rest.
+        keep = max(extra, key=lambda p: p.stat().st_mtime)
+        info["kept"] = str(keep)
+    for cand in extra:
+        if keep is not None and _same_file(cand, keep):
+            continue
+        if dry_run:
+            info["removed"].append(str(cand))
+            continue
+        if _delete_document_file(cand, db):
+            info["removed"].append(str(cand))
+    if info["removed"] and not dry_run:
+        db.audit("CLEANED", info["doc_type"] or "DOC", info["doc_no"] or str(doc_id),
+                 f"{len(info['removed'])} duplicate file(s) removed — kept "
+                 f"{Path(info['kept']).name if info['kept'] else 'none'}")
+    return info
+
+
+def _same_file(a: str | Path, b: str | Path) -> bool:
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return Path(a) == Path(b)
+
+
+def relocate_document_pdf(db: Database, doc_row, lines=None) -> Path | None:
+    """Move a document's PDF into the folder its status belongs to.
+
+    A draft render that survived into the finalized document, or a file left in
+    an old folder by a previous version, is moved to the official folder so the
+    user always finds the Delivery Note in ``Delivery Notes`` — once.
+    """
+    if doc_row is None:
+        return None
+    if lines is None and _doc_field(doc_row, "id"):
+        lines = db.query("SELECT * FROM document_lines WHERE doc_id=? ORDER BY id", (doc_row["id"],))
+    lines = lines or []
+    current = None
+    saved = _doc_field(doc_row, "pdf_path")
+    if saved and Path(saved).exists():
+        current = Path(saved)
+    if current is None:
+        current = resolve_document_pdf_path(db, doc_row, lines, update=False)
+    if current is None or not current.exists():
+        return None
+    target = document_target_path(db, doc_row, lines)
+    if _same_file(current, target):
+        return current
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() and not _same_file(target, current):
+            _delete_document_file(target, db)
+        shutil.move(str(current), str(target))
+    except (OSError, shutil.Error):
+        return current
+    remove_document_reference(current)
+    fresh = db.one("SELECT * FROM documents WHERE id=?", (_doc_field(doc_row, "id"),)) or doc_row
+    db.execute("UPDATE documents SET pdf_path=? WHERE id=?", (str(target), _doc_field(doc_row, "id")))
+    db.commit()
+    write_document_reference(target, fresh)
+    db.audit("MOVED", _doc_field(fresh, "doc_type") or "DOC", _doc_field(fresh, "doc_no"),
+             f"{current.name} -> {target.parent.name}/{target.name}")
+    return target
+
+
+def clean_duplicate_document_files(db: Database, doc_types: Sequence[str] = (),
+                                   dry_run: bool = False, limit: int = 0) -> dict[str, Any]:
+    """Sweep every document (or the given types) and keep one file per document.
+
+    Used by Documents → Clean Duplicate Files and by Settings → Maintenance so a
+    storage folder that collected extra copies from older builds is tidied up in
+    one click. Returns a summary with the per-document removals.
+    """
+    types = [str(t).upper() for t in (doc_types or ()) if str(t).strip()]
+    sql = "SELECT * FROM documents"
+    params: list[Any] = []
+    if types:
+        sql += " WHERE doc_type IN (%s)" % ",".join("?" * len(types))
+        params += types
+    sql += " ORDER BY id DESC"
+    if limit and limit > 0:
+        sql += f" LIMIT {int(limit)}"
+    docs = db.query(sql, tuple(params))
+    summary: dict[str, Any] = {"checked": 0, "documents": 0, "files_removed": 0,
+                               "details": [], "dry_run": bool(dry_run), "error": ""}
+    for d in docs:
+        lines = db.query("SELECT * FROM document_lines WHERE doc_id=? ORDER BY id", (d["id"],))
+        try:
+            info = one_file_per_document(db, d, lines, dry_run=dry_run)
+        except Exception as exc:                     # noqa: BLE001 — never break a sweep
+            summary["error"] = str(exc)
+            continue
+        summary["checked"] += 1
+        if info["removed"]:
+            summary["documents"] += 1
+            summary["files_removed"] += len(info["removed"])
+            summary["details"].append(info)
+    return summary
+
+
+def discard_staging_attachment(db: Database, path: str | Path) -> bool:
+    """Delete a staging copy of a picture once the real attachment is filed.
+
+    Adding a photo copies it into the Attachments folder first and then files it
+    under ``Attachments/<DOC TYPE>/<doc no>/``. Without this the staging copy
+    stayed behind, so one picture looked like several files. Only unreferenced
+    files sitting directly in the Attachments root are removed.
+    """
+    p = Path(path)
+    try:
+        root = config.folder("Attachments").resolve()
+        if p.parent.resolve() != root:
+            return False
+    except OSError:
+        return False
+    if not p.exists() or not p.is_file():
+        return False
+    try:
+        used = db.scalar("SELECT COUNT(*) FROM attachments WHERE file_path=?", (str(p),))
+    except Exception:                                # noqa: BLE001 — table always exists here
+        used = 1
+    if int(used or 0) > 0:
+        return False
+    try:
+        other = db.scalar("SELECT COUNT(*) FROM documents WHERE pdf_path=?", (str(p),))
+    except Exception:                                # noqa: BLE001
+        other = 0
+    if int(other or 0) > 0:
+        return False
+    try:
+        p.unlink()
+        return True
+    except OSError:
+        return False
 
 
 def document_binding_for_path(db: Database | None, path: str | Path) -> dict[str, Any] | None:
@@ -1221,10 +1650,23 @@ def _append_attachments(db: Database, doc_type: str, doc_no: str, pdf_path: Path
             continue
 
     if added:
-        tmp = pdf_path.with_suffix(".merged.pdf")
+        tmp = document_temp_path(pdf_path, "merged")
         with open(tmp, "wb") as fh:
             writer.write(fh)
-        tmp.replace(pdf_path)
+        if commit_pdf_file(tmp, pdf_path):
+            return added
+        # The finished PDF is open in another program (Acrobat, a browser...).
+        # Put the page count back to what was really merged, keep the single
+        # official file untouched and tell the user instead of leaving a second
+        # "with photos" file lying next to the document.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        db.audit("WARNED", "document", Path(pdf_path).name,
+                 f"{added} attachment page(s) could not be merged — the PDF is open in "
+                 "another program. Close it and open the document again.")
+        return 0
     return added
 
 
@@ -1478,6 +1920,7 @@ def document_pdf(db: Database, doc_id: int, out_path: str | Path | None = None,
                 except OSError:
                     pass
         purge_document_files(db, fresh, lines, keep_path=out)
+        one_file_per_document(db, fresh, lines, keep_path=out)
     db.audit("PRINTED", dtype, d["doc_no"],
              f"PDF -> {out.name}" + (f" (+{n_att} attachment page(s))" if n_att else ""))
     return out

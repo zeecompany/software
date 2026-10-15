@@ -586,17 +586,39 @@ def purge_stale_synced_records(main_db: Database, ppe_db: PPEIssueDB, doc_ids: S
     return len(stale_ids)
 
 
-def dashboard_data(db: PPEIssueDB, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+def dashboard_data(db: PPEIssueDB, filters: dict[str, Any] | None = None,
+                   include_dn: bool = False) -> dict[str, Any]:
+    """KPIs and charts for the PPE dashboard.
+
+    The dashboard reports the PPE **register**: manual issues plus rows imported
+    from an Excel / CSV sheet. Records that AURCO pulled in automatically from a
+    Delivery Note (`source_type = DN`) are kept on their own tabs and are only
+    counted here when the caller asks for them with ``include_dn=True``, so DN
+    activity can never be mistaken for register / issue activity.
+    """
     filters = filters or {}
+    source = str(filters.get("source_type", "") or "").strip().upper()
+    if not include_dn:
+        source = SOURCE_MANUAL
+    elif source == SOURCE_MANUAL:
+        source = SOURCE_MANUAL
     rows = list_records(
         db,
         text=str(filters.get("text", "") or ""),
         item_group=str(filters.get("item_group", "") or ""),
         status=str(filters.get("status", "") or ""),
-        source_type=str(filters.get("source_type", "") or ""),
+        source_type=source,
         date_from=str(filters.get("date_from", "") or ""),
         date_to=str(filters.get("date_to", "") or ""),
     )
+    dn_only = [r for r in list_records(
+        db,
+        item_group=str(filters.get("item_group", "") or ""),
+        status=str(filters.get("status", "") or ""),
+        source_type=SOURCE_DN,
+        date_from=str(filters.get("date_from", "") or ""),
+        date_to=str(filters.get("date_to", "") or ""),
+    )] if not include_dn else []
     group_count = {g: 0 for g in GROUPS}
     group_qty = {g: 0.0 for g in GROUPS}
     status_count = {s: 0 for s in STATUSES}
@@ -709,7 +731,25 @@ def dashboard_data(db: PPEIssueDB, filters: dict[str, Any] | None = None) -> dic
         "top_projects": _top(project_qty),
         "top_projects_count": _top(project_count),
         "recent": recent,
+        # ---- scope of this view (the dashboard is register-only by default)
+        "include_dn": bool(include_dn),
+        "dn_excluded_records": len(dn_only),
+        "dn_excluded_qty": round(sum(float(r.get("qty") or 0) for r in dn_only), 2),
     }
+
+
+def register_report(db: PPEIssueDB, filters: dict[str, Any] | None = None,
+                    source_type: str = SOURCE_MANUAL) -> tuple[str, list[str], list[list[Any]]]:
+    """The register exactly as shown on screen, ready for Excel / PDF / CSV / print.
+
+    The Register tab exports what the user is looking at: the same filters, the
+    same columns and the same order as the table above the buttons.
+    """
+    f = dict(filters or {})
+    f["source_type"] = source_type or SOURCE_MANUAL
+    title, cols, rows = build_report(db, "Full PPE Register", f)
+    label = "Employee PPE Register" if source_type != SOURCE_DN else "Employee PPE — synced DN records"
+    return label, cols, rows
 
 
 def _existing_dn_lines(db: PPEIssueDB) -> set[tuple[int, int]]:

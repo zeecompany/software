@@ -106,6 +106,62 @@ class IssueDialog(QDialog):
         self.accept()
 
 
+class SheetMapDialog(QDialog):
+    """Review / correct which sheet column feeds which PPE field.
+
+    AURCO recognises the usual headings automatically; this dialog lets the user
+    fix the odd column (or ignore one) before the rows are imported.
+    """
+
+    def __init__(self, headers: list[str], mapping: dict[int, str], parent=None,
+                 title: str = "Import PPE sheet", sample: list[list] | None = None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(720, 520)
+        v = QVBoxLayout(self)
+        info = QLabel(
+            "Check the columns AURCO found. Change any column that is mapped to the "
+            "wrong field, or set it to <i>Ignore</i>."
+        )
+        info.setWordWrap(True)
+        v.addWidget(info)
+        grid = QGridLayout()
+        grid.addWidget(QLabel("<b>Sheet column</b>"), 0, 0)
+        grid.addWidget(QLabel("<b>Example value</b>"), 0, 1)
+        grid.addWidget(QLabel("<b>PPE field</b>"), 0, 2)
+        self.boxes: dict[int, QComboBox] = {}
+        options = ["Ignore"] + [lbl for _, lbl in P.FIELDS]
+        self._label_to_field = {lbl: fld for fld, lbl in P.FIELDS}
+        sample = sample or []
+        for i, h in enumerate(headers):
+            grid.addWidget(QLabel(str(h or f"Column {i + 1}")))
+            example = ""
+            for row in sample[:1]:
+                if i < len(row):
+                    example = str(row[i])
+            grid.addWidget(QLabel(example[:40]))
+            box = W.combo(options)
+            box.setCurrentText(P.LABELS.get(mapping.get(i, ""), "Ignore"))
+            self.boxes[i] = box
+            grid.addWidget(box)
+        holder = QWidget()
+        holder.setLayout(grid)
+        v.addWidget(holder, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    def mapping(self) -> dict[int, str]:
+        out: dict[int, str] = {}
+        for i, box in self.boxes.items():
+            lbl = box.currentText()
+            fld = self._label_to_field.get(lbl)
+            if fld:
+                out[i] = fld
+        return out
+
+
 class PPEImportTab(QWidget):
     imported = Signal()
 
@@ -307,29 +363,51 @@ class EmployeePPEPage(QWidget):
             "text": self.dash_text.text().strip() if hasattr(self, "dash_text") else "",
             "item_group": "" if self.dash_group.currentIndex() == 0 else self.dash_group.currentText(),
             "status": "" if self.dash_status.currentIndex() == 0 else self.dash_status.currentText(),
-            "source_type": "" if self.dash_source.currentIndex() == 0 else self.dash_source.currentText(),
             "date_from": date_from,
             "date_to": date_to,
         }
+
+    def _dashboard_includes_dn(self) -> bool:
+        box = getattr(self, "dash_source", None)
+        return bool(box is not None and box.isChecked())
 
     def _dashboard_measure_key(self) -> str:
         return "count" if self.dash_measure.currentText() == "Measure: Line count" else "qty"
 
     def reset_dashboard_filters(self):
-        for wd in (self.dash_group, self.dash_status, self.dash_source,
-                   self.dash_period, self.dash_measure):
+        for wd in (self.dash_group, self.dash_status, self.dash_period, self.dash_measure):
             wd.blockSignals(True)
             wd.setCurrentIndex(0)
             wd.blockSignals(False)
+        self.dash_source.blockSignals(True)
+        self.dash_source.setChecked(False)          # register only, DN rows excluded
+        self.dash_source.blockSignals(False)
         self.dash_text.blockSignals(True)
         self.dash_text.clear()
         self.dash_text.blockSignals(False)
+        self._apply_dashboard_scope()
         self.reload_dashboard()
 
     def _dashboard_group_clicked(self, group: str):
         idx = self.dash_group.findText(group)
         if idx >= 0:
             self.dash_group.setCurrentIndex(idx)
+
+    def _dashboard_scope_changed(self):
+        self._apply_dashboard_scope()
+        self.reload_dashboard()
+
+    def _apply_dashboard_scope(self):
+        """Show the DN tiles only when the user asks to include DN-synced rows."""
+        if not hasattr(self, "dash_cards"):
+            return
+        show_dn = self._dashboard_includes_dn()
+        for key in ("synced", "active_dns"):
+            card = self.dash_cards.get(key)
+            if card is not None:
+                card.setVisible(show_dn)
+        if hasattr(self, "card_source"):
+            self.card_source.setVisible(show_dn)
 
     def _dashboard_tab(self):
         page = QWidget()
@@ -338,9 +416,10 @@ class EmployeePPEPage(QWidget):
         outer.setSpacing(10)
 
         banner = QLabel(
-            "🦺  <b>PPE Intelligence Dashboard</b> — live overview of shoes, blankets, FRCs, "
-            "coveralls and other employee-issued welfare items, including separate tracking "
-            "for records synced from Delivery Notes."
+            "🦺  <b>PPE Intelligence Dashboard</b> — the PPE register at a glance: shoes, "
+            "blankets, FRCs, coveralls and other employee-issued welfare items you entered "
+            "manually or imported from a sheet. Delivery Note synced rows are excluded here "
+            "and stay on the <b>Synced DN Records</b> tab."
         )
         banner.setWordWrap(True)
         banner.setStyleSheet(
@@ -352,15 +431,19 @@ class EmployeePPEPage(QWidget):
         self.dash_text = W.SearchBox("Filter employee, project, item, DN...")
         self.dash_group = W.combo(["All Groups"] + P.GROUPS)
         self.dash_status = W.combo(["All Status"] + P.STATUSES)
-        self.dash_source = W.combo(["All Sources", "MANUAL", "DN"])
+        self.dash_source = QCheckBox("Include DN-synced records")
+        self.dash_source.setToolTip(
+            "Off (default): the dashboard shows the PPE register only — manual issues and\n"
+            "Excel / CSV sheet imports. Delivery Note synced rows stay on their own tabs.")
         self.dash_period = W.combo(["All time", "This month", "Last 3 months", "Last 6 months",
                                     "This year", "Last 12 months"])
         self.dash_measure = W.combo(["Measure: Quantity", "Measure: Line count"])
+        self.dash_source.toggled.connect(self._dashboard_scope_changed)
         for wd in (self.dash_text, self.dash_group, self.dash_status, self.dash_source,
                    self.dash_period, self.dash_measure):
-            if hasattr(wd, "textChanged"):
+            if isinstance(wd, W.SearchBox):
                 wd.textChanged.connect(self.reload_dashboard)
-            else:
+            elif not isinstance(wd, QCheckBox):
                 wd.currentTextChanged.connect(self.reload_dashboard)
             flt.addWidget(wd)
         flt.addWidget(W.button("↺ Reset", slot=self.reset_dashboard_filters))
@@ -396,6 +479,10 @@ class EmployeePPEPage(QWidget):
             cg.addWidget(card, i // 4, i % 4)
             self.dash_cards[key] = card
         v.addLayout(cg)
+        self.lbl_dash_scope = QLabel()
+        self.lbl_dash_scope.setWordWrap(True)
+        self.lbl_dash_scope.setStyleSheet(f"color:{W.MUTED};")
+        v.addWidget(self.lbl_dash_scope)
         self.k_total = self.dash_cards["total_records"].lbl_value
         self.k_emp = self.dash_cards["employees"].lbl_value
         self.k_sync = self.dash_cards["synced"].lbl_value
@@ -411,11 +498,12 @@ class EmployeePPEPage(QWidget):
         self.ch_status = W.DonutChart()
         c2.add(self.ch_status)
         r1.addWidget(c2, 1)
-        c3 = W.Card("Source Split")
+        self.card_source = W.Card("Source Split")
         self.ch_source = W.DonutChart()
-        c3.add(self.ch_source)
-        r1.addWidget(c3, 1)
+        self.card_source.add(self.ch_source)
+        r1.addWidget(self.card_source, 1)
         v.addLayout(r1)
+        self._apply_dashboard_scope()
 
         r2 = QHBoxLayout(); r2.setSpacing(12)
         c4 = W.Card("Issued vs Returned by Month")
@@ -484,6 +572,20 @@ class EmployeePPEPage(QWidget):
         act.addWidget(W.button("🔄  Refresh", slot=self.refresh_all))
         act.addStretch(1)
         v.addLayout(act)
+
+        sheet = QHBoxLayout()
+        sheet.addWidget(W.button("⬆  Import Excel / CSV...", "Primary", self.import_register_sheet,
+                                 tip="Bring a PPE sheet straight into this register"))
+        sheet.addWidget(W.button("⬇  Template", slot=self.download_register_template,
+                                 tip="Empty Excel template with the register columns"))
+        sheet.addWidget(QLabel("Export this view:"))
+        sheet.addWidget(W.button("📊  Excel", slot=lambda: self.export_register("xlsx")))
+        sheet.addWidget(W.button("📄  PDF", slot=lambda: self.export_register("pdf")))
+        sheet.addWidget(W.button("🧾  CSV", slot=lambda: self.export_register("csv")))
+        sheet.addWidget(W.button("🖨  Print", slot=lambda: self.export_register("print")))
+        sheet.addStretch(1)
+        v.addLayout(sheet)
+
         self.t_reg = W.DataTable()
         self.t_reg.doubleClicked.connect(self.edit_issue)
         v.addWidget(self.t_reg, 1)
@@ -523,6 +625,14 @@ class EmployeePPEPage(QWidget):
         act.addWidget(W.button("🔄  Refresh", slot=self.refresh_all))
         act.addStretch(1)
         v.addLayout(act)
+        sheet = QHBoxLayout()
+        sheet.addWidget(QLabel("Export this view:"))
+        sheet.addWidget(W.button("📊  Excel", slot=lambda: self.export_register("xlsx", synced=True)))
+        sheet.addWidget(W.button("📄  PDF", slot=lambda: self.export_register("pdf", synced=True)))
+        sheet.addWidget(W.button("🧾  CSV", slot=lambda: self.export_register("csv", synced=True)))
+        sheet.addWidget(W.button("🖨  Print", slot=lambda: self.export_register("print", synced=True)))
+        sheet.addStretch(1)
+        v.addLayout(sheet)
         self.t_synced = W.DataTable()
         self.t_synced.doubleClicked.connect(self.edit_synced_issue)
         v.addWidget(self.t_synced, 1)
@@ -593,7 +703,8 @@ class EmployeePPEPage(QWidget):
             self.importer.reload()
 
     def reload_dashboard(self):
-        d = P.dashboard_data(self.pdb, self._dashboard_filters())
+        include_dn = self._dashboard_includes_dn()
+        d = P.dashboard_data(self.pdb, self._dashboard_filters(), include_dn=include_dn)
         self.dash_cards["total_records"].set_value(f"{d['total_records']:,}", "records in current view")
         self.dash_cards["employees"].set_value(f"{d['employees']:,}", "distinct employee codes / names")
         self.dash_cards["total_qty"].set_value(f"{d['total_qty']:,.2f}", "all issued quantities")
@@ -602,6 +713,18 @@ class EmployeePPEPage(QWidget):
         self.dash_cards["synced"].set_value(f"{d['synced']:,}", f"manual records {d['manual_records']:,}")
         self.dash_cards["active_dns"].set_value(f"{d['active_dns']:,}", "distinct Delivery Notes")
         self.dash_cards["missing_info"].set_value(f"{d['missing_info']:,}", "needs employee code or name")
+        if hasattr(self, "lbl_dash_scope"):
+            if include_dn:
+                self.lbl_dash_scope.setText(
+                    "Scope: PPE register <b>+ DN-synced records</b> — the DN tiles and the "
+                    "source split above include everything the sync created.")
+            else:
+                extra = (f" {d['dn_excluded_records']:,} DN-synced record(s) "
+                         f"({d['dn_excluded_qty']:,.2f} qty) are excluded."
+                         if d.get("dn_excluded_records") else " No DN-synced records to exclude.")
+                self.lbl_dash_scope.setText(
+                    "Scope: <b>PPE register only</b> — manual issues and Excel / CSV imports."
+                    + extra + " Tick <i>Include DN-synced records</i> to see them here.")
 
         measure = self._dashboard_measure_key()
         group_map = d["by_group"] if measure == "count" else d["by_group_qty"]
@@ -833,4 +956,80 @@ class EmployeePPEPage(QWidget):
         self.run_report()
         fn = {"pdf": D.report_pdf, "xlsx": D.export_excel, "csv": D.export_csv}[kind]
         self.last_file = fn(self.db, self.rep_title, self.rep_cols, self.rep_rows)
+        D.open_path(self.last_file)
+
+    # ------------------------------------------------- register sheet in / out
+    def import_register_sheet(self):
+        """Import an Excel / CSV sheet directly into the PPE register."""
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Select the PPE sheet to import into the register", "",
+            "Spreadsheets and text (*.xlsx *.xlsm *.csv *.txt);;All files (*)")
+        if not f:
+            return
+        try:
+            headers, rows = P.read_file(f)
+        except Exception as exc:                          # noqa: BLE001
+            W.error_box(self, f"Could not read that file.\n\n{exc}")
+            return
+        if not rows:
+            W.error_box(self, "No data rows were found in that file.")
+            return
+        mapping = P.auto_map(headers)
+        dlg = SheetMapDialog(headers, mapping, self, f"Import {Path(f).name} into the PPE register",
+                             sample=rows[:3])
+        if dlg.exec() != QDialog.Accepted:
+            return
+        mapping = dlg.mapping()
+        if not mapping:
+            W.error_box(self, "Map at least one column to a PPE field, then import again.")
+            return
+        recs = P.preview(headers, rows, mapping)
+        if not recs:
+            W.error_box(self, "No usable rows were found in that sheet.")
+            return
+        known = ", ".join(sorted({P.LABELS.get(v, v) for v in mapping.values()}))
+        if not W.confirm(self, f"{len(recs)} row(s) ready to import into the PPE register.\n\n"
+                               f"Mapped columns:\n{known}\n\n"
+                               "They are added as MANUAL register records (duplicates are "
+                               "skipped) and the import can be undone from the Import Sheet "
+                               "tab.\n\nImport now?"):
+            return
+        try:
+            ins, sk = P.import_records(self.pdb, recs, str(f))
+        except Exception as exc:                          # noqa: BLE001
+            W.error_box(self, f"The import failed.\n\n{exc}")
+            return
+        self.refresh_all()
+        self.dataChanged.emit()
+        self.tabs.setCurrentIndex(1)                      # stay on the Register tab
+        W.info_box(self, f"{ins} PPE record(s) imported into the register."
+                         + (f"\n{sk} duplicate row(s) skipped." if sk else "")
+                         + "\n\nUndo is available on the Import Sheet tab.",
+                   "Register import complete")
+
+    def download_register_template(self):
+        cols, sample = P.template_rows()
+        f = D.export_excel(self.db, "Employee PPE Register Template", cols, sample,
+                           Path(D.config.folder(P.FOLDER)) / "Employee_PPE_Register_Template.xlsx",
+                           totals=False)
+        W.toast(self, f"Template saved: {f.name}")
+        D.open_path(f)
+
+    def export_register(self, kind: str, synced: bool = False):
+        """Export the rows currently shown on the register (Excel / PDF / CSV / print)."""
+        filters = self._synced_filters() if synced else self._filters()
+        title, cols, rows = P.register_report(
+            self.pdb, filters, P.SOURCE_DN if synced else P.SOURCE_MANUAL)
+        if not rows:
+            W.error_box(self, "There is nothing on screen to export with the current filters.")
+            return
+        if kind == "print":
+            f = D.report_pdf(self.db, title, cols, rows)
+            self.last_file = f
+            D.print_file(self.db, f)
+            W.toast(self, f"{len(rows)} row(s) sent to the printer.")
+            return
+        fn = {"pdf": D.report_pdf, "xlsx": D.export_excel, "csv": D.export_csv}[kind]
+        self.last_file = fn(self.db, title, cols, rows)
+        W.toast(self, f"{len(rows)} row(s) exported — {self.last_file.name}")
         D.open_path(self.last_file)

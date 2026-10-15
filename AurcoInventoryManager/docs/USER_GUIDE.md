@@ -1,6 +1,6 @@
 # AURCO INVENTORY MANAGER — User & Build Guide
 
-**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.28.24
+**Brand:** AURCO  ·  **Created by:** Zain Shami  ·  **Version:** 2.28.25
 **Platform:** Windows Desktop (.EXE) · offline · local-first · SQLite
 
 ---
@@ -536,6 +536,16 @@ changing stock a second time.
 ### What it does
 * **Manual issue entry** for employee code, employee name, project/site,
   description, size, quantity, DN number and remarks.
+* **Import / export on the Register tab.** `Import Excel / CSV` loads a PPE sheet
+  straight into the register (column mapping is reviewed before importing, and
+  duplicates are skipped); `Template` saves an empty sheet with the register
+  columns; `Export this view` writes the rows currently on screen — filters
+  included — to **Excel, PDF, CSV** or the **printer**. The Synced DN Records tab
+  carries the same export buttons.
+* **Dashboard that reports the register.** The PPE dashboard counts manual issues
+  and sheet imports only; Delivery-Note synced rows are excluded unless you tick
+  **Include DN-synced records**. While the box is clear, the DN tiles and the
+  source-split chart stay hidden and the line under the tiles states the scope.
 * **DN sync** that scans finalized Delivery Notes and detects matching PPE lines
   by item description, code and category.
 * Automatically groups records as **Safety Shoes, Blanket, FRC, Coverall** or
@@ -558,6 +568,16 @@ Built-in reports include:
 
 This gives you a separate employee-issued record while still using the normal
 Delivery Note workflow in inventory.
+
+### One Delivery Note = one file
+Attaching pictures to a Delivery Note does **not** create a second "with photos"
+document. AURCO merges the pictures into the same PDF and stores each picture
+once under `Attachments/DN/<DN number>/`. If an older version left extra copies
+in the folder, clean them once with **Documents → 🧹 One File per Document** (or
+**Settings → Backup & restore → 🧹 Clean Duplicate Files**): the newest official
+file of each document is kept and every duplicate is removed. With File
+Protection on, removed copies are moved into that folder's `_Archive` instead of
+being destroyed.
 
 ---
 
